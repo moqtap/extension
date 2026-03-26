@@ -1,0 +1,156 @@
+/* DevTools-matching theme — respects browser color scheme */
+:root {
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d30;
+  --bg-hover: #2a2d2e;
+  --bg-selected: #094771;
+  --border: #3c3c3c;
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-accent: #569cd6;
+  --text-success: #4ec9b0;
+  --text-warning: #dcdcaa;
+  --text-error: #f44747;
+  --text-url: #9cdcfe;
+  --badge-moqt: #264f78;
+  --badge-unknown: #4d4d4d;
+  --tx-color: #ce9178;
+  --rx-color: #6a9955;
+  --scrollbar-bg: #1e1e1e;
+  --scrollbar-thumb: #424242;
+  --badge-open-bg: #1b3a1b;
+  --badge-closed-bg: #3a1b1b;
+  --badge-imported-bg: #1b2a3a;
+  --badge-imported-color: #6ba3d6;
+  --content-json-bg: rgba(78, 154, 6, 0.2);
+  --content-json-color: #8cc265;
+  --content-fmp4-bg: rgba(114, 137, 218, 0.2);
+  --content-fmp4-color: #7289da;
+  --hex-obj-odd: #7ec8e3;
+  --tag-track-bg: rgba(255, 179, 71, 0.15);
+  --tag-group-bg: rgba(78, 154, 6, 0.15);
+  --tag-group-color: #8cc265;
+  --tag-neutral-bg: rgba(200, 200, 200, 0.1);
+  --csp-warning-bg: rgba(255, 179, 71, 0.08);
+  --json-boolean: #569cd6;
+
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f8f8f8;
+    --bg-tertiary: #f0f0f0;
+    --bg-hover: #e8e8e8;
+    --bg-selected: #cce5ff;
+    --border: #d0d0d0;
+    --text-primary: #1e1e1e;
+    --text-secondary: #656565;
+    --text-accent: #0451a5;
+    --text-success: #0b7261;
+    --text-warning: #795e26;
+    --text-error: #cd3131;
+    --text-url: #0451a5;
+    --badge-moqt: #c4daf0;
+    --badge-unknown: #d4d4d4;
+    --tx-color: #a31515;
+    --rx-color: #098658;
+    --scrollbar-bg: #f8f8f8;
+    --scrollbar-thumb: #c1c1c1;
+    --badge-open-bg: #d4edda;
+    --badge-closed-bg: #f8d7da;
+    --badge-imported-bg: #d1e7f5;
+    --badge-imported-color: #0451a5;
+    --content-json-bg: rgba(40, 120, 10, 0.12);
+    --content-json-color: #2b7a0b;
+    --content-fmp4-bg: rgba(60, 80, 180, 0.12);
+    --content-fmp4-color: #3b5998;
+    --hex-obj-odd: #1a6b8a;
+    --tag-track-bg: rgba(180, 120, 30, 0.12);
+    --tag-group-bg: rgba(40, 120, 10, 0.12);
+    --tag-group-color: #2b7a0b;
+    --tag-neutral-bg: rgba(0, 0, 0, 0.06);
+    --csp-warning-bg: rgba(200, 140, 0, 0.1);
+    --json-boolean: #0451a5;
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+/* Utility classes */
+.mono {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace;
+  font-size: 11px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge-moqt {
+  background: var(--badge-moqt);
+  color: var(--text-accent);
+}
+.badge-unknown {
+  background: var(--badge-unknown);
+  color: var(--text-secondary);
+}
+.badge-open {
+  background: var(--badge-open-bg);
+  color: var(--text-success);
+}
+.badge-closed {
+  background: var(--badge-closed-bg);
+  color: var(--text-error);
+}
+.badge-imported {
+  background: var(--badge-imported-bg);
+  color: var(--badge-imported-color);
+}
+
+.direction-tx {
+  color: var(--tx-color);
+}
+.direction-rx {
+  color: var(--rx-color);
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
