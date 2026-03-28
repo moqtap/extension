@@ -33,8 +33,8 @@ jobs:
 
       - name: Rename zips for release
         run: |
-          mv .output/chrome-mv3.zip .output/moqtap-chrome-${{ github.ref_name }}.zip
-          mv .output/firefox-mv3.zip .output/moqtap-firefox-${{ github.ref_name }}.zip
+          mv .output/*-chrome.zip .output/moqtap-chrome-${{ github.ref_name }}.zip
+          mv .output/*-firefox.zip .output/moqtap-firefox-${{ github.ref_name }}.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
