@@ -19,6 +19,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "entrypoints/**/*.ts", "entrypoints/**/*.vue"],
+  "include": ["src/**/*.ts", "entrypoints/**/*.ts", "entrypoints/**/*.vue", ".wxt/wxt.d.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
