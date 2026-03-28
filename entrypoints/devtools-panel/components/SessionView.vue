@@ -35,6 +35,7 @@ const selectedStream = computed(() =>
 
 /** True when the currently-viewed stream has received more data since we loaded it */
 const hasNewData = computed(() => {
+  if (loadingStream.value) return false;
   const stream = selectedStream.value;
   if (!stream || stream.byteCount === 0) return false;
   return stream.byteCount > loadedByteCount.value;

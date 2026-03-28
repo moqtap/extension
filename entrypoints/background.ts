@@ -84,10 +84,10 @@ interface ControlMessageRecord {
 const tabStates = new Map<number, TabState>();
 
 /** Connected DevTools panel ports, keyed by tabId */
-const panelPorts = new Map<number, browser.runtime.Port>();
+const panelPorts = new Map<number, Browser.runtime.Port>();
 
 /** Connected bridge ports (content script ISOLATED world), keyed by tabId */
-const bridgePorts = new Map<number, browser.runtime.Port>();
+const bridgePorts = new Map<number, Browser.runtime.Port>();
 
 /** Tabs that have been activated (instrumentation forwarding enabled) */
 const activatedTabs = new Set<number>();

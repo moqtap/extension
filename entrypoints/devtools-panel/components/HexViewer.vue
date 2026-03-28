@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import type { StreamObject } from '../stream-framing';
 
 const props = withDefaults(defineProps<{
@@ -13,6 +13,10 @@ const props = withDefaults(defineProps<{
 });
 
 const BYTES_PER_ROW = 16;
+/** Fixed row height derived from CSS: 11px font × 1.6 line-height + 2×1px padding */
+const ROW_HEIGHT = 20;
+/** Extra rows rendered above/below the visible viewport to avoid flicker during scroll */
+const OVERSCAN = 10;
 
 /**
  * Per-byte annotation:
@@ -24,40 +28,6 @@ const BYTES_PER_ROW = 16;
  */
 type ByteKind = 'header' | 'framing' | 'even' | 'odd' | 'none';
 
-/** Precompute per-byte annotation for the entire data buffer */
-const byteKinds = computed<ByteKind[]>(() => {
-  const len = props.data.length;
-  const kinds: ByteKind[] = new Array(len).fill('none');
-  const hs = props.headerSize;
-  const objs = props.objects;
-
-  // Mark stream header bytes
-  for (let i = 0; i < Math.min(hs, len); i++) {
-    kinds[i] = 'header';
-  }
-
-  // Mark object regions
-  if (objs && objs.length > 0) {
-    for (let idx = 0; idx < objs.length; idx++) {
-      const obj = objs[idx];
-      const payloadKind: ByteKind = idx % 2 === 0 ? 'even' : 'odd';
-
-      // Object framing bytes (between obj.offset and obj.payloadOffset)
-      for (let i = obj.offset; i < Math.min(obj.payloadOffset, len); i++) {
-        kinds[i] = 'framing';
-      }
-
-      // Object payload bytes
-      const payloadEnd = Math.min(obj.payloadOffset + obj.payloadLength, len);
-      for (let i = obj.payloadOffset; i < payloadEnd; i++) {
-        kinds[i] = payloadKind;
-      }
-    }
-  }
-
-  return kinds;
-});
-
 interface HexRow {
   offset: number;
   hex: string[];
@@ -65,27 +35,139 @@ interface HexRow {
   kinds: ByteKind[];
 }
 
-const rows = computed<HexRow[]>(() => {
-  const result: HexRow[] = [];
+const totalRows = computed(() => Math.ceil(props.data.length / BYTES_PER_ROW));
+
+// ── Virtual scroll state ──────────────────────────────────────────
+const scrollContainer = ref<HTMLElement | null>(null);
+const scrollTop = ref(0);
+const viewportHeight = ref(400);
+
+function onScroll() {
+  if (!scrollContainer.value) return;
+  scrollTop.value = scrollContainer.value.scrollTop;
+}
+
+let resizeObserver: ResizeObserver | null = null;
+
+onMounted(() => {
+  if (scrollContainer.value) {
+    viewportHeight.value = scrollContainer.value.clientHeight;
+    resizeObserver = new ResizeObserver(() => {
+      if (scrollContainer.value) {
+        viewportHeight.value = scrollContainer.value.clientHeight;
+      }
+    });
+    resizeObserver.observe(scrollContainer.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+});
+
+// Reset scroll when data changes
+watch(() => props.data, () => {
+  scrollTop.value = 0;
+  nextTick(() => {
+    if (scrollContainer.value) scrollContainer.value.scrollTop = 0;
+  });
+});
+
+// ── Visible row range ─────────────────────────────────────────────
+const startRow = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - OVERSCAN));
+const endRow = computed(() =>
+  Math.min(totalRows.value, Math.ceil((scrollTop.value + viewportHeight.value) / ROW_HEIGHT) + OVERSCAN),
+);
+
+const topSpacer = computed(() => startRow.value * ROW_HEIGHT);
+const bottomSpacer = computed(() => (totalRows.value - endRow.value) * ROW_HEIGHT);
+
+/**
+ * Precompute per-byte annotation only for the visible byte range.
+ * For small data (<64KB) we annotate everything once; for larger data
+ * we only annotate the visible slice to avoid O(n) work on every scroll.
+ */
+const FULL_ANNOTATION_THRESHOLD = 65536;
+
+const fullByteKinds = computed<ByteKind[] | null>(() => {
+  if (props.data.length > FULL_ANNOTATION_THRESHOLD) return null;
+  return computeByteKinds(0, props.data.length);
+});
+
+function computeByteKinds(from: number, to: number): ByteKind[] {
+  const len = props.data.length;
+  const size = to - from;
+  const kinds: ByteKind[] = new Array(size).fill('none');
+  const hs = props.headerSize;
+  const objs = props.objects;
+
+  // Mark stream header bytes within range
+  const headerEnd = Math.min(hs, len, to);
+  for (let i = Math.max(from, 0); i < headerEnd; i++) {
+    kinds[i - from] = 'header';
+  }
+
+  // Mark object regions within range
+  if (objs && objs.length > 0) {
+    for (let idx = 0; idx < objs.length; idx++) {
+      const obj = objs[idx];
+      const payloadKind: ByteKind = idx % 2 === 0 ? 'even' : 'odd';
+
+      // Object framing bytes
+      const framingEnd = Math.min(obj.payloadOffset, len, to);
+      for (let i = Math.max(obj.offset, from); i < framingEnd; i++) {
+        kinds[i - from] = 'framing';
+      }
+
+      // Object payload bytes
+      const payloadEnd = Math.min(obj.payloadOffset + obj.payloadLength, len, to);
+      for (let i = Math.max(obj.payloadOffset, from); i < payloadEnd; i++) {
+        kinds[i - from] = payloadKind;
+      }
+    }
+  }
+
+  return kinds;
+}
+
+/** Build HexRow objects only for the visible range */
+const visibleRows = computed<HexRow[]>(() => {
   const d = props.data;
-  const allKinds = byteKinds.value;
-  for (let i = 0; i < d.length; i += BYTES_PER_ROW) {
-    const slice = d.subarray(i, Math.min(i + BYTES_PER_ROW, d.length));
+  const sr = startRow.value;
+  const er = endRow.value;
+  const byteStart = sr * BYTES_PER_ROW;
+  const byteEnd = Math.min(er * BYTES_PER_ROW, d.length);
+
+  // Get annotation for the visible byte range
+  let kinds: ByteKind[];
+  let kindsOffset: number;
+  if (fullByteKinds.value) {
+    kinds = fullByteKinds.value;
+    kindsOffset = 0;
+  } else {
+    kinds = computeByteKinds(byteStart, byteEnd);
+    kindsOffset = byteStart;
+  }
+
+  const result: HexRow[] = [];
+  for (let r = sr; r < er; r++) {
+    const offset = r * BYTES_PER_ROW;
+    const slice = d.subarray(offset, Math.min(offset + BYTES_PER_ROW, d.length));
     const hex: string[] = [];
-    const kinds: ByteKind[] = [];
+    const rowKinds: ByteKind[] = [];
     let ascii = '';
     for (let j = 0; j < BYTES_PER_ROW; j++) {
       if (j < slice.length) {
         hex.push(slice[j].toString(16).padStart(2, '0'));
         ascii += slice[j] >= 0x20 && slice[j] <= 0x7e ? String.fromCharCode(slice[j]) : '.';
-        kinds.push(allKinds[i + j]);
+        rowKinds.push(kinds[offset + j - kindsOffset]);
       } else {
         hex.push('  ');
         ascii += ' ';
-        kinds.push('none');
+        rowKinds.push('none');
       }
     }
-    result.push({ offset: i, hex, ascii, kinds });
+    result.push({ offset, hex, ascii, kinds: rowKinds });
   }
   return result;
 });
@@ -113,8 +195,9 @@ function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
       </span>
       <span class="hex-ascii">ASCII</span>
     </div>
-    <div class="hex-body">
-      <div v-for="row in rows" :key="row.offset" class="hex-row">
+    <div ref="scrollContainer" class="hex-body" @scroll="onScroll">
+      <div :style="{ height: topSpacer + 'px' }" />
+      <div v-for="row in visibleRows" :key="row.offset" class="hex-row">
         <span class="hex-offset">{{ formatOffset(row.offset) }}</span>
         <span class="hex-bytes">
           <span
@@ -126,6 +209,7 @@ function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
         </span>
         <span class="hex-ascii">{{ row.ascii }}</span>
       </div>
+      <div :style="{ height: bottomSpacer + 'px' }" />
     </div>
     <div class="hex-footer">
       {{ data.length }} bytes<template v-if="headerSize > 0"> ({{ headerSize }}B header<template v-if="objects && objects.length > 0">, {{ objects.length }} obj{{ objects.length !== 1 ? 's' : '' }}</template>)</template>
