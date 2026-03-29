@@ -9,5 +9,13 @@ export default defineConfig({
     description: 'DevTools extension for inspecting WebTransport connections and MoQT protocol traffic',
     permissions: ['storage'],
     devtools_page: 'devtools.html',
+    browser_specific_settings: {
+      gecko: {
+        id: 'wtinspector@moqtap.com',
+        data_collection_permissions: {
+          required: ['none'],
+        },
+      },
+    },
   },
 });

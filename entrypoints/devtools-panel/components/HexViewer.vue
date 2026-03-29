@@ -224,6 +224,7 @@ function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
   height: 100%;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace;
   font-size: 11px;
+  overflow-x: auto;
 }
 
 .hex-header-row {
@@ -236,12 +237,14 @@ function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
   font-weight: 600;
   position: sticky;
   top: 0;
+  min-width: fit-content;
 }
 
 .hex-body {
   flex: 1;
   overflow-y: auto;
   padding: 2px 0;
+  min-width: fit-content;
 }
 
 .hex-row {

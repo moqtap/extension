@@ -20,7 +20,7 @@ import type { SupportedDraft } from '@/src/types/common';
 import { createExtensionRecorder } from '@/src/trace/index';
 import type { TraceRecorder } from '@/src/trace/index';
 import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14';
-import { appendStreamData, flushStream, loadStreamData, clearAllData, clearSessionData, getKnownSessionIds, startEvictionTimer } from '@/src/storage/chunk-store';
+import { appendStreamData, flushStream, loadStreamData, clearAllData, clearSessionData, getKnownSessionIds, getSessionTabMap, saveSessionTab, startEvictionTimer } from '@/src/storage/chunk-store';
 import { detectContentType, type StreamContentType } from '@/src/detect/content-detect';
 import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing';
 
@@ -514,6 +514,10 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
       };
       state.sessions.set(message.sessionId, record);
 
+      // Persist session→tab mapping so cleanupOrphanedData can identify
+      // which tab owns this session even after a SW restart.
+      saveSessionTab(message.sessionId, tabId);
+
       sendToPanel(tabId, {
         type: 'panel:session:opened',
         sessionId: message.sessionId,
@@ -706,22 +710,21 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
  * Unlike clearAllData(), this preserves data for tabs that are still open,
  * which is critical because the SW can restart after idle and must not
  * destroy data that connected DevTools panels still need.
+ *
+ * Uses a persisted sessionId→tabId mapping in IDB (written when each
+ * session is opened) so we can positively identify which tab owns each
+ * session and only delete data for tabs that are confirmed closed.
+ * This avoids the race condition where panels reconnect after a SW
+ * restart but haven't re-claimed their sessions yet.
  */
 async function cleanupOrphanedData(): Promise<void> {
   const storedIds = await getKnownSessionIds();
   if (storedIds.size === 0) return;
 
-  // Collect sessionIds that belong to currently open tabs
-  const liveSessionIds = new Set<string>();
-  for (const state of tabStates.values()) {
-    for (const sessionId of state.sessions.keys()) {
-      liveSessionIds.add(sessionId);
-    }
-  }
+  // Read the persisted session→tab mapping from IDB
+  const sessionTabMap = await getSessionTabMap();
 
-  // Also check which tabs still exist in the browser — tabStates may be empty
-  // after a SW restart, so query the browser for open tabs and be conservative:
-  // only clean up if we can confirm the tab no longer exists.
+  // Query the browser for currently open tabs
   let openTabIds: Set<number>;
   try {
     const tabs = await browser.tabs.query({});
@@ -731,19 +734,19 @@ async function cleanupOrphanedData(): Promise<void> {
     return;
   }
 
-  // Session IDs encode the tabId as the first segment before the dash.
-  // But sessionIds are opaque UUIDs — we can't extract tabId from them.
-  // So if tabStates is empty (SW just restarted with no reconnections yet),
-  // we wait: data in IDB is harmless, and panels will reconnect shortly.
-  if (tabStates.size === 0 && openTabIds.size > 0) {
-    // SW just restarted — don't clean anything until panels reconnect
-    // and we know which sessions are still alive.
-    return;
-  }
-
-  // Clean up sessions not claimed by any connected tab
   for (const sessionId of storedIds) {
-    if (!liveSessionIds.has(sessionId)) {
+    const ownerTabId = sessionTabMap.get(sessionId);
+    if (ownerTabId == null) {
+      // No tab mapping — session predates the mapping feature, or the
+      // mapping write didn't land. Be conservative: only clean up if
+      // there are no open tabs at all.
+      if (openTabIds.size === 0) {
+        await clearSessionData(sessionId);
+      }
+      continue;
+    }
+    if (!openTabIds.has(ownerTabId)) {
+      // Owner tab no longer exists — safe to clean up
       await clearSessionData(sessionId);
     }
   }

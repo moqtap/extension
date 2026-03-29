@@ -331,6 +331,51 @@ export function stopEvictionTimer(): void {
   }
 }
 
+// ── Session → tab mapping ─────────────────────────────────────────
+//
+// Persists which tab owns each session so that cleanupOrphanedData()
+// can positively identify orphaned sessions after a SW restart,
+// rather than relying on in-memory tabStates (which is empty after
+// restart and can race with panel reconnection).
+
+const TAB_KEY_PREFIX = 'meta:tab:';
+
+/** Fire-and-forget: persist the owning tabId for a session. */
+export function saveSessionTab(sessionId: string, tabId: number): void {
+  openDb()
+    .then((db) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put(tabId, `${TAB_KEY_PREFIX}${sessionId}`);
+    })
+    .catch(() => {});
+}
+
+/** Read all persisted session→tabId mappings from IDB. */
+export async function getSessionTabMap(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const range = IDBKeyRange.bound(TAB_KEY_PREFIX, `${TAB_KEY_PREFIX}\uffff`);
+      const req = tx.objectStore(STORE_NAME).openCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          const sessionId = (cursor.key as string).substring(TAB_KEY_PREFIX.length);
+          if (typeof cursor.value === 'number') {
+            map.set(sessionId, cursor.value);
+          }
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch { /* IDB not available */ }
+  return map;
+}
+
 // ── Introspection ─────────────────────────────────────────────────
 
 /**
@@ -353,6 +398,7 @@ export async function getKnownSessionIds(): Promise<Set<string>> {
       req.onerror = () => reject(req.error);
     });
     for (const key of keys) {
+      if (typeof key !== 'string' || key.startsWith('meta:')) continue;
       // Key format: sessionId:streamId:pN
       const sep = key.indexOf(':');
       if (sep > 0) ids.add(key.substring(0, sep));
@@ -383,12 +429,17 @@ export async function clearSessionData(sessionId: string): Promise<void> {
     if (key.startsWith(prefix)) pageCache.delete(key);
   }
 
-  // Clear IDB pages
+  // Clear IDB pages + tab mapping entry
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
+
+      // Delete the session→tab mapping
+      store.delete(`${TAB_KEY_PREFIX}${sessionId}`);
+
+      // Delete all data pages for this session
       const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
       const req = store.openCursor(range);
       req.onsuccess = () => {
