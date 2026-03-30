@@ -10,6 +10,7 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 - Tracks subscriptions with namespace/track name display
 - Stream data viewer with hex and JSON modes
 - Live bitrate display for active connections
+- Stack traces for control messages and stream creation
 - Export/import `.moqtrace` trace files
 - Graceful handling of non-MoQT WebTransport connections
 
