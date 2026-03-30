@@ -46,21 +46,28 @@ function compactHost(url: string): string {
   }
 }
 
+const COMPACT_DECAY_MS = 5_000;
+
 function compactBitrate(s: SessionEntry): string | null {
   if (s.closed || s.imported) return null;
   let total = 0;
   let earliest = Infinity;
+  let latest = 0;
   for (const stream of s.streams.values()) {
     total += stream.byteCount;
     if (stream.firstDataAt && stream.firstDataAt < earliest) earliest = stream.firstDataAt;
+    if (stream.lastDataAt && stream.lastDataAt > latest) latest = stream.lastDataAt;
   }
-  if (total === 0 || !isFinite(earliest)) return null;
-  const dur = (Date.now() - earliest) / 1000;
-  if (dur < 1) return null;
-  const bps = (total * 8) / dur;
+  if (total === 0 || !isFinite(earliest) || latest === 0) return null;
+  const activeSec = Math.max((latest - earliest) / 1000, 1);
+  const activeBps = (total * 8) / activeSec;
+  const decay = Math.max(0, 1 - (Date.now() - latest) / COMPACT_DECAY_MS);
+  if (decay === 0) return null;
+  const bps = activeBps * decay;
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)}M`;
   if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)}k`;
-  return `${Math.round(bps)}`;
+  if (bps >= 1) return `${Math.round(bps)}`;
+  return null;
 }
 
 function compactTooltip(s: SessionEntry): string {

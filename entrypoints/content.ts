@@ -431,12 +431,23 @@ if (OrigWT) {
     }
     __moqtapTapIncoming(inst.incomingBidirectionalStreams, true);
     __moqtapTapIncoming(inst.incomingUnidirectionalStreams, false);
+    var __reported = false;
+    function __reportClose(reason) {
+      if (__reported) return;
+      __reported = true;
+      __moqtapSend({ type: "session:closed", sessionId: session.id, reason: reason });
+    }
+    if (inst.ready && typeof inst.ready.then === "function") {
+      inst.ready.then(undefined, function(err) {
+        __reportClose(String(err));
+      });
+    }
     if (inst.closed && typeof inst.closed.then === "function") {
       inst.closed.then(function(info) {
         var reason = (info && typeof info === "object") ? (info.reason || "code " + (info.closeCode || 0)) : "closed";
-        __moqtapSend({ type: "session:closed", sessionId: session.id, reason: reason });
+        __reportClose(reason);
       }, function(err) {
-        __moqtapSend({ type: "session:closed", sessionId: session.id, reason: String(err) });
+        __reportClose(String(err));
       });
     }
     return inst;

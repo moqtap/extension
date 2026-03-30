@@ -39,7 +39,7 @@ interface SessionRecord {
   detection: DetectionResult | null;
   detectedDraft: SupportedDraft | null;
   /** Accumulated bytes per stream for buffered detection/decoding */
-  streamBuffers: Map<number, Uint8Array[]>;
+  streamBuffers: Map<number, { data: Uint8Array; direction: 'tx' | 'rx' }[]>;
   /** Whether we've attempted detection on this session */
   detectionAttempted: boolean;
   /** Stream ID identified as the control stream (once detected) */
@@ -137,14 +137,14 @@ function attemptDetection(session: SessionRecord, streamId: number): TrackRecord
   if (!chunks || chunks.length === 0) return [];
 
   // Concatenate chunks
-  const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+  const totalLen = chunks.reduce((s, c) => s + c.data.length, 0);
   if (totalLen < 4) return []; // need enough bytes for detection
 
   const buf = new Uint8Array(totalLen);
   let offset = 0;
   for (const chunk of chunks) {
-    buf.set(chunk, offset);
-    offset += chunk.length;
+    buf.set(chunk.data, offset);
+    offset += chunk.data.length;
   }
 
   const result = detectFromControlStream(buf);
@@ -163,15 +163,28 @@ function attemptDetection(session: SessionRecord, streamId: number): TrackRecord
     // Create trace recorder for MoQT sessions
     session.recorder = createExtensionRecorder(result.draft, session.url);
 
+    // Build a byte-offset → direction map so tryDecodeBuffered can
+    // assign the correct direction to each decoded message.
+    const directionMap: { offset: number; direction: 'tx' | 'rx' }[] = [];
+    let dirOffset = 0;
+    for (const chunk of chunks) {
+      directionMap.push({ offset: dirOffset, direction: chunk.direction });
+      dirOffset += chunk.data.length;
+    }
+
     // Now try to decode the buffered bytes as control messages
-    return tryDecodeBuffered(session, buf);
+    return tryDecodeBuffered(session, buf, directionMap);
   }
   return [];
 }
 
 /** Attempt to decode buffered control stream bytes as control messages.
  *  Returns track updates discovered during decoding. */
-function tryDecodeBuffered(session: SessionRecord, buf: Uint8Array): TrackRecord[] {
+function tryDecodeBuffered(
+  session: SessionRecord,
+  buf: Uint8Array,
+  directionMap: { offset: number; direction: 'tx' | 'rx' }[],
+): TrackRecord[] {
   const trackUpdates: TrackRecord[] = [];
   if (!session.detectedDraft) return trackUpdates;
 
@@ -188,8 +201,18 @@ function tryDecodeBuffered(session: SessionRecord, buf: Uint8Array): TrackRecord
           ? msg.type
           : 'unknown';
         const raw = remaining.subarray(0, result.bytesRead);
+
+        // Look up direction from the chunk that contains this offset
+        let direction: 'tx' | 'rx' = 'rx';
+        for (let i = directionMap.length - 1; i >= 0; i--) {
+          if (directionMap[i].offset <= offset) {
+            direction = directionMap[i].direction;
+            break;
+          }
+        }
+
         const record: ControlMessageRecord = {
-          direction: 'rx', // first messages on control stream are received
+          direction,
           timestamp: Date.now(),
           decoded: jsonSafe(msg),
           messageType: msgType,
@@ -198,7 +221,7 @@ function tryDecodeBuffered(session: SessionRecord, buf: Uint8Array): TrackRecord
         session.controlMessages.push(record);
 
         // Extract track info
-        const trackUpdate = extractTrackInfo(session, msg as unknown as Record<string, unknown>, 'rx');
+        const trackUpdate = extractTrackInfo(session, msg as unknown as Record<string, unknown>, direction);
         if (trackUpdate) trackUpdates.push(trackUpdate);
 
         // Record in trace
@@ -208,7 +231,7 @@ function tryDecodeBuffered(session: SessionRecord, buf: Uint8Array): TrackRecord
             type: 'control',
             seq: session.controlMessages.length - 1,
             timestamp: Math.round(performance.now() * 1000),
-            direction: 1, // rx
+            direction: direction === 'tx' ? 0 : 1,
             messageType: wireId != null ? Number(wireId) : 0,
             message: msg as unknown as Record<string, unknown>,
           });
@@ -564,7 +587,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
           chunks = [];
           session.streamBuffers.set(message.streamId, chunks);
         }
-        chunks.push(bytes);
+        chunks.push({ data: bytes, direction: message.direction });
 
         const trackUpdates = attemptDetection(session, message.streamId);
         if (session.detection) {
@@ -573,6 +596,21 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
             sessionId: message.sessionId,
             result: session.detection,
           });
+          // Send detection-phase control messages to the panel
+          // (replayState already ran before the buffer flush, so these
+          // would otherwise never reach the panel)
+          for (const msg of session.controlMessages) {
+            sendToPanel(tabId, {
+              type: 'panel:control-message',
+              sessionId: message.sessionId,
+              direction: msg.direction,
+              timestamp: msg.timestamp,
+              decoded: msg.decoded,
+              messageType: msg.messageType,
+              raw: msg.raw,
+              stack: msg.stack,
+            });
+          }
           for (const track of trackUpdates) {
             sendTrackUpdate(tabId, message.sessionId, track);
           }

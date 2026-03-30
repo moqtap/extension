@@ -52,22 +52,41 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Bitrate display with natural decay.
+ *
+ * Computes the "active" bitrate over the period firstDataAt → lastDataAt,
+ * then applies a linear decay factor based on how long ago the last data
+ * arrived. After DECAY_WINDOW_MS of silence the displayed rate reaches 0.
+ */
+const DECAY_WINDOW_MS = 5_000; // 5 seconds of silence → 0 bps
+
 function formatBitrate(session: SessionEntry): string | null {
   if (session.closed || session.imported) return null;
   let totalBytes = 0;
   let earliest = Infinity;
+  let latest = 0;
   for (const stream of session.streams.values()) {
     totalBytes += stream.byteCount;
     if (stream.firstDataAt && stream.firstDataAt < earliest) earliest = stream.firstDataAt;
+    if (stream.lastDataAt && stream.lastDataAt > latest) latest = stream.lastDataAt;
   }
-  if (totalBytes === 0 || !isFinite(earliest)) return null;
-  // Use wall clock as endpoint so rate naturally decays when data stops
-  const durationSec = (Date.now() - earliest) / 1000;
-  if (durationSec < 1) return null;
-  const bitsPerSec = (totalBytes * 8) / durationSec;
+  if (totalBytes === 0 || !isFinite(earliest) || latest === 0) return null;
+
+  // Active-period bitrate: bytes over the span in which data actually flowed
+  const activeSec = Math.max((latest - earliest) / 1000, 1);
+  const activeBps = (totalBytes * 8) / activeSec;
+
+  // Linear decay: 1.0 while data is flowing → 0.0 after DECAY_WINDOW_MS of silence
+  const silenceMs = Date.now() - latest;
+  const decay = Math.max(0, 1 - silenceMs / DECAY_WINDOW_MS);
+  if (decay === 0) return null;
+
+  const bitsPerSec = activeBps * decay;
   if (bitsPerSec >= 1_000_000) return `${(bitsPerSec / 1_000_000).toFixed(1)} Mbps`;
   if (bitsPerSec >= 1_000) return `${(bitsPerSec / 1_000).toFixed(0)} kbps`;
-  return `${Math.round(bitsPerSec)} bps`;
+  if (bitsPerSec >= 1) return `${Math.round(bitsPerSec)} bps`;
+  return null;
 }
 </script>
 

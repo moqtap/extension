@@ -118,8 +118,25 @@ export function installWebTransportHook(
       false,
     );
 
-    // Monitor the session-level close promise
+    // Monitor connection lifecycle promises
     if (onSessionClosed) {
+      let reported = false;
+      const reportClose = (reason: string) => {
+        if (reported) return;
+        reported = true;
+        onSessionClosed(session.id, reason);
+      };
+
+      // .ready rejects when the connection fails to establish
+      // (e.g. server unreachable, TLS error, QUIC handshake failure)
+      const ready = instance.ready as Promise<unknown> | undefined;
+      if (ready && typeof ready.then === 'function') {
+        ready.then(undefined, (err) => {
+          reportClose(String(err));
+        });
+      }
+
+      // .closed resolves on clean close, rejects on error-based closure
       const closed = instance.closed as Promise<{ closeCode?: number; reason?: string }> | undefined;
       if (closed && typeof closed.then === 'function') {
         closed.then(
@@ -127,10 +144,10 @@ export function installWebTransportHook(
             const reason = (info && typeof info === 'object')
               ? (info.reason || `code ${info.closeCode ?? 0}`)
               : 'closed';
-            onSessionClosed(session.id, reason);
+            reportClose(reason);
           },
           (err) => {
-            onSessionClosed(session.id, String(err));
+            reportClose(String(err));
           },
         );
       }
