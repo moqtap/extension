@@ -37,6 +37,17 @@ export interface StreamDataMsg {
    * port (structured clone). String (base64) accepted as fallback.
    */
   data: ArrayBuffer | string;
+  /** Stack trace captured at write site (tx bidirectional stream only) */
+  stack?: string;
+}
+
+export interface StreamCreatedMsg {
+  type: 'stream:created';
+  tabId?: number;
+  sessionId: string;
+  streamId: number;
+  /** Stack trace captured at createUnidirectionalStream call site */
+  stack: string;
 }
 
 export interface StreamClosedMsg {
@@ -76,6 +87,7 @@ export interface WorkerCspBlockedMsg {
 export type ContentToBackgroundMsg =
   | SessionOpenedMsg
   | StreamDataMsg
+  | StreamCreatedMsg
   | StreamClosedMsg
   | StreamErrorMsg
   | SessionClosedMsg
@@ -108,6 +120,16 @@ export interface PanelControlMessageMsg {
   messageType: string;
   /** Raw bytes as base64 */
   raw: string;
+  /** Stack trace from the call site (tx messages only) */
+  stack?: string;
+}
+
+export interface PanelStreamCreatedMsg {
+  type: 'panel:stream-created';
+  sessionId: string;
+  streamId: number;
+  /** Stack trace captured at createUnidirectionalStream call site */
+  stack: string;
 }
 
 export interface PanelStreamOpenedMsg {
@@ -209,7 +231,8 @@ export type BackgroundToPanelMsg =
   | PanelInstrumentedMsg
   | PanelTrackUpdateMsg
   | PanelWorkerCspWarningMsg
-  | PanelStreamDataResponseMsg;
+  | PanelStreamDataResponseMsg
+  | PanelStreamCreatedMsg;
 
 // ─── Background -> Bridge messages ───────────────────────────────────
 

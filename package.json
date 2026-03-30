@@ -1,6 +1,6 @@
 {
   "name": "@moqtap/extension",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "WebTransport Inspector — DevTools extension for MoQT protocol debugging",
   "private": true,
   "type": "module",

@@ -25,9 +25,10 @@ export interface SessionLifecycleCallbacks {
 }
 
 export interface StreamInterceptor {
-  onData(streamId: number, data: Uint8Array, direction: 'tx' | 'rx'): void;
+  onData(streamId: number, data: Uint8Array, direction: 'tx' | 'rx', stack?: string): void;
   onClose(streamId: number): void;
   onError(streamId: number, error: unknown): void;
+  onStreamCreated?(streamId: number, stack: string): void;
 }
 
 // Stored per-global so uninstallWebTransportHook can restore without
@@ -80,7 +81,7 @@ export function installWebTransportHook(
         return origCreateBidi.apply(instance, args).then((stream: unknown) => {
           const s = stream as Record<string, unknown>;
           wrapReadableStream(s.readable, streamId, 'rx', onStream);
-          wrapWritableStream(s.writable, streamId, 'tx', onStream);
+          wrapWritableStream(s.writable, streamId, 'tx', onStream, true);
           return stream;
         });
       };
@@ -91,8 +92,11 @@ export function installWebTransportHook(
     if (typeof origCreateUni === 'function') {
       instance.createUnidirectionalStream = (...args: unknown[]) => {
         const streamId = nextStreamId++;
+        // Capture synchronously before the async boundary
+        const stack = new Error().stack ?? '';
         return origCreateUni.apply(instance, args).then((writable: unknown) => {
           wrapWritableStream(writable, streamId, 'tx', onStream);
+          onStream.onStreamCreated?.(streamId, stack);
           return writable;
         });
       };
@@ -199,12 +203,15 @@ function wrapReadableStream(
 
 /**
  * Wrap a WritableStream to intercept chunks as they are written.
+ * When captureStack is true, captures a stack trace at each write site
+ * and passes it to the interceptor (used for bidirectional/control streams).
  */
 function wrapWritableStream(
   writable: unknown,
   streamId: number,
   direction: 'tx' | 'rx',
   interceptor: StreamInterceptor,
+  captureStack = false,
 ): void {
   if (!writable || typeof writable !== 'object') return;
   const ws = writable as { getWriter: () => WritableStreamWriter };
@@ -216,7 +223,8 @@ function wrapWritableStream(
     const origWrite = writer.write.bind(writer);
     writer.write = (chunk?: unknown) => {
       if (chunk instanceof Uint8Array) {
-        interceptor.onData(streamId, chunk, direction);
+        const stack = captureStack ? new Error().stack : undefined;
+        interceptor.onData(streamId, chunk, direction, stack);
       }
       return origWrite(chunk);
     };

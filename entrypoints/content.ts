@@ -70,7 +70,7 @@ function bootstrap() {
       });
     },
     {
-      onData(streamId, data, direction) {
+      onData(streamId, data, direction, stack) {
         if (!streamToSession.has(streamId) && activeSessionId) {
           streamToSession.set(streamId, activeSessionId);
         }
@@ -78,7 +78,7 @@ function bootstrap() {
         if (!sessionId) return;
         // Copy the buffer so the page retains the original and we can transfer the copy
         const copy = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-        send({ type: 'stream:data', sessionId, streamId, direction, data: copy });
+        send({ type: 'stream:data', sessionId, streamId, direction, data: copy, stack });
       },
       onClose(streamId) {
         const sessionId = streamToSession.get(streamId);
@@ -91,6 +91,14 @@ function bootstrap() {
         if (!sessionId) return;
         streamToSession.delete(streamId);
         send({ type: 'stream:error', sessionId, streamId, error: String(error) });
+      },
+      onStreamCreated(streamId, stack) {
+        if (!streamToSession.has(streamId) && activeSessionId) {
+          streamToSession.set(streamId, activeSessionId);
+        }
+        const sessionId = streamToSession.get(streamId);
+        if (!sessionId) return;
+        send({ type: 'stream:created', sessionId, streamId, stack });
       },
     },
     (sessionId, reason) => {
@@ -338,7 +346,7 @@ function __moqtapWrapReadable(rs, sid, dir) {
   };
 }
 
-function __moqtapWrapWritable(ws, sid, dir) {
+function __moqtapWrapWritable(ws, sid, dir, captureStack) {
   if (!ws || typeof ws !== "object" || typeof ws.getWriter !== "function") return;
   var orig = ws.getWriter.bind(ws);
   ws.getWriter = function() {
@@ -348,7 +356,8 @@ function __moqtapWrapWritable(ws, sid, dir) {
       if (chunk instanceof Uint8Array) {
         if (!__moqtapStreamMap.has(sid) && __moqtapActiveSession) __moqtapStreamMap.set(sid, __moqtapActiveSession);
         var sessId = __moqtapStreamMap.get(sid);
-        if (sessId) __moqtapSend({ type: "stream:data", sessionId: sessId, streamId: sid, direction: dir, data: __moqtapCopyBuf(chunk) });
+        var stack = captureStack ? (new Error().stack || "") : undefined;
+        if (sessId) __moqtapSend({ type: "stream:data", sessionId: sessId, streamId: sid, direction: dir, data: __moqtapCopyBuf(chunk), stack: stack });
       }
       return origWrite(chunk);
     };
@@ -401,7 +410,7 @@ if (OrigWT) {
         var sid = __moqtapNextStreamId++;
         return origBidi.apply(inst, arguments).then(function(stream) {
           __moqtapWrapReadable(stream.readable, sid, "rx");
-          __moqtapWrapWritable(stream.writable, sid, "tx");
+          __moqtapWrapWritable(stream.writable, sid, "tx", true);
           return stream;
         });
       };
@@ -410,8 +419,12 @@ if (OrigWT) {
     if (typeof origUni === "function") {
       inst.createUnidirectionalStream = function() {
         var sid = __moqtapNextStreamId++;
+        var stack = new Error().stack || "";
         return origUni.apply(inst, arguments).then(function(writable) {
           __moqtapWrapWritable(writable, sid, "tx");
+          if (!__moqtapStreamMap.has(sid) && __moqtapActiveSession) __moqtapStreamMap.set(sid, __moqtapActiveSession);
+          var sessId = __moqtapStreamMap.get(sid);
+          if (sessId) __moqtapSend({ type: "stream:created", sessionId: sessId, streamId: sid, stack: stack });
           return writable;
         });
       };

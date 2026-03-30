@@ -2,19 +2,23 @@
 import { ref, watch } from 'vue';
 import HexViewer from './HexViewer.vue';
 import JsonTree from './JsonTree.vue';
+import StackViewer from './StackViewer.vue';
 import { getCachedPref, savePref } from '../prefs';
 
 const props = defineProps<{
   data: unknown | null;
   raw: Uint8Array;
+  stack?: string;
 }>();
 
-type ViewMode = 'decoded' | 'hex';
+type ViewMode = 'decoded' | 'hex' | 'stack';
 
 // Use saved preference, but fall back to 'hex' if no decoded data
 const savedPref = getCachedPref('payloadViewMode');
 const viewMode = ref<ViewMode>(
-  savedPref === 'hex' ? 'hex' : (props.data ? 'decoded' : 'hex')
+  savedPref === 'hex' ? 'hex'
+    : savedPref === 'stack' && props.stack ? 'stack'
+    : (props.data ? 'decoded' : 'hex')
 );
 
 watch(viewMode, (mode) => {
@@ -39,12 +43,21 @@ watch(viewMode, (mode) => {
       >
         Hex
       </button>
+      <button
+        v-if="stack"
+        class="ptab"
+        :class="{ active: viewMode === 'stack' }"
+        @click="viewMode = 'stack'"
+      >
+        Stack
+      </button>
     </div>
     <div class="payload-content">
       <template v-if="viewMode === 'decoded'">
         <JsonTree v-if="data" :data="data" :initial-expanded="true" />
         <span v-else class="decode-failed">Decode failed</span>
       </template>
+      <StackViewer v-else-if="viewMode === 'stack' && stack" :stack="stack" />
       <HexViewer v-else :data="raw" />
     </div>
   </div>

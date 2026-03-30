@@ -78,6 +78,8 @@ interface ControlMessageRecord {
   decoded: string | null;
   messageType: string;
   raw: string;
+  /** Stack trace from the call site (tx messages only, ephemeral) */
+  stack?: string;
 }
 
 /** Per-tab state */
@@ -229,6 +231,7 @@ function tryDecodeStreamData(
   session: SessionRecord,
   data: Uint8Array,
   direction: 'tx' | 'rx',
+  stack?: string,
 ): TrackRecord | null {
   if (!session.detectedDraft) return null;
 
@@ -245,6 +248,7 @@ function tryDecodeStreamData(
         decoded: jsonSafe(msg),
         messageType: msgType,
         raw: bytesToBase64(data),
+        stack: direction === 'tx' ? stack : undefined,
       };
       session.controlMessages.push(record);
 
@@ -397,6 +401,7 @@ function replayState(tabId: number) {
         decoded: msg.decoded,
         messageType: msg.messageType,
         raw: msg.raw,
+        stack: msg.stack,
       });
     }
 
@@ -573,7 +578,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
           }
         }
       } else if (session.detectedDraft && message.streamId === session.controlStreamId) {
-        const trackUpdate = tryDecodeStreamData(session, bytes, message.direction);
+        const trackUpdate = tryDecodeStreamData(session, bytes, message.direction, message.stack);
         const lastMsg = session.controlMessages[session.controlMessages.length - 1];
         if (lastMsg) {
           sendToPanel(tabId, {
@@ -584,6 +589,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
             decoded: lastMsg.decoded,
             messageType: lastMsg.messageType,
             raw: lastMsg.raw,
+            stack: lastMsg.stack,
           });
         }
         if (trackUpdate) {
@@ -629,6 +635,17 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
         );
       }
 
+      break;
+    }
+
+    case 'stream:created': {
+      // Unistream creation stack — ephemeral, forward to panel but don't store
+      sendToPanel(tabId, {
+        type: 'panel:stream-created',
+        sessionId: message.sessionId,
+        streamId: message.streamId,
+        stack: message.stack,
+      });
       break;
     }
 

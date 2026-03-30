@@ -69,6 +69,8 @@ export interface MessageEntry {
   messageType: string;
   decoded: unknown | null;
   raw: Uint8Array;
+  /** Stack trace from the call site (tx messages only, ephemeral) */
+  stack?: string;
 }
 
 export function useInspector() {
@@ -79,6 +81,8 @@ export function useInspector() {
   const midSessionOpen = ref(false);
   /** Worker URLs where instrumentation was blocked by CSP */
   const cspBlockedWorkers = ref<string[]>([]);
+  /** Unistream creation stacks (ephemeral, keyed by "sessionId:streamId") */
+  const streamCreationStacks = ref<Map<string, string>>(new Map());
 
   let port: chrome.runtime.Port | null = null;
   let nextColorIndex = 0;
@@ -142,6 +146,7 @@ export function useInspector() {
             messageType: msg.messageType,
             decoded: msg.decoded ? JSON.parse(msg.decoded) : null,
             raw: base64ToBytes(msg.raw),
+            stack: msg.stack,
           });
           triggerUpdate();
         }
@@ -209,6 +214,13 @@ export function useInspector() {
             triggerUpdate();
           }
         }
+        break;
+      }
+
+      case 'panel:stream-created': {
+        const key = `${msg.sessionId}:${msg.streamId}`;
+        streamCreationStacks.value.set(key, msg.stack);
+        triggerUpdate();
         break;
       }
 
@@ -575,6 +587,7 @@ export function useInspector() {
     connected,
     midSessionOpen,
     cspBlockedWorkers,
+    streamCreationStacks,
     selectSession,
     clearSessions,
     getStreamData,
