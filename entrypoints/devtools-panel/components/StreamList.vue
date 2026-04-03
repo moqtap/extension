@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
-import type { StreamEntry, TrackEntry } from '../use-inspector';
+import type { StreamEntry, TrackEntry, PayloadMediaInfo } from '../use-inspector';
 
 const ROW_HEIGHT = 24; // px — must match CSS .stream-row height
 const OVERSCAN = 10;   // extra rows rendered above/below viewport
@@ -45,6 +45,7 @@ const filterText = ref('');
 
 /** The display string used for matching — mirrors what the Track column shows */
 function streamLabel(stream: StreamEntry): string {
+  if (stream.isControl) return 'Control';
   const track = resolveTrack(stream);
   if (track) return track.fullName;
   if (stream.trackAlias != null) return `alias:${stream.trackAlias}`;
@@ -140,6 +141,17 @@ function streamCount(list: StreamEntry[]): string {
   return `${list.length} stream${list.length !== 1 ? 's' : ''}`;
 }
 
+const VARIANT_LABELS: Record<string, string> = {
+  cmaf: 'CMAF',
+  loc: 'LOC',
+  fmp4: 'fMP4',
+};
+
+function mediaLabel(info: PayloadMediaInfo): string {
+  const label = VARIANT_LABELS[info.variant] ?? 'fMP4';
+  return `${label}(${info.boxes.length})`;
+}
+
 function transferSummary(list: StreamEntry[]): string {
   const tx = sumBytes(list, 'tx');
   const rx = sumBytes(list, 'rx');
@@ -166,7 +178,7 @@ function transferSummary(list: StreamEntry[]): string {
         title="Clear stream data"
         @click="emit('clear')"
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
           <circle cx="8" cy="8" r="6.5"/>
           <line x1="3.5" y1="12.5" x2="12.5" y2="3.5"/>
         </svg>
@@ -235,15 +247,28 @@ function transferSummary(list: StreamEntry[]): string {
               </span>
               <span v-if="!compact" class="col-type">
                 <span
-                  v-if="stream.contentType !== 'binary'"
-                  class="content-badge"
-                  :class="`content-${stream.contentType}`"
+                  v-if="stream.contentType === 'fmp4' && stream.mediaInfo"
+                  class="content-badge content-fmp4"
+                  :title="stream.mediaInfo.boxes.join(' \u00b7 ')"
                 >
-                  {{ stream.contentType === 'fmp4' ? 'fMP4' : 'JSON' }}
+                  {{ mediaLabel(stream.mediaInfo) }}
+                </span>
+                <span
+                  v-else-if="stream.contentType === 'fmp4'"
+                  class="content-badge content-fmp4"
+                >
+                  fMP4
+                </span>
+                <span
+                  v-else-if="stream.contentType === 'json'"
+                  class="content-badge content-json"
+                >
+                  JSON
                 </span>
               </span>
-              <span class="col-track" :title="resolveTrack(stream)?.fullName">
-                <span v-if="resolveTrack(stream)" class="track-tag">{{ resolveTrack(stream)!.fullName }}</span>
+              <span class="col-track" :title="stream.isControl ? 'MoQT control stream (bidi)' : resolveTrack(stream)?.fullName">
+                <span v-if="stream.isControl" class="track-control">MoQT Control</span>
+                <span v-else-if="resolveTrack(stream)" class="track-tag">{{ resolveTrack(stream)!.fullName }}</span>
                 <span v-else-if="stream.trackAlias != null" class="track-alias mono">alias:{{ stream.trackAlias }}</span>
                 <span v-else class="track-alias mono">#{{ stream.streamId }}</span>
               </span>
@@ -261,13 +286,8 @@ function transferSummary(list: StreamEntry[]): string {
 
     <div v-if="streams.length > 0" class="stream-footer">
       <template v-if="isFiltered">
-        <span class="footer-label">Showing</span>
         <span class="footer-value">{{ streamCount(filteredStreams) }}</span>
         <span class="footer-transfer">{{ transferSummary(filteredStreams) }}</span>
-        <span class="footer-divider" />
-        <span class="footer-label">of</span>
-        <span class="footer-total">{{ streamCount(streams) }}</span>
-        <span class="footer-transfer footer-muted">{{ transferSummary(streams) }}</span>
       </template>
       <template v-else>
         <span class="footer-value">{{ streamCount(streams) }}</span>
@@ -290,7 +310,7 @@ function transferSummary(list: StreamEntry[]): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 2px 8px 2px 4px;
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -301,7 +321,7 @@ function transferSummary(list: StreamEntry[]): string {
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 6px;
   border-radius: 3px;
   display: flex;
   align-items: center;
@@ -311,10 +331,13 @@ function transferSummary(list: StreamEntry[]): string {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+.clear-btn {
+  padding: 4px;
+}
 
 .record-dot {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: var(--text-secondary);
 }
@@ -374,7 +397,7 @@ function transferSummary(list: StreamEntry[]): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 5px 8px;
   font-size: 11px;
   color: var(--text-secondary);
   font-weight: 600;
@@ -418,7 +441,7 @@ function transferSummary(list: StreamEntry[]): string {
 
 .col-id { width: 30px; }
 .col-dir { width: 30px; text-align: center; font-weight: 600; font-size: 10px; }
-.col-type { width: 38px; text-align: center; }
+.col-type { width: 56px; text-align: center; }
 .col-track { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-status { width: 50px; }
 .col-bytes { width: 70px; text-align: right; }
@@ -439,8 +462,14 @@ function transferSummary(list: StreamEntry[]): string {
 .content-fmp4 {
   background: var(--content-fmp4-bg);
   color: var(--content-fmp4-color);
+  cursor: default;
 }
 
+.track-control {
+  font-size: 10px;
+  color: var(--text-accent);
+  font-weight: 600;
+}
 .track-tag {
   font-size: 10px;
   color: var(--text-warning);
@@ -463,7 +492,7 @@ function transferSummary(list: StreamEntry[]): string {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 10px;
+  padding: 4px 10px;
   font-size: 12px;
   color: var(--text-secondary);
   background: var(--bg-tertiary);
@@ -480,6 +509,8 @@ function transferSummary(list: StreamEntry[]): string {
 .footer-value {
   color: var(--text-primary);
   font-weight: 500;
+  font-feature-settings: 'tnum';
+  font-variant-numeric: tabular-nums;
 }
 
 .footer-transfer {

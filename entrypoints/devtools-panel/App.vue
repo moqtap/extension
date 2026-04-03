@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, computed, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useInspector } from './use-inspector';
 import type { SessionEntry } from './use-inspector';
 import { getCachedPref, savePref } from './prefs';
@@ -13,11 +13,42 @@ const bitrateTick = ref(0);
 const bitrateTickInterval = setInterval(() => { bitrateTick.value++; }, 500);
 onBeforeUnmount(() => clearInterval(bitrateTickInterval));
 
+const NARROW_THRESHOLD = 500;
 const sidebarCollapsed = ref(getCachedPref('sidebarCollapsed'));
+const sidebarManual = ref(getCachedPref('sidebarManual'));
+
+// Auto-collapse sidebar on narrow panels unless user manually overrode
+onMounted(() => {
+  if (!sidebarManual.value && window.innerWidth <= NARROW_THRESHOLD) {
+    sidebarCollapsed.value = true;
+  }
+});
+
+let resizeObserver: ResizeObserver | null = null;
+const inspectorEl = ref<HTMLElement | null>(null);
+
+onMounted(() => {
+  const el = inspectorEl.value;
+  if (!el) return;
+  resizeObserver = new ResizeObserver((entries) => {
+    if (sidebarManual.value) return;
+    const width = entries[0]?.contentRect.width ?? 0;
+    if (width > 0) {
+      sidebarCollapsed.value = width <= NARROW_THRESHOLD;
+    }
+  });
+  resizeObserver.observe(el);
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+});
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
+  sidebarManual.value = true;
   savePref('sidebarCollapsed', sidebarCollapsed.value);
+  savePref('sidebarManual', true);
 }
 
 function handleImportClick() {
@@ -92,7 +123,7 @@ function statusColor(s: SessionEntry): string {
 </script>
 
 <template>
-  <div class="inspector">
+  <div ref="inspectorEl" class="inspector">
     <div class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="sidebar-header">
         <button class="toolbar-btn collapse-btn" :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'" @click="toggleSidebar">
@@ -127,7 +158,7 @@ function statusColor(s: SessionEntry): string {
           @select="selectSession"
         />
         <a href="https://moqtap.com" target="_blank" rel="noopener" class="sidebar-footer">
-          <img src="/icon/16.png" alt="" class="footer-icon" />
+          <img src="/icon/32.png" alt="" class="footer-icon" />
           <span>moqtap.com — more tools</span>
         </a>
       </template>
@@ -148,7 +179,7 @@ function statusColor(s: SessionEntry): string {
           </div>
         </div>
         <a href="https://moqtap.com" target="_blank" rel="noopener" class="sidebar-footer compact-footer" title="moqtap.com">
-          <img src="/icon/16.png" alt="" class="footer-icon" />
+          <img src="/icon/32.png" alt="" class="footer-icon" />
         </a>
       </template>
     </div>
@@ -217,12 +248,12 @@ function statusColor(s: SessionEntry): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 4px 8px 6px;
+  padding: 6px 4px 6px 6px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-tertiary);
 }
 .sidebar.collapsed .sidebar-header {
-  padding: 8px 4px;
+  padding: 6px 4px;
 }
 
 .sidebar-title {
@@ -315,7 +346,7 @@ function statusColor(s: SessionEntry): string {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 4px 10px;
   border-top: 1px solid var(--border);
   background: var(--bg-tertiary);
   color: var(--text-secondary);
@@ -386,7 +417,7 @@ function statusColor(s: SessionEntry): string {
 }
 
 .compact-footer {
-  padding: 8px;
+  padding: 4.4px;
   justify-content: center;
 }
 .compact-footer .footer-icon {

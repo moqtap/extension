@@ -21,7 +21,7 @@ import { createExtensionRecorder } from '@/src/trace/index';
 import type { TraceRecorder } from '@/src/trace/index';
 import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14';
 import { appendStreamData, flushStream, loadStreamData, clearAllData, clearSessionData, getKnownSessionIds, getSessionTabMap, saveSessionTab, startEvictionTimer } from '@/src/storage/chunk-store';
-import { detectContentType, type StreamContentType } from '@/src/detect/content-detect';
+import { detectContentType, detectPayloadMedia, detectStreamMedia, type StreamContentType, type PayloadMediaInfo } from '@/src/detect/content-detect';
 import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing';
 
 interface TabState {
@@ -75,6 +75,8 @@ interface StreamRecord {
   byteCount: number;
   contentType?: StreamContentType;
   trackAlias?: number;
+  /** ISO BMFF media info from first object payload */
+  mediaInfo?: PayloadMediaInfo;
   firstDataAt?: number;
 }
 
@@ -488,6 +490,8 @@ function replayState(tabId: number) {
           byteCount: stream.byteCount,
           contentType: stream.contentType ?? 'binary',
           trackAlias: stream.trackAlias,
+          mediaInfo: stream.mediaInfo,
+          ...(session.controlStreamId === stream.streamId ? { isControl: true } : {}),
           firstDataAt: stream.firstDataAt,
           closed: stream.closed,
         });
@@ -690,12 +694,51 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
 
       if (!skipData) {
         // First-chunk processing: detect content type and parse stream framing
+        let detectionUpdated = false;
         if (isFirstChunk) {
           stream.contentType = detectContentType(bytes);
-          if (session.detectedDraft) {
+
+          if (session.detectedDraft && !isControlStream) {
             const framing = parseStreamFraming(bytes, session.detectedDraft);
             if (framing) {
               stream.trackAlias = framing.headerFields.trackAlias;
+
+              // Use framing boundaries for precise BMFF detection on first object payload
+              if (framing.objects.length > 0) {
+                const obj = framing.objects[0];
+                const end = Math.min(obj.payloadOffset + obj.payloadLength, bytes.length);
+                if (end > obj.payloadOffset) {
+                  const payload = bytes.subarray(obj.payloadOffset, end);
+                  const media = detectPayloadMedia(payload);
+                  if (media) {
+                    stream.contentType = 'fmp4';
+                    stream.mediaInfo = media;
+                  }
+                }
+              }
+            }
+          }
+
+          // Fallback: if no framing available, try scanning raw bytes for BMFF
+          if (!stream.mediaInfo && stream.contentType === 'fmp4') {
+            stream.mediaInfo = detectStreamMedia(bytes) ?? undefined;
+          }
+        }
+
+        // Retry detection on subsequent chunks if first chunk failed.
+        // Common cause: first chunk arrived before draft detection or was too
+        // small (just MoQT header bytes with no payload).
+        if (!isFirstChunk && stream.contentType === 'binary' && stream.byteCount < 16384) {
+          const media = detectStreamMedia(bytes);
+          if (media) {
+            stream.contentType = 'fmp4';
+            stream.mediaInfo = media;
+            detectionUpdated = true;
+          } else {
+            const ct = detectContentType(bytes);
+            if (ct !== 'binary') {
+              stream.contentType = ct;
+              detectionUpdated = true;
             }
           }
         }
@@ -711,9 +754,11 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
           streamId: message.streamId,
           direction: message.direction,
           byteLength: bytes.length,
-          ...(isFirstChunk ? {
+          ...(isFirstChunk || detectionUpdated ? {
             contentType: stream.contentType,
             trackAlias: stream.trackAlias,
+            mediaInfo: stream.mediaInfo,
+            ...(isControlStream ? { isControl: true } : {}),
           } : {}),
         };
         sendToPanel(tabId, panelMsg);

@@ -107,28 +107,6 @@ function closeStreamData() {
 <template>
   <div class="session-view">
     <div class="session-header">
-      <div class="session-info">
-        <span class="session-url mono">{{ session.url }}</span>
-        <span class="session-protocol">{{ protocolLabel(session) }}</span>
-        <span v-if="session.imported" class="session-imported">
-          Imported
-        </span>
-        <span v-else-if="session.closed" class="session-closed">
-          Closed{{ session.closedReason ? `: ${session.closedReason}` : '' }}
-        </span>
-        <button
-          v-if="session.protocol === 'moqt' && !session.imported"
-          class="export-btn"
-          title="Export .moqtrace"
-          @click="emit('exportTrace', session.sessionId)"
-        >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M8 1v9M8 10L5 7M8 10l3-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M3 12v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          .moqtrace
-        </button>
-      </div>
       <div class="tabs">
         <button
           class="tab"
@@ -150,6 +128,18 @@ function closeStreamData() {
           @click="activeTab = 'details'"
         >
           Details
+        </button>
+        <button
+          v-if="session.protocol === 'moqt' && !session.imported"
+          class="export-btn"
+          title="Export .moqtrace"
+          @click="emit('exportTrace', session.sessionId)"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 1v9M8 10L5 7M8 10l3-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3 12v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="export-label">.moqtrace</span>
         </button>
       </div>
     </div>
@@ -194,7 +184,7 @@ function closeStreamData() {
               Refresh
             </button>
             <button class="detail-close" title="Close" @click="closeStreamData">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
               </svg>
             </button>
@@ -204,6 +194,7 @@ function closeStreamData() {
             v-else-if="selectedStreamData"
             :data="selectedStreamData"
             :content-type="selectedContentType"
+            :media-info="selectedStream?.mediaInfo"
             :is-moqt="session.protocol === 'moqt'"
             :draft="session.draft"
             :tracks="session.tracks"
@@ -266,41 +257,13 @@ function closeStreamData() {
   background: var(--bg-tertiary);
 }
 
-.session-info {
-  padding: 6px 12px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.session-url {
-  color: var(--text-url);
-  font-size: 12px;
-}
-
-.session-protocol {
-  color: var(--text-accent);
-  font-size: 11px;
-}
-
-.session-closed {
-  color: var(--text-error);
-  font-size: 11px;
-}
-
-.session-imported {
-  color: var(--badge-imported-color);
-  font-size: 11px;
-  font-weight: 600;
-}
-
 .export-btn {
   margin-left: auto;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: 3px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
   color: var(--text-accent);
-  padding: 2px 10px;
+  padding: 6px 10px;
   cursor: pointer;
   font-size: 11px;
   font-family: inherit;
@@ -310,13 +273,18 @@ function closeStreamData() {
   gap: 4px;
 }
 .export-btn:hover {
-  background: var(--bg-selected);
+  background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+@media (max-width: 450px) {
+  .export-label {
+    display: none;
+  }
 }
 
 .tabs {
   display: flex;
-  border-top: 1px solid var(--border);
 }
 
 .tab {
@@ -369,20 +337,20 @@ function closeStreamData() {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 2px 8px;
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .detail-title {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-primary);
   font-weight: 600;
 }
 
 .detail-meta {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-secondary);
   flex: 1;
 }
@@ -422,7 +390,7 @@ function closeStreamData() {
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 4px;
   border-radius: 3px;
   display: flex;
   align-items: center;

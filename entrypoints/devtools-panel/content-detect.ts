@@ -1,2 +1,2 @@
 // Re-export from shared location
-export { detectContentType, type StreamContentType } from '@/src/detect/content-detect';
+export { detectContentType, detectPayloadMedia, detectStreamMedia, type StreamContentType, type PayloadMediaInfo } from '@/src/detect/content-detect';

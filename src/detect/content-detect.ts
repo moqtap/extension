@@ -8,16 +8,13 @@
  * Runs synchronously before IndexedDB write — must be fast.
  */
 
+import { scanAndDetectMedia, detectMediaInfo } from './bmff-boxes';
+import type { PayloadMediaInfo } from './bmff-boxes';
+
+export type { PayloadMediaInfo } from './bmff-boxes';
+
 /** Detected content type for a stream's payload data */
 export type StreamContentType = 'json' | 'fmp4' | 'binary';
-
-/** Known ISO BMFF (fMP4) box types — 4-byte ASCII tags */
-const BMFF_BOX_TYPES = new Set([
-  'ftyp', 'styp', 'moov', 'moof', 'mdat', 'mvhd',
-  'trak', 'mfhd', 'traf', 'sidx', 'emsg', 'mvex',
-  'trex', 'tfhd', 'tfdt', 'trun', 'mdia', 'minf',
-  'stbl', 'dinf', 'hdlr', 'free', 'skip',
-]);
 
 /** How far into the buffer to scan for signatures */
 const SCAN_LIMIT = 256;
@@ -34,9 +31,7 @@ export function detectContentType(data: Uint8Array): StreamContentType {
   const limit = Math.min(data.length, SCAN_LIMIT);
 
   // Scan for ISO BMFF box signatures within the first N bytes.
-  // A box is [4-byte size BE][4-byte ASCII type]. We look for known type tags
-  // preceded by a plausible size value.
-  if (scanForBmff(data, limit)) return 'fmp4';
+  if (scanAndDetectMedia(data, limit)) return 'fmp4';
 
   // Scan for JSON: look for { or [ that's preceded by whitespace or is at a
   // plausible payload boundary (after MoQT varint framing)
@@ -45,31 +40,24 @@ export function detectContentType(data: Uint8Array): StreamContentType {
   return 'binary';
 }
 
-function scanForBmff(data: Uint8Array, limit: number): boolean {
-  // Look for any 4-byte sequence at offset i+4 that matches a known box type,
-  // where bytes at i..i+3 form a plausible box size (big-endian uint32 >= 8)
-  for (let i = 0; i <= limit - 8; i++) {
-    // Check if bytes i+4..i+7 are a known box type (all printable ASCII lowercase/digits)
-    const t0 = data[i + 4];
-    const t1 = data[i + 5];
-    const t2 = data[i + 6];
-    const t3 = data[i + 7];
+/**
+ * Detect media info from a known object payload (framing already stripped).
+ *
+ * This is the precise path — called when MoQT framing has been parsed and
+ * we know exactly where the payload starts. No scanning needed.
+ */
+export function detectPayloadMedia(payload: Uint8Array): PayloadMediaInfo | null {
+  return detectMediaInfo(payload);
+}
 
-    // Quick filter: box types are lowercase ASCII letters (0x61-0x7a) or digits
-    if (t0 < 0x20 || t0 > 0x7e) continue;
-    if (t1 < 0x20 || t1 > 0x7e) continue;
-    if (t2 < 0x20 || t2 > 0x7e) continue;
-    if (t3 < 0x20 || t3 > 0x7e) continue;
-
-    const type = String.fromCharCode(t0, t1, t2, t3);
-    if (!BMFF_BOX_TYPES.has(type)) continue;
-
-    // Validate box size
-    const size = ((data[i] << 24) | (data[i + 1] << 16) | (data[i + 2] << 8) | data[i + 3]) >>> 0;
-    // size 0 = "to end of file", size 1 = 64-bit extended, otherwise >= 8
-    if (size === 0 || size === 1 || size >= 8) return true;
-  }
-  return false;
+/**
+ * Detect media info by scanning raw stream bytes (framing boundaries unknown).
+ *
+ * Fallback path when MoQT framing isn't available. Scans within the first
+ * SCAN_LIMIT bytes for a valid BMFF box sequence.
+ */
+export function detectStreamMedia(data: Uint8Array): PayloadMediaInfo | null {
+  return scanAndDetectMedia(data, SCAN_LIMIT);
 }
 
 function scanForJson(data: Uint8Array, limit: number): boolean {

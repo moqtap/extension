@@ -13,7 +13,7 @@
  */
 
 import type { DetectionResult } from '../detect/draft-detect';
-import type { StreamContentType } from '../detect/content-detect';
+import type { StreamContentType, PayloadMediaInfo } from '../detect/content-detect';
 
 // ─── Content -> Background messages ─────────────────────────────────
 
@@ -157,6 +157,10 @@ export interface PanelStreamDataMsg {
   contentType?: StreamContentType;
   /** MoQT trackAlias from stream framing header (first chunk only, if MoQT) */
   trackAlias?: number;
+  /** ISO BMFF media info from first object payload (first chunk only, if fMP4) */
+  mediaInfo?: PayloadMediaInfo;
+  /** True when this stream is the MoQT bidirectional control stream */
+  isControl?: boolean;
 }
 
 /**
@@ -171,6 +175,10 @@ export interface PanelStreamInfoMsg {
   byteCount: number;
   contentType: StreamContentType;
   trackAlias?: number;
+  /** ISO BMFF media info from first object payload (if fMP4) */
+  mediaInfo?: PayloadMediaInfo;
+  /** True when this stream is the MoQT bidirectional control stream */
+  isControl?: boolean;
   firstDataAt?: number;
   closed: boolean;
 }

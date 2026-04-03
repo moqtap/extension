@@ -2,14 +2,17 @@
 import { ref, computed, watch } from 'vue';
 import HexViewer from './HexViewer.vue';
 import JsonTree from './JsonTree.vue';
-import type { StreamContentType, TrackEntry } from '../use-inspector';
+import type { StreamContentType, TrackEntry, PayloadMediaInfo } from '../use-inspector';
 import { parseStreamFraming, extractAllPayloads } from '../stream-framing';
 import type { HeaderTag } from '../stream-framing';
 import { getCachedPref, savePref } from '../prefs';
+import { detectMediaInfo } from '@/src/detect/bmff-boxes';
 
 const props = defineProps<{
   data: Uint8Array;
   contentType: StreamContentType;
+  /** Pre-computed media info from background first-chunk detection */
+  mediaInfo?: PayloadMediaInfo;
   /** Whether this stream belongs to a MoQT session (enables framing parsing) */
   isMoqt?: boolean;
   /** Draft version string for draft-specific parsing (e.g. '14') */
@@ -58,6 +61,60 @@ const resolvedTrack = computed((): TrackEntry | null => {
   return null;
 });
 
+
+/** Variant display labels */
+const VARIANT_LABELS: Record<string, string> = {
+  cmaf: 'CMAF',
+  loc: 'LOC',
+  fmp4: 'fMP4',
+};
+
+/** Per-object BMFF box info — computed at display time from framing + payload */
+interface ObjectBoxInfo {
+  objectId: number;
+  boxes: string[];
+  variant: string;
+}
+
+const objectBoxes = computed((): ObjectBoxInfo[] => {
+  const f = framing.value;
+  if (!f || f.objects.length === 0) return [];
+
+  const results: ObjectBoxInfo[] = [];
+  for (const obj of f.objects) {
+    const end = Math.min(obj.payloadOffset + obj.payloadLength, props.data.length);
+    if (end <= obj.payloadOffset) continue;
+
+    const payload = props.data.subarray(obj.payloadOffset, end);
+    const media = detectMediaInfo(payload);
+    if (media) {
+      results.push({
+        objectId: obj.objectId,
+        boxes: media.boxes,
+        variant: media.variant,
+      });
+    }
+  }
+  return results;
+});
+
+/** Aggregated media info — either from background detection or computed from objects */
+const effectiveMediaInfo = computed((): PayloadMediaInfo | null => {
+  if (props.mediaInfo) return props.mediaInfo;
+
+  // Aggregate from per-object detection
+  const infos = objectBoxes.value;
+  if (infos.length === 0) return null;
+
+  const allBoxes: string[] = [];
+  let variant = infos[0].variant;
+  for (const info of infos) {
+    allBoxes.push(...info.boxes);
+    // Use the most specific variant found
+    if (info.variant === 'cmaf' || info.variant === 'loc') variant = info.variant;
+  }
+  return { variant: variant as PayloadMediaInfo['variant'], boxes: allBoxes };
+});
 
 function parseJson(): unknown | null {
   if (jsonParsed.value) return jsonData.value;
@@ -160,7 +217,12 @@ if (preferredMode === 'json' && props.contentType === 'json') {
       >
         JSON
       </button>
-      <span v-if="contentType === 'fmp4'" class="content-tag fmp4-tag">fMP4</span>
+      <span
+        v-if="effectiveMediaInfo"
+        class="content-tag fmp4-tag"
+        :title="effectiveMediaInfo.boxes.join(' \u00b7 ')"
+      >{{ VARIANT_LABELS[effectiveMediaInfo.variant] ?? 'fMP4' }}({{ effectiveMediaInfo.boxes.length }})</span>
+      <span v-else-if="contentType === 'fmp4'" class="content-tag fmp4-tag">fMP4</span>
       <span v-if="resolvedTrack" class="content-tag track-tag">{{ resolvedTrack.fullName }}</span>
       <span
         v-for="tag in framingTags"
@@ -224,6 +286,7 @@ if (preferredMode === 'json' && props.contentType === 'json') {
 .fmp4-tag {
   background: var(--content-fmp4-bg);
   color: var(--content-fmp4-color);
+  cursor: default;
 }
 .framing-tag {
   background: var(--tag-neutral-bg);

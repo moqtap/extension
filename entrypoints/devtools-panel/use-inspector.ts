@@ -12,7 +12,9 @@ import { base64ToBytes } from '@/src/messaging/types';
 // Panel no longer accesses IDB directly — data requests go through background
 import { detectContentType } from './content-detect';
 import type { StreamContentType } from './content-detect';
-export type { StreamContentType };
+import { detectMediaInfo } from '@/src/detect/bmff-boxes';
+import type { PayloadMediaInfo } from '@/src/detect/content-detect';
+export type { StreamContentType, PayloadMediaInfo };
 import { readMoqtrace, writeMoqtrace } from '@/src/trace/index';
 import type { Trace, ControlMessageEvent, StreamOpenedEvent, StreamClosedEvent, ObjectPayloadEvent } from '@/src/trace/index';
 import { buildTrace } from './build-trace';
@@ -55,6 +57,8 @@ export interface StreamEntry {
   byteCount: number;
   /** Detected content type from first chunk */
   contentType: StreamContentType;
+  /** ISO BMFF media info (variant + box types) from first object payload */
+  mediaInfo?: PayloadMediaInfo;
   /** Timestamp of first data chunk (ms) */
   firstDataAt?: number;
   /** Timestamp of most recent data chunk (ms) */
@@ -63,6 +67,8 @@ export interface StreamEntry {
   chunkCount: number;
   /** MoQT trackAlias from data stream framing header (if detected) */
   trackAlias?: number;
+  /** True when this stream is the MoQT bidirectional control stream */
+  isControl?: boolean;
 }
 
 export interface MessageEntry {
@@ -175,14 +181,18 @@ export function useInspector() {
               byteCount: 0,
               chunkCount: 0,
               contentType: msg.contentType ?? 'binary',
+              mediaInfo: msg.mediaInfo,
               firstDataAt: now,
               trackAlias: msg.trackAlias,
+              isControl: msg.isControl,
             };
             session.streams.set(msg.streamId, stream);
           } else if (msg.contentType != null) {
             // First-chunk metadata arrived (possible if stream was created by an earlier message)
             stream.contentType = msg.contentType;
+            stream.mediaInfo = msg.mediaInfo;
             stream.trackAlias = msg.trackAlias;
+            if (msg.isControl) stream.isControl = true;
           }
           stream.lastDataAt = now;
           stream.byteCount += msg.byteLength;
@@ -204,7 +214,9 @@ export function useInspector() {
             byteCount: msg.byteCount,
             chunkCount: 0, // not tracked during replay
             contentType: msg.contentType,
+            mediaInfo: msg.mediaInfo,
             trackAlias: msg.trackAlias,
+            isControl: msg.isControl,
             firstDataAt: msg.firstDataAt,
           });
           triggerUpdate();
@@ -303,7 +315,9 @@ export function useInspector() {
       case 'panel:streams-cleared': {
         const session = sessions.value.get(msg.sessionId);
         if (session) {
-          session.streams.clear();
+          for (const [id, stream] of session.streams) {
+            if (!stream.isControl) session.streams.delete(id);
+          }
           triggerUpdate();
         }
         break;
@@ -402,10 +416,13 @@ export function useInspector() {
   }
 
   function clearStreams(sessionId: string) {
-    // Optimistic update — clear streams from UI immediately
+    // Optimistic update — clear streams from UI immediately,
+    // but preserve the control stream (it's always-open and unrecoverable)
     const session = sessions.value.get(sessionId);
     if (session) {
-      session.streams.clear();
+      for (const [id, stream] of session.streams) {
+        if (!stream.isControl) session.streams.delete(id);
+      }
       triggerUpdate();
     }
     if (!port) return;
@@ -568,7 +585,13 @@ export function useInspector() {
         const chunk = payloads[i];
         merged.set(chunk, offset);
         offset += chunk.length;
-        if (i === 0) stream.contentType = detectContentType(chunk);
+        if (i === 0) {
+          stream.contentType = detectContentType(chunk);
+          if (stream.contentType === 'fmp4') {
+            // Imported payloads are raw object data — detect BMFF boxes directly
+            stream.mediaInfo = detectMediaInfo(chunk) ?? undefined;
+          }
+        }
       }
       stream.byteCount = totalLen;
       importedStreamData.set(`${sessionId}:${streamId}`, merged);

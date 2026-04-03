@@ -103,7 +103,7 @@ function toggle() {
 
 .json-line {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   cursor: default;
 }
 .json-line:hover {
@@ -127,6 +127,7 @@ function toggle() {
 }
 .json-colon {
   color: var(--text-secondary);
+  white-space-collapse: preserve;
 }
 
 .json-string { color: var(--text-success); word-break: break-all; }

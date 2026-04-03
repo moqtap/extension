@@ -11,6 +11,8 @@ interface Prefs {
   payloadViewMode: 'decoded' | 'hex' | 'stack';
   streamViewMode: 'hex' | 'json';
   sidebarCollapsed: boolean;
+  /** True once the user has manually toggled the sidebar (overrides auto-collapse) */
+  sidebarManual: boolean;
   trackActiveOnly: boolean;
   trackGroupByNs: boolean;
   trackDirectionFilter: DirectionFilter;
@@ -20,6 +22,7 @@ const defaults: Prefs = {
   payloadViewMode: 'decoded',
   streamViewMode: 'json',
   sidebarCollapsed: false,
+  sidebarManual: false,
   trackActiveOnly: false,
   trackGroupByNs: false,
   trackDirectionFilter: 'all',
