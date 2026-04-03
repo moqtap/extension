@@ -1,7 +1,13 @@
 <script lang="ts" setup>
+import { ref, computed, onBeforeUnmount } from 'vue';
 import type { SessionEntry } from '../use-inspector';
 
-defineProps<{
+/* Reactive tick that drives the bitrate decay animation. */
+const bitrateTick = ref(0);
+const bitrateTickInterval = setInterval(() => { bitrateTick.value++; }, 500);
+onBeforeUnmount(() => clearInterval(bitrateTickInterval));
+
+const props = defineProps<{
   sessions: SessionEntry[];
   selectedId: string | null;
 }>();
@@ -40,54 +46,50 @@ function protocolBadge(session: SessionEntry): { label: string; class: string } 
   }
 }
 
-function totalBytes(session: SessionEntry): number {
-  let total = 0;
-  for (const stream of session.streams.values()) total += stream.byteCount;
-  return total;
-}
-
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * Bitrate display with natural decay.
- *
- * Computes the "active" bitrate over the period firstDataAt → lastDataAt,
- * then applies a linear decay factor based on how long ago the last data
- * arrived. After DECAY_WINDOW_MS of silence the displayed rate reaches 0.
- */
-const DECAY_WINDOW_MS = 5_000; // 5 seconds of silence → 0 bps
+const DECAY_WINDOW_MS = 5_000;
 
-function formatBitrate(session: SessionEntry): string | null {
-  if (session.closed || session.imported) return null;
-  let totalBytes = 0;
-  let earliest = Infinity;
-  let latest = 0;
-  for (const stream of session.streams.values()) {
-    totalBytes += stream.byteCount;
-    if (stream.firstDataAt && stream.firstDataAt < earliest) earliest = stream.firstDataAt;
-    if (stream.lastDataAt && stream.lastDataAt > latest) latest = stream.lastDataAt;
-  }
-  if (totalBytes === 0 || !isFinite(earliest) || latest === 0) return null;
-
-  // Active-period bitrate: bytes over the span in which data actually flowed
-  const activeSec = Math.max((latest - earliest) / 1000, 1);
-  const activeBps = (totalBytes * 8) / activeSec;
-
-  // Linear decay: 1.0 while data is flowing → 0.0 after DECAY_WINDOW_MS of silence
-  const silenceMs = Date.now() - latest;
-  const decay = Math.max(0, 1 - silenceMs / DECAY_WINDOW_MS);
-  if (decay === 0) return null;
-
-  const bitsPerSec = activeBps * decay;
-  if (bitsPerSec >= 1_000_000) return `${(bitsPerSec / 1_000_000).toFixed(1)} Mbps`;
-  if (bitsPerSec >= 1_000) return `${(bitsPerSec / 1_000).toFixed(0)} kbps`;
-  if (bitsPerSec >= 1) return `${Math.round(bitsPerSec)} bps`;
-  return null;
+interface SessionStats {
+  totalBytes: number;
+  bitrate: string | null;
 }
+
+/** Pre-compute per-session stats once per tick, avoiding double iteration in template */
+const sessionStats = computed(() => {
+  void bitrateTick.value; // reactive dependency — forces re-eval during decay
+  const map = new Map<string, SessionStats>();
+  for (const session of props.sessions) {
+    let bytes = 0;
+    let earliest = Infinity;
+    let latest = 0;
+    for (const stream of session.streams.values()) {
+      bytes += stream.byteCount;
+      if (stream.firstDataAt && stream.firstDataAt < earliest) earliest = stream.firstDataAt;
+      if (stream.lastDataAt && stream.lastDataAt > latest) latest = stream.lastDataAt;
+    }
+
+    let bitrate: string | null = null;
+    if (!session.closed && !session.imported && bytes > 0 && isFinite(earliest) && latest > 0) {
+      const activeSec = Math.max((latest - earliest) / 1000, 1);
+      const activeBps = (bytes * 8) / activeSec;
+      const decay = Math.max(0, 1 - (Date.now() - latest) / DECAY_WINDOW_MS);
+      if (decay > 0) {
+        const bps = activeBps * decay;
+        if (bps >= 1_000_000) bitrate = `${(bps / 1_000_000).toFixed(1)} Mbps`;
+        else if (bps >= 1_000) bitrate = `${(bps / 1_000).toFixed(0)} kbps`;
+        else if (bps >= 1) bitrate = `${Math.round(bps)} bps`;
+      }
+    }
+
+    map.set(session.sessionId, { totalBytes: bytes, bitrate });
+  }
+  return map;
+});
 </script>
 
 <template>
@@ -116,8 +118,8 @@ function formatBitrate(session: SessionEntry): string | null {
         >
           {{ session.closed ? 'closed' : 'open' }}
         </span>
-        <span v-if="formatBitrate(session)" class="data-stat bitrate">{{ formatBitrate(session) }}</span>
-        <span v-else-if="(session.closed || session.imported) && totalBytes(session) > 0" class="data-stat total-data">{{ formatBytes(totalBytes(session)) }}</span>
+        <span v-if="sessionStats.get(session.sessionId)?.bitrate" class="data-stat bitrate">{{ sessionStats.get(session.sessionId)!.bitrate }}</span>
+        <span v-else-if="(session.closed || session.imported) && sessionStats.get(session.sessionId)!.totalBytes > 0" class="data-stat total-data">{{ formatBytes(sessionStats.get(session.sessionId)!.totalBytes) }}</span>
       </div>
       <div class="connection-url mono" :title="session.url">
         {{ formatUrl(session.url) }}

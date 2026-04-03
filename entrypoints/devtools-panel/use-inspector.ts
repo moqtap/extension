@@ -6,7 +6,7 @@
  * sessions without OOM. Only metadata stays in memory.
  */
 
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, triggerRef, onMounted, onUnmounted } from 'vue';
 import type { BackgroundToPanelMsg } from '@/src/messaging/types';
 import { base64ToBytes } from '@/src/messaging/types';
 // Panel no longer accesses IDB directly — data requests go through background
@@ -30,6 +30,8 @@ export interface SessionEntry {
   tracks: Map<string, TrackEntry>;
   /** True when session was loaded from an imported .moqtrace file */
   imported?: boolean;
+  /** Whether stream data recording is active (default true) */
+  streamRecording?: boolean;
 }
 
 export interface TrackEntry {
@@ -156,7 +158,13 @@ export function useInspector() {
       case 'panel:stream:data': {
         // Metadata-only: background has already written bytes to IndexedDB
         const session = sessions.value.get(msg.sessionId);
-        if (session) {
+        if (!session) break;
+        // When recording is paused, ignore stream data notifications
+        // (background will also stop sending them once it processes the toggle,
+        // but this guards against in-flight messages)
+        if (session.streamRecording === false) break;
+
+        {
           let stream = session.streams.get(msg.streamId);
           const now = Date.now();
           if (!stream) {
@@ -179,7 +187,6 @@ export function useInspector() {
           stream.lastDataAt = now;
           stream.byteCount += msg.byteLength;
           stream.chunkCount++;
-
 
           triggerUpdate();
         }
@@ -284,16 +291,35 @@ export function useInspector() {
         break;
       }
 
+      case 'panel:stream-recording': {
+        const session = sessions.value.get(msg.sessionId);
+        if (session) {
+          session.streamRecording = msg.recording;
+          triggerUpdate();
+        }
+        break;
+      }
+
+      case 'panel:streams-cleared': {
+        const session = sessions.value.get(msg.sessionId);
+        if (session) {
+          session.streams.clear();
+          triggerUpdate();
+        }
+        break;
+      }
+
     }
   }
 
-  // Force reactivity trigger since we mutate objects in place
+  // Force reactivity trigger since we mutate objects in place.
+  // Uses shallowRef + triggerRef to avoid copying the entire Map.
   let updateTimer: ReturnType<typeof setTimeout> | null = null;
   function triggerUpdate() {
     if (updateTimer) return;
     updateTimer = setTimeout(() => {
       updateTimer = null;
-      sessions.value = new Map(sessions.value);
+      triggerRef(sessions);
     }, 16); // batch at ~60fps
   }
 
@@ -361,6 +387,30 @@ export function useInspector() {
       });
       port!.postMessage({ type: 'panel:request-stream-data', tabId, sessionId, streamId, requestId });
     });
+  }
+
+  function setStreamRecording(sessionId: string, recording: boolean) {
+    // Optimistic update — apply immediately so UI responds instantly
+    const session = sessions.value.get(sessionId);
+    if (session) {
+      session.streamRecording = recording;
+      triggerUpdate();
+    }
+    if (!port) return;
+    const tabId = chrome.devtools.inspectedWindow.tabId;
+    port.postMessage({ type: 'panel:set-stream-recording', tabId, sessionId, recording });
+  }
+
+  function clearStreams(sessionId: string) {
+    // Optimistic update — clear streams from UI immediately
+    const session = sessions.value.get(sessionId);
+    if (session) {
+      session.streams.clear();
+      triggerUpdate();
+    }
+    if (!port) return;
+    const tabId = chrome.devtools.inspectedWindow.tabId;
+    port.postMessage({ type: 'panel:clear-streams', tabId, sessionId });
   }
 
   async function exportTrace(sessionId: string) {
@@ -593,5 +643,7 @@ export function useInspector() {
     getStreamData,
     exportTrace,
     importTrace,
+    setStreamRecording,
+    clearStreams,
   };
 }

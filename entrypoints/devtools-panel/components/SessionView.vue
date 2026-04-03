@@ -9,6 +9,8 @@ import TrackList from './TrackList.vue';
 const props = defineProps<{
   session: SessionEntry;
   getStreamData: (sessionId: string, streamId: number) => Promise<Uint8Array | null>;
+  setStreamRecording: (sessionId: string, recording: boolean) => void;
+  clearStreams: (sessionId: string) => void;
 }>();
 
 const emit = defineEmits<{
@@ -120,7 +122,11 @@ function closeStreamData() {
           title="Export .moqtrace"
           @click="emit('exportTrace', session.sessionId)"
         >
-          Export .moqtrace
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 1v9M8 10L5 7M8 10l3-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3 12v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          .moqtrace
         </button>
       </div>
       <div class="tabs">
@@ -164,7 +170,10 @@ function closeStreamData() {
           :selected-id="selectedStreamId"
           :tracks="session.tracks"
           :compact="selectedStreamId != null"
+          :recording="session.streamRecording !== false"
           @inspect="showStreamData"
+          @toggle-recording="props.setStreamRecording(session.sessionId, $event)"
+          @clear="props.clearStreams(session.sessionId)"
         />
         <div v-if="selectedStreamId != null" class="stream-detail">
           <div class="detail-header">
@@ -296,6 +305,9 @@ function closeStreamData() {
   font-size: 11px;
   font-family: inherit;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .export-btn:hover {
   background: var(--bg-selected);
@@ -329,16 +341,19 @@ function closeStreamData() {
 .session-body {
   flex: 1;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── Streams split panel ───────────────────────────────────────── */
 
 .streams-panel {
   display: flex;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 /* When detail panel is open, constrain the stream list to its min-width */
-.streams-panel.has-detail :deep(.stream-list) {
+.streams-panel.has-detail :deep(.stream-list-wrapper) {
   flex: 0 0 auto;
 }
 
@@ -442,7 +457,8 @@ function closeStreamData() {
 .details-panel {
   padding: 12px;
   overflow-y: auto;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 .details-table {

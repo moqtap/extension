@@ -1,12 +1,17 @@
 <script lang="ts" setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onBeforeUnmount } from 'vue';
 import { useInspector } from './use-inspector';
 import type { SessionEntry } from './use-inspector';
 import { getCachedPref, savePref } from './prefs';
 import ConnectionList from './components/ConnectionList.vue';
 import SessionView from './components/SessionView.vue';
 
-const { sessions, selectedSessionId, midSessionOpen, cspBlockedWorkers, selectSession, clearSessions, getStreamData, exportTrace, importTrace } = useInspector();
+const { sessions, selectedSessionId, midSessionOpen, cspBlockedWorkers, selectSession, clearSessions, getStreamData, exportTrace, importTrace, setStreamRecording, clearStreams } = useInspector();
+
+/* Reactive tick that drives the bitrate decay animation. */
+const bitrateTick = ref(0);
+const bitrateTickInterval = setInterval(() => { bitrateTick.value++; }, 500);
+onBeforeUnmount(() => clearInterval(bitrateTickInterval));
 
 const sidebarCollapsed = ref(getCachedPref('sidebarCollapsed'));
 
@@ -49,6 +54,7 @@ function compactHost(url: string): string {
 const COMPACT_DECAY_MS = 5_000;
 
 function compactBitrate(s: SessionEntry): string | null {
+  void bitrateTick.value; // reactive dependency — forces re-eval during decay
   if (s.closed || s.imported) return null;
   let total = 0;
   let earliest = Infinity;
@@ -91,7 +97,9 @@ function statusColor(s: SessionEntry): string {
       <div class="sidebar-header">
         <button class="toolbar-btn collapse-btn" :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'" @click="toggleSidebar">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" :class="{ 'chevron-collapsed': sidebarCollapsed }">
-            <path d="M10.3 2.3L4.6 8l5.7 5.7 1.1-1.1L6.8 8l4.6-4.6z"/>
+            <rect x="1" y="2" width="14" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <line x1="6" y1="2" x2="6" y2="14" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M10.5 6.5L8.5 8l2 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
         <template v-if="!sidebarCollapsed">
@@ -103,8 +111,9 @@ function statusColor(s: SessionEntry): string {
               </svg>
             </button>
             <button v-if="sessionList.length > 0" class="toolbar-btn" title="Clear" @click="clearSessions">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm3.5 9.5l-1 1L8 9l-2.5 2.5-1-1L7 8 4.5 5.5l1-1L8 7l2.5-2.5 1 1L9 8l2.5 2.5z"/>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
+                <circle cx="8" cy="8" r="6.5"/>
+                <line x1="3.5" y1="12.5" x2="12.5" y2="3.5"/>
               </svg>
             </button>
           </div>
@@ -171,6 +180,8 @@ function statusColor(s: SessionEntry): string {
         v-if="selectedSession"
         :session="selectedSession"
         :get-stream-data="getStreamData"
+        :set-stream-recording="setStreamRecording"
+        :clear-streams="clearStreams"
         @export-trace="exportTrace"
       />
       <div v-else class="empty-state">
@@ -206,12 +217,12 @@ function statusColor(s: SessionEntry): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 4px 6px 6px;
+  padding: 8px 4px 8px 6px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-tertiary);
 }
 .sidebar.collapsed .sidebar-header {
-  padding: 6px 4px;
+  padding: 8px 4px;
 }
 
 .sidebar-title {
@@ -232,7 +243,7 @@ function statusColor(s: SessionEntry): string {
   transition: transform 0.15s ease;
 }
 .chevron-collapsed {
-  transform: rotate(180deg);
+  transform: scaleX(-1);
 }
 
 .toolbar-btn {
@@ -304,7 +315,7 @@ function statusColor(s: SessionEntry): string {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 10px;
+  padding: 6px 10px;
   border-top: 1px solid var(--border);
   background: var(--bg-tertiary);
   color: var(--text-secondary);

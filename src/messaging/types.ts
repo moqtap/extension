@@ -218,6 +218,17 @@ export interface PanelStreamDataResponseMsg {
   data: string | null;
 }
 
+export interface PanelStreamRecordingMsg {
+  type: 'panel:stream-recording';
+  sessionId: string;
+  recording: boolean;
+}
+
+export interface PanelStreamsClearedMsg {
+  type: 'panel:streams-cleared';
+  sessionId: string;
+}
+
 /** Messages sent from background to DevTools panel */
 export type BackgroundToPanelMsg =
   | PanelSessionOpenedMsg
@@ -232,7 +243,9 @@ export type BackgroundToPanelMsg =
   | PanelTrackUpdateMsg
   | PanelWorkerCspWarningMsg
   | PanelStreamDataResponseMsg
-  | PanelStreamCreatedMsg;
+  | PanelStreamCreatedMsg
+  | PanelStreamRecordingMsg
+  | PanelStreamsClearedMsg;
 
 // ─── Background -> Bridge messages ───────────────────────────────────
 
@@ -270,13 +283,28 @@ export interface PanelRequestStreamDataMsg {
   requestId: number;
 }
 
+export interface PanelSetStreamRecordingMsg {
+  type: 'panel:set-stream-recording';
+  tabId: number;
+  sessionId: string;
+  recording: boolean;
+}
+
+export interface PanelClearStreamsMsg {
+  type: 'panel:clear-streams';
+  tabId: number;
+  sessionId: string;
+}
+
 /** Messages sent from DevTools panel to background */
 export type PanelToBackgroundMsg =
   | PanelConnectMsg
   | PanelDisconnectMsg
   | PanelRequestStateMsg
   | PanelClearMsg
-  | PanelRequestStreamDataMsg;
+  | PanelRequestStreamDataMsg
+  | PanelSetStreamRecordingMsg
+  | PanelClearStreamsMsg;
 
 // ─── Helpers ────────────────────────────────────────────────────────
 

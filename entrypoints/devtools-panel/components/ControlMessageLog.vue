@@ -33,7 +33,7 @@ function formatTime(ts: number): string {
     </div>
     <div
       v-for="(msg, i) in messages"
-      :key="i"
+      :key="`${msg.timestamp}-${i}`"
       class="message-row"
       :class="{ expanded: expandedIndex === i }"
     >
@@ -58,7 +58,8 @@ function formatTime(ts: number): string {
 
 <style scoped>
 .message-log {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 

@@ -5,16 +5,24 @@
 
 const STORAGE_KEY = 'moqtap-prefs';
 
+export type DirectionFilter = 'all' | 'tx' | 'rx';
+
 interface Prefs {
-  payloadViewMode: 'decoded' | 'hex';
+  payloadViewMode: 'decoded' | 'hex' | 'stack';
   streamViewMode: 'hex' | 'json';
   sidebarCollapsed: boolean;
+  trackActiveOnly: boolean;
+  trackGroupByNs: boolean;
+  trackDirectionFilter: DirectionFilter;
 }
 
 const defaults: Prefs = {
   payloadViewMode: 'decoded',
   streamViewMode: 'json',
   sidebarCollapsed: false,
+  trackActiveOnly: false,
+  trackGroupByNs: false,
+  trackDirectionFilter: 'all',
 };
 
 let cached: Prefs | null = null;

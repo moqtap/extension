@@ -44,12 +44,18 @@ interface SessionRecord {
   detectionAttempted: boolean;
   /** Stream ID identified as the control stream (once detected) */
   controlStreamId: number | null;
+  /** Reassembly buffer for partial control messages that span chunks */
+  controlRemainder: Uint8Array | null;
   /** Trace recorder for this session (only if MoQT detected) */
   recorder: TraceRecorder | null;
   /** History of decoded control messages for replay */
   controlMessages: ControlMessageRecord[];
   /** Track registry: subscribeId -> track info */
   tracks: Map<string, TrackRecord>;
+  /** Whether stream data recording is active (default true) */
+  streamRecording: boolean;
+  /** Stream IDs whose data should be discarded (cleared while still open) */
+  discardedStreamIds: Set<number>;
 }
 
 interface TrackRecord {
@@ -245,58 +251,87 @@ function tryDecodeBuffered(
       break;
     }
   }
+  // Save leftover bytes for reassembly with the next chunk
+  session.controlRemainder = offset < buf.length ? buf.subarray(offset) : null;
   return trackUpdates;
 }
 
-/** Try to decode a single chunk of control stream data.
- *  Returns a track update if the message is track-related. */
-function tryDecodeStreamData(
+/** Decode all complete control messages from a chunk, with reassembly
+ *  for partial messages that span chunks.  Returns decoded records and
+ *  track updates so the caller can forward them to the panel. */
+function decodeControlChunk(
   session: SessionRecord,
   data: Uint8Array,
   direction: 'tx' | 'rx',
   stack?: string,
-): TrackRecord | null {
-  if (!session.detectedDraft) return null;
+): { records: ControlMessageRecord[]; trackUpdates: TrackRecord[] } {
+  const records: ControlMessageRecord[] = [];
+  const trackUpdates: TrackRecord[] = [];
+  if (!session.detectedDraft) return { records, trackUpdates };
 
-  try {
-    const result = decodeControlMessage(data, session.detectedDraft);
-    if (result.ok) {
-      const msg = result.value;
-      const msgType = ('type' in msg && typeof msg.type === 'string')
-        ? msg.type
-        : 'unknown';
-      const record: ControlMessageRecord = {
-        direction,
-        timestamp: Date.now(),
-        decoded: jsonSafe(msg),
-        messageType: msgType,
-        raw: bytesToBase64(data),
-        stack: direction === 'tx' ? stack : undefined,
-      };
-      session.controlMessages.push(record);
-
-      // Extract track info
-      const trackUpdate = extractTrackInfo(session, msg as unknown as Record<string, unknown>, direction);
-
-      // Record in trace
-      if (session.recorder) {
-        const wireId = MESSAGE_ID_MAP.get(msgType);
-        session.recorder.record({
-          type: 'control',
-          seq: session.controlMessages.length - 1,
-          timestamp: Math.round(performance.now() * 1000),
-          direction: direction === 'tx' ? 0 : 1,
-          messageType: wireId != null ? Number(wireId) : 0,
-          message: msg as unknown as Record<string, unknown>,
-        });
-      }
-
-      return trackUpdate;
-    }
-  } catch {
-    // Decode failed — not a complete message or not control stream data
+  // Prepend any leftover bytes from the previous chunk
+  let buf: Uint8Array;
+  if (session.controlRemainder && session.controlRemainder.length > 0) {
+    buf = new Uint8Array(session.controlRemainder.length + data.length);
+    buf.set(session.controlRemainder);
+    buf.set(data, session.controlRemainder.length);
+    session.controlRemainder = null;
+  } else {
+    buf = data;
   }
-  return null;
+
+  let offset = 0;
+  while (offset < buf.length) {
+    const remaining = buf.subarray(offset);
+    if (remaining.length < 2) break;
+
+    try {
+      const result = decodeControlMessage(remaining, session.detectedDraft);
+      if (result.ok) {
+        const msg = result.value;
+        const msgType = ('type' in msg && typeof msg.type === 'string')
+          ? msg.type
+          : 'unknown';
+        const raw = remaining.subarray(0, result.bytesRead);
+        const record: ControlMessageRecord = {
+          direction,
+          timestamp: Date.now(),
+          decoded: jsonSafe(msg),
+          messageType: msgType,
+          raw: bytesToBase64(raw),
+          stack: direction === 'tx' ? stack : undefined,
+        };
+        session.controlMessages.push(record);
+        records.push(record);
+
+        const trackUpdate = extractTrackInfo(session, msg as unknown as Record<string, unknown>, direction);
+        if (trackUpdate) trackUpdates.push(trackUpdate);
+
+        if (session.recorder) {
+          const wireId = MESSAGE_ID_MAP.get(msgType);
+          session.recorder.record({
+            type: 'control',
+            seq: session.controlMessages.length - 1,
+            timestamp: Math.round(performance.now() * 1000),
+            direction: direction === 'tx' ? 0 : 1,
+            messageType: wireId != null ? Number(wireId) : 0,
+            message: msg as unknown as Record<string, unknown>,
+          });
+        }
+
+        offset += result.bytesRead;
+      } else {
+        break; // incomplete message, wait for more data
+      }
+    } catch {
+      break;
+    }
+  }
+
+  // Save leftover bytes for reassembly with the next chunk
+  session.controlRemainder = offset < buf.length ? buf.subarray(offset) : null;
+
+  return { records, trackUpdates };
 }
 
 /**
@@ -433,6 +468,15 @@ function replayState(tabId: number) {
       sendTrackUpdate(tabId, session.sessionId, track);
     }
 
+    // Replay stream recording state
+    if (!session.streamRecording) {
+      sendToPanel(tabId, {
+        type: 'panel:stream-recording',
+        sessionId: session.sessionId,
+        recording: false,
+      });
+    }
+
     // Replay stream metadata (data is in memory buffer + IDB pages)
     for (const stream of session.streams.values()) {
       if (stream.byteCount > 0) {
@@ -536,9 +580,12 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
         streamBuffers: new Map(),
         detectionAttempted: false,
         controlStreamId: null,
+        controlRemainder: null,
         recorder: null,
         controlMessages: [],
         tracks: new Map(),
+        streamRecording: true,
+        discardedStreamIds: new Set(),
       };
       state.sessions.set(message.sessionId, record);
 
@@ -616,61 +663,69 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
           }
         }
       } else if (session.detectedDraft && message.streamId === session.controlStreamId) {
-        const trackUpdate = tryDecodeStreamData(session, bytes, message.direction, message.stack);
-        const lastMsg = session.controlMessages[session.controlMessages.length - 1];
-        if (lastMsg) {
+        const { records, trackUpdates } = decodeControlChunk(session, bytes, message.direction, message.stack);
+        for (const rec of records) {
           sendToPanel(tabId, {
             type: 'panel:control-message',
             sessionId: message.sessionId,
-            direction: lastMsg.direction,
-            timestamp: lastMsg.timestamp,
-            decoded: lastMsg.decoded,
-            messageType: lastMsg.messageType,
-            raw: lastMsg.raw,
-            stack: lastMsg.stack,
+            direction: rec.direction,
+            timestamp: rec.timestamp,
+            decoded: rec.decoded,
+            messageType: rec.messageType,
+            raw: rec.raw,
+            stack: rec.stack,
           });
         }
-        if (trackUpdate) {
-          sendTrackUpdate(tabId, message.sessionId, trackUpdate);
+        for (const track of trackUpdates) {
+          sendTrackUpdate(tabId, message.sessionId, track);
         }
       }
 
-      // First-chunk processing: detect content type and parse stream framing
-      if (isFirstChunk) {
-        stream.contentType = detectContentType(bytes);
-        if (session.detectedDraft) {
-          const framing = parseStreamFraming(bytes, session.detectedDraft);
-          if (framing) {
-            stream.trackAlias = framing.headerFields.trackAlias;
+      // Skip data processing for non-control streams when recording is
+      // paused or the stream has been discarded (cleared while still open).
+      const isControlStream = session.controlStreamId != null && message.streamId === session.controlStreamId;
+      const skipData = !isControlStream && (
+        !session.streamRecording || session.discardedStreamIds.has(message.streamId)
+      );
+
+      if (!skipData) {
+        // First-chunk processing: detect content type and parse stream framing
+        if (isFirstChunk) {
+          stream.contentType = detectContentType(bytes);
+          if (session.detectedDraft) {
+            const framing = parseStreamFraming(bytes, session.detectedDraft);
+            if (framing) {
+              stream.trackAlias = framing.headerFields.trackAlias;
+            }
           }
         }
-      }
 
-      // Buffer in memory, auto-flush to IDB in 1MB pages
-      appendStreamData(message.sessionId, message.streamId, bytes);
-      stream.byteCount += bytes.length;
+        // Buffer in memory, auto-flush to IDB in 1MB pages
+        appendStreamData(message.sessionId, message.streamId, bytes);
+        stream.byteCount += bytes.length;
 
-      // Send metadata-only notification to panel
-      const panelMsg: BackgroundToPanelMsg = {
-        type: 'panel:stream:data',
-        sessionId: message.sessionId,
-        streamId: message.streamId,
-        direction: message.direction,
-        byteLength: bytes.length,
-        ...(isFirstChunk ? {
-          contentType: stream.contentType,
-          trackAlias: stream.trackAlias,
-        } : {}),
-      };
-      sendToPanel(tabId, panelMsg);
+        // Send metadata-only notification to panel
+        const panelMsg: BackgroundToPanelMsg = {
+          type: 'panel:stream:data',
+          sessionId: message.sessionId,
+          streamId: message.streamId,
+          direction: message.direction,
+          byteLength: bytes.length,
+          ...(isFirstChunk ? {
+            contentType: stream.contentType,
+            trackAlias: stream.trackAlias,
+          } : {}),
+        };
+        sendToPanel(tabId, panelMsg);
 
-      // Record stream data in trace
-      if (session.recorder) {
-        session.recorder.recordStreamOpened(
-          BigInt(message.streamId),
-          message.direction === 'tx' ? 0 : 1,
-          0, // bidi by default, we don't distinguish yet
-        );
+        // Record stream data in trace
+        if (session.recorder) {
+          session.recorder.recordStreamOpened(
+            BigInt(message.streamId),
+            message.direction === 'tx' ? 0 : 1,
+            0, // bidi by default, we don't distinguish yet
+          );
+        }
       }
 
       break;
@@ -692,6 +747,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
       if (session) {
         const stream = session.streams.get(message.streamId);
         if (stream) stream.closed = true;
+        session.discardedStreamIds.delete(message.streamId);
         // Flush remaining buffered data to IDB (data stays accessible for traces)
         flushStream(message.sessionId, message.streamId);
 
@@ -713,6 +769,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
       if (session) {
         const stream = session.streams.get(message.streamId);
         if (stream) stream.closed = true;
+        session.discardedStreamIds.delete(message.streamId);
         // Flush remaining buffered data to IDB (data stays accessible for traces)
         flushStream(message.sessionId, message.streamId);
 
@@ -902,19 +959,60 @@ export default defineBackground(() => {
         }
 
         case 'panel:clear':
-          // Panel is clearing its state — clear IDB and in-memory state
+          // Panel is clearing its state — clear IDB and in-memory state.
+          // Drop all session records so future events from the content script
+          // (which is still running) are silently ignored.
           clearAllData().catch(() => {});
           if (connectedTabId !== null) {
             const state = tabStates.get(connectedTabId);
             if (state) {
-              for (const session of state.sessions.values()) {
-                for (const stream of session.streams.values()) {
-                  stream.byteCount = 0;
-                }
-              }
+              state.sessions.clear();
             }
           }
           break;
+
+        case 'panel:set-stream-recording': {
+          if (connectedTabId === null) break;
+          const state = tabStates.get(connectedTabId);
+          const session = state?.sessions.get(msg.sessionId);
+          if (session) {
+            session.streamRecording = msg.recording;
+            sendToPanel(connectedTabId, {
+              type: 'panel:stream-recording',
+              sessionId: msg.sessionId,
+              recording: msg.recording,
+            });
+          }
+          break;
+        }
+
+        case 'panel:clear-streams': {
+          if (connectedTabId === null) break;
+          const state = tabStates.get(connectedTabId);
+          const session = state?.sessions.get(msg.sessionId);
+          if (session) {
+            // Mark open non-control streams as discarded
+            for (const stream of session.streams.values()) {
+              if (!stream.closed && stream.streamId !== session.controlStreamId) {
+                session.discardedStreamIds.add(stream.streamId);
+              }
+            }
+            // Remove all stream records (except control stream)
+            for (const streamId of [...session.streams.keys()]) {
+              if (streamId !== session.controlStreamId) {
+                session.streams.delete(streamId);
+              }
+            }
+            // Clear stored stream data from memory and IDB
+            clearSessionData(msg.sessionId).catch(() => {});
+
+            sendToPanel(connectedTabId, {
+              type: 'panel:streams-cleared',
+              sessionId: msg.sessionId,
+            });
+          }
+          break;
+        }
       }
     });
 
