@@ -23,10 +23,16 @@
   --badge-closed-bg: #3a1b1b;
   --badge-imported-bg: #1b2a3a;
   --badge-imported-color: #6ba3d6;
+  --badge-iframe-bg: #2a2a3a;
+  --badge-iframe-color: #a0a0c0;
   --content-json-bg: rgba(78, 154, 6, 0.2);
   --content-json-color: #8cc265;
   --content-fmp4-bg: rgba(114, 137, 218, 0.2);
   --content-fmp4-color: #7289da;
+  --content-cbor-bg: rgba(198, 120, 221, 0.2);
+  --content-cbor-color: #c678dd;
+  --content-msgpack-bg: rgba(86, 182, 194, 0.2);
+  --content-msgpack-color: #56b6c2;
   --hex-obj-odd: #7ec8e3;
   --tag-track-bg: rgba(255, 179, 71, 0.15);
   --tag-group-bg: rgba(78, 154, 6, 0.15);
@@ -67,10 +73,16 @@
     --badge-closed-bg: #f8d7da;
     --badge-imported-bg: #d1e7f5;
     --badge-imported-color: #0451a5;
+    --badge-iframe-bg: #e8e8f0;
+    --badge-iframe-color: #6060a0;
     --content-json-bg: rgba(40, 120, 10, 0.12);
     --content-json-color: #2b7a0b;
     --content-fmp4-bg: rgba(60, 80, 180, 0.12);
     --content-fmp4-color: #3b5998;
+    --content-cbor-bg: rgba(140, 60, 180, 0.12);
+    --content-cbor-color: #7b3fa0;
+    --content-msgpack-bg: rgba(40, 140, 150, 0.12);
+    --content-msgpack-color: #2a8a94;
     --hex-obj-odd: #1a6b8a;
     --tag-track-bg: rgba(180, 120, 30, 0.12);
     --tag-group-bg: rgba(40, 120, 10, 0.12);
@@ -137,6 +149,10 @@ html, body, #app {
 .badge-imported {
   background: var(--badge-imported-bg);
   color: var(--badge-imported-color);
+}
+.badge-iframe {
+  background: var(--badge-iframe-bg);
+  color: var(--badge-iframe-color);
 }
 
 .direction-tx {

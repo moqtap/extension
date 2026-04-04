@@ -6,7 +6,7 @@ import { getCachedPref, savePref } from './prefs';
 import ConnectionList from './components/ConnectionList.vue';
 import SessionView from './components/SessionView.vue';
 
-const { sessions, selectedSessionId, midSessionOpen, cspBlockedWorkers, selectSession, clearSessions, getStreamData, exportTrace, importTrace, setStreamRecording, clearStreams } = useInspector();
+const { sessions, selectedSessionId, midSessionOpen, cspBlockedWorkers, selectSession, clearSessions, getStreamData, getDatagramGroupData, exportTrace, importTrace, setStreamRecording, clearStreams } = useInspector();
 
 /* Reactive tick that drives the bitrate decay animation. */
 const bitrateTick = ref(0);
@@ -211,6 +211,7 @@ function statusColor(s: SessionEntry): string {
         v-if="selectedSession"
         :session="selectedSession"
         :get-stream-data="getStreamData"
+        :get-datagram-group-data="getDatagramGroupData"
         :set-stream-recording="setStreamRecording"
         :clear-streams="clearStreams"
         @export-trace="exportTrace"

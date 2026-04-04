@@ -3,10 +3,12 @@ import { ref, computed, watch } from 'vue';
 import HexViewer from './HexViewer.vue';
 import JsonTree from './JsonTree.vue';
 import type { StreamContentType, TrackEntry, PayloadMediaInfo } from '../use-inspector';
-import { parseStreamFraming, extractAllPayloads } from '../stream-framing';
+import { parseStreamFraming, parseDatagramGroupFraming, extractAllPayloads } from '../stream-framing';
 import type { HeaderTag } from '../stream-framing';
 import { getCachedPref, savePref } from '../prefs';
 import { detectMediaInfo } from '@/src/detect/bmff-boxes';
+import { decodeCbor } from '@/src/detect/cbor-decode';
+import { decodeMsgpack } from '@/src/detect/msgpack-decode';
 
 const props = defineProps<{
   data: Uint8Array;
@@ -19,19 +21,32 @@ const props = defineProps<{
   draft?: string;
   /** Track registry for resolving trackAlias in framing header */
   tracks?: Map<string, TrackEntry>;
+  /** True when this data is a datagram group (length-prefixed concatenated datagrams) */
+  isDatagramGroup?: boolean;
 }>();
 
 type ViewMode = 'hex' | 'json';
+
+/** Content types that can be decoded to a JSON tree view */
+const STRUCTURED_TYPES: Set<string> = new Set(['json', 'cbor', 'msgpack']);
+const hasStructuredContent = computed(() => STRUCTURED_TYPES.has(props.contentType));
+
+/** Label for the structured-data tab */
+const structuredTabLabel = computed(() => {
+  if (props.contentType === 'cbor') return 'CBOR';
+  if (props.contentType === 'msgpack') return 'MsgPack';
+  return 'JSON';
+});
 
 /** User's preferred mode — persisted across sessions */
 const preferredMode = getCachedPref('streamViewMode') as ViewMode;
 
 /**
- * Effective view mode. Starts as the preferred mode if JSON content is
+ * Effective view mode. Starts as the preferred mode if structured content is
  * available, otherwise falls back to hex while keeping the preference intact.
  */
 const viewMode = ref<ViewMode>(
-  preferredMode === 'json' && props.contentType === 'json' ? 'json' : 'hex',
+  preferredMode === 'json' && hasStructuredContent.value ? 'json' : 'hex',
 );
 
 /** Lazily parsed JSON — only computed when needed */
@@ -41,6 +56,9 @@ const jsonParsed = ref(false);
 /** MoQT framing info */
 const framing = computed(() => {
   if (!props.isMoqt) return null;
+  if (props.isDatagramGroup) {
+    return parseDatagramGroupFraming(props.data, props.draft);
+  }
   return parseStreamFraming(props.data, props.draft);
 });
 
@@ -116,6 +134,25 @@ const effectiveMediaInfo = computed((): PayloadMediaInfo | null => {
   return { variant: variant as PayloadMediaInfo['variant'], boxes: allBoxes };
 });
 
+/** Try to decode a single payload as structured data (JSON, CBOR, or MessagePack) */
+function decodePayload(payload: Uint8Array): unknown | null {
+  // JSON
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(payload);
+    return JSON.parse(text);
+  } catch { /* not JSON */ }
+
+  // CBOR
+  const cbor = decodeCbor(payload);
+  if (cbor && cbor.bytesRead >= payload.length * 0.5) return cbor.value;
+
+  // MessagePack
+  const mp = decodeMsgpack(payload);
+  if (mp && mp.bytesRead >= payload.length * 0.5) return mp.value;
+
+  return null;
+}
+
 function parseJson(): unknown | null {
   if (jsonParsed.value) return jsonData.value;
   jsonParsed.value = true;
@@ -126,12 +163,8 @@ function parseJson(): unknown | null {
     const payloads = extractAllPayloads(props.data, f);
     const results: unknown[] = [];
     for (const payload of payloads) {
-      try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(payload);
-        results.push(JSON.parse(text));
-      } catch {
-        // Not JSON — skip
-      }
+      const decoded = decodePayload(payload);
+      if (decoded != null) results.push(decoded);
     }
     if (results.length === 1) {
       jsonData.value = results[0];
@@ -142,7 +175,18 @@ function parseJson(): unknown | null {
     }
   }
 
-  // Strategy 2: Scan for JSON start byte and try from there
+  // Strategy 2: For CBOR/MessagePack, try the raw data directly
+  // (binary formats don't need scanning — they start at byte 0 or after framing)
+  if (props.contentType === 'cbor') {
+    const cbor = decodeCbor(props.data);
+    if (cbor) { jsonData.value = cbor.value; return cbor.value; }
+  }
+  if (props.contentType === 'msgpack') {
+    const mp = decodeMsgpack(props.data);
+    if (mp) { jsonData.value = mp.value; return mp.value; }
+  }
+
+  // Strategy 3: Scan for JSON start byte and try from there
   // (handles unknown framing or non-MoQT streams with leading binary)
   for (let i = 0; i < Math.min(props.data.length, 256); i++) {
     const b = props.data[i];
@@ -168,8 +212,8 @@ watch(() => props.data, () => {
   jsonData.value = null;
 
   const pref = getCachedPref('streamViewMode') as ViewMode;
-  if (pref === 'json' && props.contentType === 'json') {
-    // Try to parse; show JSON if it works, otherwise fall back to hex
+  if (pref === 'json' && hasStructuredContent.value) {
+    // Try to parse; show decoded view if it works, otherwise fall back to hex
     parseJson();
     viewMode.value = jsonData.value !== null ? 'json' : 'hex';
   } else {
@@ -190,8 +234,8 @@ function switchToJson() {
   }
 }
 
-// Auto-open JSON on first render if preferred
-if (preferredMode === 'json' && props.contentType === 'json') {
+// Auto-open decoded view on first render if preferred
+if (preferredMode === 'json' && hasStructuredContent.value) {
   parseJson();
   if (jsonData.value !== null) {
     viewMode.value = 'json';
@@ -210,12 +254,12 @@ if (preferredMode === 'json' && props.contentType === 'json') {
         Hex
       </button>
       <button
-        v-if="contentType === 'json'"
+        v-if="hasStructuredContent"
         class="vtab"
         :class="{ active: viewMode === 'json' }"
         @click="switchToJson"
       >
-        JSON
+        {{ structuredTabLabel }}
       </button>
       <span
         v-if="effectiveMediaInfo"

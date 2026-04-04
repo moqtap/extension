@@ -319,9 +319,19 @@ function evictStalePages(): void {
 // Run eviction sweep periodically
 let evictTimer: ReturnType<typeof setInterval> | null = null;
 
+/** Optional callback run alongside stream page eviction (e.g., datagram pages). */
+let additionalEvictionFn: (() => void) | null = null;
+
+export function setAdditionalEvictionFn(fn: () => void): void {
+  additionalEvictionFn = fn;
+}
+
 export function startEvictionTimer(): void {
   if (evictTimer) return;
-  evictTimer = setInterval(evictStalePages, EVICT_INTERVAL_MS);
+  evictTimer = setInterval(() => {
+    evictStalePages();
+    additionalEvictionFn?.();
+  }, EVICT_INTERVAL_MS);
 }
 
 export function stopEvictionTimer(): void {

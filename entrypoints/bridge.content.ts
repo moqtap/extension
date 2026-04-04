@@ -18,6 +18,8 @@ import { bytesToBase64 } from '@/src/messaging/types';
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
+  matchOriginAsFallback: true,
   runAt: 'document_start',
 
   main() {
@@ -81,7 +83,7 @@ export default defineContentScript({
       // Encode stream data as base64 here in the ISOLATED world — the
       // MAIN world still gets zero-copy via Transferable.
       try {
-        if (msg.type === 'stream:data' && msg.data instanceof ArrayBuffer) {
+        if ((msg.type === 'stream:data' || msg.type === 'datagram:data') && msg.data instanceof ArrayBuffer) {
           port.postMessage({ ...msg, data: bytesToBase64(new Uint8Array(msg.data)) });
         } else {
           port.postMessage(msg);

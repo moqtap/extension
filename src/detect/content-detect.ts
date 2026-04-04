@@ -10,11 +10,13 @@
 
 import { scanAndDetectMedia, detectMediaInfo } from './bmff-boxes';
 import type { PayloadMediaInfo } from './bmff-boxes';
+import { looksLikeCbor } from './cbor-decode';
+import { looksLikeMsgpack } from './msgpack-decode';
 
 export type { PayloadMediaInfo } from './bmff-boxes';
 
 /** Detected content type for a stream's payload data */
-export type StreamContentType = 'json' | 'fmp4' | 'binary';
+export type StreamContentType = 'json' | 'fmp4' | 'cbor' | 'msgpack' | 'binary';
 
 /** How far into the buffer to scan for signatures */
 const SCAN_LIMIT = 256;
@@ -36,6 +38,12 @@ export function detectContentType(data: Uint8Array): StreamContentType {
   // Scan for JSON: look for { or [ that's preceded by whitespace or is at a
   // plausible payload boundary (after MoQT varint framing)
   if (scanForJson(data, limit)) return 'json';
+
+  // Try structured binary formats (CBOR, MessagePack)
+  // These require the full payload since they can't be reliably detected
+  // from partial scans — call on the raw bytes.
+  if (looksLikeCbor(data)) return 'cbor';
+  if (looksLikeMsgpack(data)) return 'msgpack';
 
   return 'binary';
 }

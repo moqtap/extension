@@ -15,12 +15,13 @@ import type {
 } from '@/src/messaging/types';
 import { bytesToBase64, base64ToBytes } from '@/src/messaging/types';
 import { detectFromControlStream, type DetectionResult } from '@/src/detect/draft-detect';
-import { decodeControlMessage } from '@/src/codec/control-message';
+import { decodeControlMessage, getCodec } from '@/src/codec/control-message';
 import type { SupportedDraft } from '@/src/types/common';
 import { createExtensionRecorder } from '@/src/trace/index';
 import type { TraceRecorder } from '@/src/trace/index';
 import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14';
-import { appendStreamData, flushStream, loadStreamData, clearAllData, clearSessionData, getKnownSessionIds, getSessionTabMap, saveSessionTab, startEvictionTimer } from '@/src/storage/chunk-store';
+import { appendStreamData, flushStream, loadStreamData, clearAllData, clearSessionData, getKnownSessionIds, getSessionTabMap, saveSessionTab, startEvictionTimer, setAdditionalEvictionFn } from '@/src/storage/chunk-store';
+import { appendDatagram, flushDatagramHeap, loadDatagramGroupData, getDatagramGroups, clearDatagramData, clearAllDatagramData, evictStaleDatagramPages } from '@/src/storage/datagram-store';
 import { detectContentType, detectPayloadMedia, detectStreamMedia, type StreamContentType, type PayloadMediaInfo } from '@/src/detect/content-detect';
 import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing';
 
@@ -32,6 +33,8 @@ interface SessionRecord {
   sessionId: string;
   url: string;
   createdAt: number;
+  /** Frame ID — 0 for main frame, non-zero for iframes */
+  frameId: number;
   streams: Map<number, StreamRecord>;
   closed: boolean;
   closedReason?: string;
@@ -66,6 +69,10 @@ interface TrackRecord {
   direction: 'tx' | 'rx';
   status: 'pending' | 'active' | 'error' | 'done';
   errorReason?: string;
+  subscribedAt?: number;
+  subscribeOkAt?: number;
+  subscribeErrorAt?: number;
+  subscribeDoneAt?: number;
 }
 
 interface StreamRecord {
@@ -96,8 +103,8 @@ const tabStates = new Map<number, TabState>();
 /** Connected DevTools panel ports, keyed by tabId */
 const panelPorts = new Map<number, Browser.runtime.Port>();
 
-/** Connected bridge ports (content script ISOLATED world), keyed by tabId */
-const bridgePorts = new Map<number, Browser.runtime.Port>();
+/** Connected bridge ports (content script ISOLATED world), keyed by tabId → frameId → port */
+const bridgePorts = new Map<number, Map<number, Browser.runtime.Port>>();
 
 /** Tabs that have been activated (instrumentation forwarding enabled) */
 const activatedTabs = new Set<number>();
@@ -122,6 +129,10 @@ function sendTrackUpdate(tabId: number, sessionId: string, track: TrackRecord) {
     direction: track.direction,
     status: track.status,
     errorReason: track.errorReason,
+    subscribedAt: track.subscribedAt,
+    subscribeOkAt: track.subscribeOkAt,
+    subscribeErrorAt: track.subscribeErrorAt,
+    subscribeDoneAt: track.subscribeDoneAt,
   });
 }
 
@@ -363,6 +374,7 @@ function extractTrackInfo(
         trackName,
         direction,
         status: 'pending',
+        subscribedAt: Date.now(),
       };
       session.tracks.set(subscribeId, track);
       return track;
@@ -373,6 +385,7 @@ function extractTrackInfo(
       const track = session.tracks.get(subscribeId);
       if (track) {
         track.status = 'active';
+        track.subscribeOkAt = Date.now();
         return track;
       }
       return null;
@@ -384,6 +397,7 @@ function extractTrackInfo(
       if (track) {
         track.status = 'error';
         track.errorReason = String(msg.reasonPhrase ?? msg.reason_phrase ?? '');
+        track.subscribeErrorAt = Date.now();
         return track;
       }
       return null;
@@ -394,6 +408,7 @@ function extractTrackInfo(
       const track = session.tracks.get(subscribeId);
       if (track) {
         track.status = 'done';
+        track.subscribeDoneAt = Date.now();
         return track;
       }
       return null;
@@ -404,6 +419,7 @@ function extractTrackInfo(
       const track = session.tracks.get(subscribeId);
       if (track) {
         track.status = 'done';
+        track.subscribeDoneAt = Date.now();
         return track;
       }
       return null;
@@ -440,6 +456,7 @@ function replayState(tabId: number) {
       sessionId: session.sessionId,
       url: session.url,
       createdAt: session.createdAt,
+      ...(session.frameId !== 0 ? { frameId: session.frameId } : {}),
     });
 
     // Replay detection result
@@ -498,6 +515,25 @@ function replayState(tabId: number) {
       }
     }
 
+    // Replay datagram group metadata
+    const dgGroups = getDatagramGroups(session.sessionId);
+    for (const [gk, group] of dgGroups) {
+      sendToPanel(tabId, {
+        type: 'panel:datagram-group:info',
+        sessionId: session.sessionId,
+        groupKey: gk,
+        trackAlias: group.trackAlias,
+        groupId: group.groupId,
+        direction: group.direction,
+        byteCount: group.totalPayloadBytes,
+        datagramCount: group.count,
+        contentType: group.contentType,
+        mediaInfo: group.mediaInfo,
+        firstDataAt: group.firstTimestamp,
+        closed: group.closed,
+      });
+    }
+
     if (session.closed) {
       sendToPanel(tabId, {
         type: 'panel:session:closed',
@@ -511,60 +547,81 @@ function replayState(tabId: number) {
 /** Send activation signal to a tab's bridge content script via persistent port */
 function activateTab(tabId: number) {
   if (activatedTabs.has(tabId)) return;
-  const bridgePort = bridgePorts.get(tabId);
-  if (!bridgePort) return; // Bridge not connected yet — will activate when it connects
+  const framePorts = bridgePorts.get(tabId);
+  if (!framePorts || framePorts.size === 0) return; // Bridge not connected yet — will activate when it connects
   activatedTabs.add(tabId);
-  try {
-    bridgePort.postMessage({ type: 'activate-tab' });
-  } catch {
+  for (const [frameId, port] of framePorts) {
+    try {
+      port.postMessage({ type: 'activate-tab' });
+    } catch {
+      framePorts.delete(frameId);
+    }
+  }
+  if (framePorts.size === 0) {
     activatedTabs.delete(tabId);
     bridgePorts.delete(tabId);
   }
 }
 
-/** Handle bridge ready — page (re)loaded. Close stale sessions and re-activate. */
-function handleBridgeReady(tabId: number) {
-  const existing = tabStates.get(tabId);
-  if (existing) {
-    for (const session of existing.sessions.values()) {
-      if (!session.closed) {
-        for (const stream of session.streams.values()) {
-          if (!stream.closed) {
-            stream.closed = true;
-            if (session.recorder) {
-              session.recorder.recordStreamClosed(BigInt(stream.streamId));
+/** Handle bridge ready — page (re)loaded. Close stale sessions and re-activate.
+ *  Only closes existing sessions when the main frame (frameId 0) reconnects,
+ *  since that implies a full page navigation. Iframe reconnects don't affect
+ *  sessions from other frames. */
+function handleBridgeReady(tabId: number, frameId: number) {
+  // Only main frame navigation should close existing sessions
+  if (frameId === 0) {
+    const existing = tabStates.get(tabId);
+    if (existing) {
+      for (const session of existing.sessions.values()) {
+        if (!session.closed) {
+          for (const stream of session.streams.values()) {
+            if (!stream.closed) {
+              stream.closed = true;
+              if (session.recorder) {
+                session.recorder.recordStreamClosed(BigInt(stream.streamId));
+              }
+              sendToPanel(tabId, {
+                type: 'panel:stream:closed',
+                sessionId: session.sessionId,
+                streamId: stream.streamId,
+              });
             }
-            sendToPanel(tabId, {
-              type: 'panel:stream:closed',
-              sessionId: session.sessionId,
-              streamId: stream.streamId,
-            });
           }
-        }
 
-        session.closed = true;
-        session.closedReason = 'page reloaded';
-        if (session.recorder?.recording) {
-          session.recorder.annotate('page-reload', {});
-          session.recorder.finalize();
+          session.closed = true;
+          session.closedReason = 'page reloaded';
+          if (session.recorder?.recording) {
+            session.recorder.annotate('page-reload', {});
+            session.recorder.finalize();
+          }
+          sendToPanel(tabId, {
+            type: 'panel:session:closed',
+            sessionId: session.sessionId,
+            reason: 'page reloaded',
+          });
         }
-        sendToPanel(tabId, {
-          type: 'panel:session:closed',
-          sessionId: session.sessionId,
-          reason: 'page reloaded',
-        });
       }
     }
+
+    activatedTabs.delete(tabId);
   }
 
-  activatedTabs.delete(tabId);
   if (panelPorts.has(tabId)) {
-    activateTab(tabId);
+    if (activatedTabs.has(tabId)) {
+      // Tab already activated — just activate the new frame's bridge directly
+      const framePorts = bridgePorts.get(tabId);
+      const framePort = framePorts?.get(frameId);
+      if (framePort) {
+        try { framePort.postMessage({ type: 'activate-tab' }); } catch { /* port dead */ }
+      }
+    } else {
+      activateTab(tabId);
+    }
   }
 }
 
 /** Handle a content-to-background message from the bridge port */
-function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
+function handleContentMessage(message: ContentToBackgroundMsg, tabId: number, frameId: number) {
 
   // bridge:ready is now handled by port connection, but keep as no-op guard
   if (message.type === 'bridge:ready') return;
@@ -577,6 +634,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
         sessionId: message.sessionId,
         url: message.url,
         createdAt: message.createdAt,
+        frameId,
         streams: new Map(),
         closed: false,
         detection: null,
@@ -602,6 +660,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
         sessionId: message.sessionId,
         url: message.url,
         createdAt: message.createdAt,
+        ...(frameId !== 0 ? { frameId } : {}),
       });
       break;
     }
@@ -838,6 +897,9 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
         session.closed = true;
         session.closedReason = message.reason;
 
+        // Flush datagram heap to IDB
+        flushDatagramHeap(message.sessionId);
+
         if (session.recorder?.recording) {
           session.recorder.annotate('session-closed', { reason: message.reason });
           session.recorder.finalize();
@@ -849,6 +911,91 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number) {
         sessionId: message.sessionId,
         reason: message.reason,
       });
+      break;
+    }
+
+    case 'datagram:data': {
+      const session = state.sessions.get(message.sessionId);
+      if (!session) break;
+
+      const bytes = typeof message.data === 'string'
+        ? base64ToBytes(message.data)
+        : new Uint8Array(message.data);
+
+      // Skip when recording is paused
+      if (!session.streamRecording) break;
+
+      // Datagrams require a detected draft to decode the MoQT header
+      if (!session.detectedDraft) break;
+
+      // Decode the MoQT datagram header
+      // All draft codecs have decodeDatagram at runtime; the base Codec type
+      // doesn't declare it, so we use a type assertion with a minimal interface.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const codec = getCodec(session.detectedDraft) as any;
+      if (typeof codec.decodeDatagram !== 'function') break;
+      const result = codec.decodeDatagram(bytes);
+      if (!result.ok) break; // Not a valid MoQT datagram — drop silently
+
+      const dg = result.value as {
+        trackAlias: bigint; groupId: bigint; objectId: bigint;
+        publisherPriority: number; endOfGroup?: boolean;
+        payload: Uint8Array; payloadLength: number;
+      };
+      const decoded = {
+        trackAlias: Number(dg.trackAlias),
+        groupId: Number(dg.groupId),
+        objectId: Number(dg.objectId),
+        publisherPriority: dg.publisherPriority,
+        endOfGroup: dg.endOfGroup,
+      };
+
+      // Append to datagram heap store
+      const appendResult = appendDatagram(
+        message.sessionId,
+        bytes,
+        decoded,
+        message.direction,
+      );
+
+      // First-datagram-in-group detection: detect content type from payload
+      if (appendResult.isNewGroup && dg.payload.length > 0) {
+        const ct = detectContentType(dg.payload);
+        appendResult.group.contentType = ct;
+        if (ct === 'fmp4') {
+          appendResult.group.mediaInfo = detectPayloadMedia(dg.payload) ?? undefined;
+        }
+      }
+
+      // Notify panel
+      const panelMsg: BackgroundToPanelMsg = {
+        type: 'panel:datagram:data',
+        sessionId: message.sessionId,
+        direction: message.direction,
+        trackAlias: decoded.trackAlias,
+        groupId: decoded.groupId,
+        objectId: decoded.objectId,
+        byteLength: bytes.length,
+        isNewGroup: appendResult.isNewGroup,
+        ...(appendResult.isNewGroup ? {
+          contentType: appendResult.group.contentType,
+          mediaInfo: appendResult.group.mediaInfo,
+        } : {}),
+        ...(decoded.endOfGroup ? { endOfGroup: true } : {}),
+      };
+      sendToPanel(tabId, panelMsg);
+
+      // Record in trace
+      if (session.recorder) {
+        session.recorder.recordObjectHeader(
+          0n, // no streamId for datagrams — use 0
+          BigInt(decoded.groupId),
+          BigInt(decoded.objectId),
+          decoded.publisherPriority,
+          0, // objectStatus
+        );
+      }
+
       break;
     }
 
@@ -918,26 +1065,73 @@ export default defineBackground(() => {
   cleanupOrphanedData().catch(() => {});
 
   // Start periodic eviction of backed pages from memory cache
+  setAdditionalEvictionFn(evictStaleDatagramPages);
   startEvictionTimer();
 
   // Handle long-lived connections from bridge content scripts and DevTools panels
   browser.runtime.onConnect.addListener((port) => {
     // ── Bridge port (content script ISOLATED world → background) ─────
     if (port.name === 'moqtap-bridge') {
-      const tabId = (port.sender as { tab?: { id?: number } })?.tab?.id;
+      const sender = port.sender as { tab?: { id?: number }; frameId?: number };
+      const tabId = sender?.tab?.id;
       if (!tabId) return;
+      const frameId = sender?.frameId ?? 0;
+
+      // Store port in per-tab, per-frame map
+      let framePorts = bridgePorts.get(tabId);
+      if (!framePorts) {
+        framePorts = new Map();
+        bridgePorts.set(tabId, framePorts);
+      }
+      framePorts.set(frameId, port);
 
       // Port connection itself signals bridge:ready (page loaded/reloaded)
-      bridgePorts.set(tabId, port);
-      handleBridgeReady(tabId);
+      handleBridgeReady(tabId, frameId);
 
       port.onMessage.addListener((message: ContentToBackgroundMsg) => {
-        handleContentMessage(message, tabId);
+        handleContentMessage(message, tabId, frameId);
       });
 
       port.onDisconnect.addListener(() => {
-        if (bridgePorts.get(tabId) === port) {
-          bridgePorts.delete(tabId);
+        const fp = bridgePorts.get(tabId);
+        if (fp?.get(frameId) === port) {
+          fp.delete(frameId);
+          if (fp.size === 0) bridgePorts.delete(tabId);
+        }
+
+        // If this is an iframe (not main frame) and the tab is still alive,
+        // the iframe was destroyed. Close any open sessions from this frame
+        // since WebTransport won't fire a clean close event.
+        if (frameId !== 0) {
+          const state = tabStates.get(tabId);
+          if (!state) return;
+          for (const session of state.sessions.values()) {
+            if (session.frameId !== frameId || session.closed) continue;
+            for (const stream of session.streams.values()) {
+              if (!stream.closed) {
+                stream.closed = true;
+                if (session.recorder) {
+                  session.recorder.recordStreamClosed(BigInt(stream.streamId));
+                }
+                sendToPanel(tabId, {
+                  type: 'panel:stream:closed',
+                  sessionId: session.sessionId,
+                  streamId: stream.streamId,
+                });
+              }
+            }
+            session.closed = true;
+            session.closedReason = 'iframe removed';
+            if (session.recorder?.recording) {
+              session.recorder.annotate('iframe-removed', {});
+              session.recorder.finalize();
+            }
+            sendToPanel(tabId, {
+              type: 'panel:session:closed',
+              sessionId: session.sessionId,
+              reason: 'iframe removed',
+            });
+          }
         }
       });
       return;
@@ -1008,6 +1202,7 @@ export default defineBackground(() => {
           // Drop all session records so future events from the content script
           // (which is still running) are silently ignored.
           clearAllData().catch(() => {});
+          clearAllDatagramData();
           if (connectedTabId !== null) {
             const state = tabStates.get(connectedTabId);
             if (state) {
@@ -1031,6 +1226,25 @@ export default defineBackground(() => {
           break;
         }
 
+        case 'panel:request-datagram-group-data': {
+          const { sessionId, groupKey, requestId } = msg;
+          const replyTabId = connectedTabId;
+          if (replyTabId === null) break;
+          loadDatagramGroupData(sessionId, groupKey)
+            .then((bytes) => {
+              sendToPanel(replyTabId, {
+                type: 'panel:datagram-group-data-response',
+                requestId,
+                data: bytes.length > 0 ? bytesToBase64(bytes) : null,
+              });
+            })
+            .catch((err) => {
+              console.error('[moqtap bg] loadDatagramGroupData failed:', err);
+              sendToPanel(replyTabId, { type: 'panel:datagram-group-data-response', requestId, data: null });
+            });
+          break;
+        }
+
         case 'panel:clear-streams': {
           if (connectedTabId === null) break;
           const state = tabStates.get(connectedTabId);
@@ -1048,8 +1262,9 @@ export default defineBackground(() => {
                 session.streams.delete(streamId);
               }
             }
-            // Clear stored stream data from memory and IDB
+            // Clear stored stream data and datagrams from memory and IDB
             clearSessionData(msg.sessionId).catch(() => {});
+            clearDatagramData(msg.sessionId).catch(() => {});
 
             sendToPanel(connectedTabId, {
               type: 'panel:streams-cleared',
@@ -1077,11 +1292,13 @@ export default defineBackground(() => {
         if (session.recorder?.recording) {
           session.recorder.finalize();
         }
-        // Flush remaining stream buffers to IDB, then clean up all session data
+        // Flush remaining stream buffers and datagram heap to IDB, then clean up
         for (const stream of session.streams.values()) {
           flushStream(session.sessionId, stream.streamId);
         }
+        flushDatagramHeap(session.sessionId);
         clearSessionData(session.sessionId).catch(() => {});
+        clearDatagramData(session.sessionId).catch(() => {});
       }
     }
     tabStates.delete(tabId);

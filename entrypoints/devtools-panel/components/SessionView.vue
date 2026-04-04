@@ -1,14 +1,16 @@
 <script lang="ts" setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { SessionEntry, StreamContentType } from '../use-inspector';
 import ControlMessageLog from './ControlMessageLog.vue';
 import StreamList from './StreamList.vue';
 import StreamDataViewer from './StreamDataViewer.vue';
 import TrackList from './TrackList.vue';
+import TracksTab from './TracksTab.vue';
 
 const props = defineProps<{
   session: SessionEntry;
   getStreamData: (sessionId: string, streamId: number) => Promise<Uint8Array | null>;
+  getDatagramGroupData: (sessionId: string, groupKey: string) => Promise<Uint8Array | null>;
   setStreamRecording: (sessionId: string, recording: boolean) => void;
   clearStreams: (sessionId: string) => void;
 }>();
@@ -17,8 +19,15 @@ const emit = defineEmits<{
   exportTrace: [sessionId: string];
 }>();
 
-type Tab = 'messages' | 'streams' | 'details';
+type Tab = 'messages' | 'streams' | 'details' | 'tracks';
 const activeTab = ref<Tab>('messages');
+
+// Reset tab if tracks tab is active but protocol is no longer moqt
+watch(() => props.session.protocol, (proto) => {
+  if (activeTab.value === 'tracks' && proto !== 'moqt') {
+    activeTab.value = 'messages';
+  }
+});
 
 const selectedStreamId = ref<number | null>(null);
 const selectedStreamData = ref<Uint8Array | null>(null);
@@ -28,12 +37,51 @@ const trackFilter = ref<string | null>(null);
 /** byteCount at the time we last loaded stream data — used to detect new arrivals */
 const loadedByteCount = ref(0);
 
-const streamList = computed(() => Array.from(props.session.streams.values()));
+/** Map from synthetic datagram group streamId → groupKey (for data loading) */
+const dgIdToGroupKey = new Map<number, string>();
+let nextDgSyntheticId = -1;
+
+function getOrCreateDgId(groupKey: string): number {
+  for (const [id, gk] of dgIdToGroupKey) {
+    if (gk === groupKey) return id;
+  }
+  const id = nextDgSyntheticId--;
+  dgIdToGroupKey.set(id, groupKey);
+  return id;
+}
+
+const streamList = computed(() => {
+  const items = Array.from(props.session.streams.values());
+  for (const dg of props.session.datagramGroups.values()) {
+    const syntheticId = getOrCreateDgId(dg.groupKey);
+    items.push({
+      streamId: syntheticId,
+      direction: dg.direction,
+      closed: dg.closed,
+      byteCount: dg.byteCount,
+      contentType: dg.contentType,
+      mediaInfo: dg.mediaInfo,
+      firstDataAt: dg.firstDataAt,
+      lastDataAt: dg.lastDataAt,
+      chunkCount: dg.datagramCount,
+      trackAlias: dg.trackAlias,
+      datagramGroupKey: dg.groupKey,
+      datagramCount: dg.datagramCount,
+      groupId: dg.groupId,
+    });
+  }
+  return items;
+});
 const trackList = computed(() => Array.from(props.session.tracks.values()));
 const hasTracks = computed(() => props.session.tracks.size > 0);
-const selectedStream = computed(() =>
-  selectedStreamId.value != null ? props.session.streams.get(selectedStreamId.value) ?? null : null,
-);
+const selectedStream = computed(() => {
+  if (selectedStreamId.value == null) return null;
+  // Check real streams first
+  const stream = props.session.streams.get(selectedStreamId.value);
+  if (stream) return stream;
+  // Check synthetic datagram group entries
+  return streamList.value.find((s) => s.streamId === selectedStreamId.value) ?? null;
+});
 
 /** True when the currently-viewed stream has received more data since we loaded it */
 const hasNewData = computed(() => {
@@ -79,11 +127,21 @@ function formatBytes(n: number): string {
 
 async function showStreamData(streamId: number) {
   selectedStreamId.value = streamId;
-  const stream = props.session.streams.get(streamId);
+
+  // Determine if this is a datagram group (synthetic negative ID)
+  const dgGroupKey = dgIdToGroupKey.get(streamId);
+  const stream = dgGroupKey
+    ? streamList.value.find((s) => s.streamId === streamId)
+    : props.session.streams.get(streamId);
+
   selectedContentType.value = stream?.contentType ?? 'binary';
   loadingStream.value = true;
   try {
-    selectedStreamData.value = await props.getStreamData(props.session.sessionId, streamId);
+    if (dgGroupKey) {
+      selectedStreamData.value = await props.getDatagramGroupData(props.session.sessionId, dgGroupKey);
+    } else {
+      selectedStreamData.value = await props.getStreamData(props.session.sessionId, streamId);
+    }
     loadedByteCount.value = stream?.byteCount ?? 0;
   } catch {
     selectedStreamData.value = null;
@@ -120,7 +178,15 @@ function closeStreamData() {
           :class="{ active: activeTab === 'streams' }"
           @click="activeTab = 'streams'"
         >
-          Streams ({{ session.streams.size }})
+          Streams ({{ session.streams.size + session.datagramGroups.size }})
+        </button>
+        <button
+          v-if="session.protocol === 'moqt'"
+          class="tab"
+          :class="{ active: activeTab === 'tracks' }"
+          @click="activeTab = 'tracks'"
+        >
+          Tracks ({{ session.tracks.size }})
         </button>
         <button
           class="tab"
@@ -167,11 +233,15 @@ function closeStreamData() {
         />
         <div v-if="selectedStreamId != null" class="stream-detail">
           <div class="detail-header">
-            <span class="detail-title mono">Stream #{{ selectedStreamId }}</span>
+            <span class="detail-title mono">
+              <template v-if="selectedStream?.datagramGroupKey">DG g:{{ selectedStream.groupId }}</template>
+              <template v-else>Stream #{{ selectedStreamId }}</template>
+            </span>
             <span v-if="selectedStream" class="detail-meta">
               {{ selectedStream.direction === 'tx' ? 'TX' : 'RX' }}
               · {{ formatBytes(selectedStream.byteCount) }}
-              <template v-if="selectedStream.chunkCount > 0"> · {{ selectedStream.chunkCount }} chunks</template>
+              <template v-if="selectedStream.datagramGroupKey"> · {{ selectedStream.datagramCount }} datagrams</template>
+              <template v-else-if="selectedStream.chunkCount > 0"> · {{ selectedStream.chunkCount }} chunks</template>
               · {{ selectedStream.closed ? 'closed' : 'open' }}
             </span>
             <button
@@ -198,11 +268,16 @@ function closeStreamData() {
             :is-moqt="session.protocol === 'moqt'"
             :draft="session.draft"
             :tracks="session.tracks"
+            :is-datagram-group="!!selectedStream?.datagramGroupKey"
             class="detail-viewer"
           />
           <div v-else class="detail-empty">No data available</div>
         </div>
       </div>
+      <TracksTab
+        v-else-if="activeTab === 'tracks'"
+        :session="session"
+      />
       <div v-else-if="activeTab === 'details'" class="details-panel">
         <table class="details-table mono">
           <tbody>
@@ -226,6 +301,10 @@ function closeStreamData() {
               <td class="details-label">Status</td>
               <td>{{ session.closed ? 'Closed' : 'Open' }}</td>
             </tr>
+            <tr v-if="session.frameId">
+              <td class="details-label">Source</td>
+              <td>iframe (frame {{ session.frameId }})</td>
+            </tr>
             <tr>
               <td class="details-label">Streams</td>
               <td>{{ session.streams.size }}</td>
@@ -236,7 +315,10 @@ function closeStreamData() {
             </tr>
             <tr>
               <td class="details-label">Total Data</td>
-              <td>{{ formatBytes(Array.from(session.streams.values()).reduce((s, st) => s + st.byteCount, 0)) }}</td>
+              <td>{{ formatBytes(
+                Array.from(session.streams.values()).reduce((s, st) => s + st.byteCount, 0) +
+                Array.from(session.datagramGroups.values()).reduce((s, dg) => s + dg.byteCount, 0)
+              ) }}</td>
             </tr>
           </tbody>
         </table>

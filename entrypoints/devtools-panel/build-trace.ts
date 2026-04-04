@@ -7,7 +7,7 @@
 
 import type { Trace, TraceEvent, TraceHeader } from '@/src/trace/index';
 import type { SessionEntry } from './use-inspector';
-import { parseStreamFraming } from './stream-framing';
+import { parseStreamFraming, parseDatagramGroupFraming } from './stream-framing';
 import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14';
 
 /** Resolve a message type name (e.g. "subscribe") to its wire ID number. */
@@ -32,6 +32,7 @@ function toBytes(data: Uint8Array): Uint8Array {
 export async function buildTrace(
   session: SessionEntry,
   getStreamData: (sessionId: string, streamId: number) => Promise<Uint8Array | null>,
+  getDatagramGroupData?: (sessionId: string, groupKey: string) => Promise<Uint8Array | null>,
 ): Promise<Trace> {
   const draft = session.draft ?? 'unknown';
   const startTime = session.createdAt;
@@ -137,6 +138,50 @@ export async function buildTrace(
         streamId: BigInt(stream.streamId),
         errorCode: 0,
       });
+    }
+  }
+
+  // Datagram groups — export as object-header + object-payload events
+  if (getDatagramGroupData) {
+    for (const dg of session.datagramGroups.values()) {
+      const ts = toRelativeUs(dg.firstDataAt ?? startTime, startTime);
+
+      try {
+        const data = await getDatagramGroupData(session.sessionId, dg.groupKey);
+        if (data) {
+          const framing = parseDatagramGroupFraming(data, session.draft);
+          if (framing && framing.objects.length > 0) {
+            for (const obj of framing.objects) {
+              const end = Math.min(obj.payloadOffset + obj.payloadLength, data.length);
+              const payload = data.slice(obj.payloadOffset, end);
+
+              events.push({
+                type: 'object-header',
+                seq: seq++,
+                timestamp: ts,
+                streamId: 0n, // datagrams use streamId=0 by convention
+                groupId: BigInt(dg.groupId),
+                objectId: BigInt(obj.objectId),
+                publisherPriority: framing.headerFields.publisherPriority ?? 0,
+                objectStatus: 0,
+              });
+
+              events.push({
+                type: 'object-payload',
+                seq: seq++,
+                timestamp: ts,
+                streamId: 0n,
+                groupId: BigInt(dg.groupId),
+                objectId: BigInt(obj.objectId),
+                size: payload.length,
+                payload: toBytes(payload),
+              });
+            }
+          }
+        }
+      } catch {
+        // Datagram group data load failed — skip
+      }
     }
   }
 

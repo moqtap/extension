@@ -83,6 +83,15 @@ export interface WorkerCspBlockedMsg {
   error: string;
 }
 
+export interface DatagramDataMsg {
+  type: 'datagram:data';
+  tabId?: number;
+  sessionId: string;
+  direction: 'tx' | 'rx';
+  /** Raw datagram bytes (full MoQT datagram including header). */
+  data: ArrayBuffer | string;
+}
+
 /** Messages sent from content script / bridge to background */
 export type ContentToBackgroundMsg =
   | SessionOpenedMsg
@@ -92,7 +101,8 @@ export type ContentToBackgroundMsg =
   | StreamErrorMsg
   | SessionClosedMsg
   | BridgeReadyMsg
-  | WorkerCspBlockedMsg;
+  | WorkerCspBlockedMsg
+  | DatagramDataMsg;
 
 // ─── Background -> Panel messages ────────────────────────────────────
 
@@ -101,6 +111,8 @@ export interface PanelSessionOpenedMsg {
   sessionId: string;
   url: string;
   createdAt: number;
+  /** Non-zero when session originates from an iframe */
+  frameId?: number;
 }
 
 export interface PanelDetectionMsg {
@@ -212,6 +224,10 @@ export interface PanelTrackUpdateMsg {
   direction: 'tx' | 'rx';
   status: 'pending' | 'active' | 'error' | 'done';
   errorReason?: string;
+  subscribedAt?: number;
+  subscribeOkAt?: number;
+  subscribeErrorAt?: number;
+  subscribeDoneAt?: number;
 }
 
 export interface PanelWorkerCspWarningMsg {
@@ -237,6 +253,57 @@ export interface PanelStreamsClearedMsg {
   sessionId: string;
 }
 
+/**
+ * Sent on every datagram — metadata only, no payload bytes.
+ * Background writes the payload to the datagram heap store.
+ *
+ * On the first datagram for a group, includes contentType and mediaInfo
+ * so the panel can initialize the datagram group entry.
+ */
+export interface PanelDatagramDataMsg {
+  type: 'panel:datagram:data';
+  sessionId: string;
+  direction: 'tx' | 'rx';
+  trackAlias: number;
+  groupId: number;
+  objectId: number;
+  byteLength: number;
+  /** True if this datagram created a new group. */
+  isNewGroup: boolean;
+  /** Content type (first datagram in group only). */
+  contentType?: StreamContentType;
+  /** ISO BMFF media info (first datagram in group only, if fMP4). */
+  mediaInfo?: PayloadMediaInfo;
+  /** True when endOfGroup flag was set. */
+  endOfGroup?: boolean;
+}
+
+/**
+ * Sent during state replay to inform the panel about datagram groups
+ * that already have data in the heap/IDB.
+ */
+export interface PanelDatagramGroupInfoMsg {
+  type: 'panel:datagram-group:info';
+  sessionId: string;
+  groupKey: string;
+  trackAlias: number;
+  groupId: number;
+  direction: 'tx' | 'rx';
+  byteCount: number;
+  datagramCount: number;
+  contentType?: StreamContentType;
+  mediaInfo?: PayloadMediaInfo;
+  firstDataAt?: number;
+  closed: boolean;
+}
+
+export interface PanelDatagramGroupDataResponseMsg {
+  type: 'panel:datagram-group-data-response';
+  requestId: number;
+  /** base64-encoded datagram group data, or null if not found */
+  data: string | null;
+}
+
 /** Messages sent from background to DevTools panel */
 export type BackgroundToPanelMsg =
   | PanelSessionOpenedMsg
@@ -253,7 +320,10 @@ export type BackgroundToPanelMsg =
   | PanelStreamDataResponseMsg
   | PanelStreamCreatedMsg
   | PanelStreamRecordingMsg
-  | PanelStreamsClearedMsg;
+  | PanelStreamsClearedMsg
+  | PanelDatagramDataMsg
+  | PanelDatagramGroupInfoMsg
+  | PanelDatagramGroupDataResponseMsg;
 
 // ─── Background -> Bridge messages ───────────────────────────────────
 
@@ -304,6 +374,14 @@ export interface PanelClearStreamsMsg {
   sessionId: string;
 }
 
+export interface PanelRequestDatagramGroupDataMsg {
+  type: 'panel:request-datagram-group-data';
+  tabId: number;
+  sessionId: string;
+  groupKey: string;
+  requestId: number;
+}
+
 /** Messages sent from DevTools panel to background */
 export type PanelToBackgroundMsg =
   | PanelConnectMsg
@@ -312,7 +390,8 @@ export type PanelToBackgroundMsg =
   | PanelClearMsg
   | PanelRequestStreamDataMsg
   | PanelSetStreamRecordingMsg
-  | PanelClearStreamsMsg;
+  | PanelClearStreamsMsg
+  | PanelRequestDatagramGroupDataMsg;
 
 // ─── Helpers ────────────────────────────────────────────────────────
 

@@ -11,7 +11,7 @@ export type { StreamObject, ParsedStreamFraming, HeaderTag, DraftParser } from '
 
 // ─── Registry ──────────────────────────────────────────────────────
 
-import type { DraftParser, ParsedStreamFraming } from './types';
+import type { DraftParser, ParsedStreamFraming, StreamObject, HeaderTag } from './types';
 
 const draftParsers = new Map<string, DraftParser>();
 
@@ -59,6 +59,74 @@ export function extractAllPayloads(data: Uint8Array, framing: ParsedStreamFramin
     const end = Math.min(obj.payloadOffset + obj.payloadLength, data.length);
     return data.subarray(obj.payloadOffset, end);
   });
+}
+
+// ─── Datagram group framing ───────────────────────────────────────
+
+/**
+ * Parse datagram group data (length-prefixed concatenated datagrams).
+ * Format: [4-byte LE uint32 length][raw datagram bytes] repeated.
+ *
+ * Returns a ParsedStreamFraming where each "object" corresponds to one
+ * datagram's payload, enabling reuse of StreamDataViewer for hex view,
+ * payload tagging, and content detection.
+ */
+export function parseDatagramGroupFraming(data: Uint8Array, draft?: string): ParsedStreamFraming | null {
+  if (data.length < 4) return null;
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const objects: StreamObject[] = [];
+  const tags: HeaderTag[] = [{ label: 'datagram-group', value: '', kind: 'info' }];
+  let headerFields: Record<string, number> = {};
+  let offset = 0;
+  let dgIndex = 0;
+
+  while (offset + 4 <= data.length) {
+    const rawLen = view.getUint32(offset, true); // little-endian
+    if (rawLen === 0 || offset + 4 + rawLen > data.length) break;
+
+    const dgBytes = data.subarray(offset + 4, offset + 4 + rawLen);
+
+    // Try to parse individual datagram framing to extract objectId
+    const framing = parseStreamFraming(dgBytes, draft);
+    if (framing && framing.objects.length > 0) {
+      // Use the first datagram's header fields for the group
+      if (dgIndex === 0) {
+        headerFields = { ...framing.headerFields };
+      }
+
+      for (const obj of framing.objects) {
+        objects.push({
+          // Offset relative to the group buffer
+          offset: offset + 4 + obj.offset,
+          payloadOffset: offset + 4 + obj.payloadOffset,
+          payloadLength: obj.payloadLength,
+          objectId: obj.objectId,
+        });
+      }
+    } else {
+      // Fallback: treat entire raw datagram as a single object
+      objects.push({
+        offset: offset + 4,
+        payloadOffset: offset + 4,
+        payloadLength: rawLen,
+        objectId: dgIndex,
+      });
+    }
+
+    offset += 4 + rawLen;
+    dgIndex++;
+  }
+
+  if (objects.length === 0) return null;
+
+  return {
+    streamType: 'datagram',
+    headerEnd: 0,
+    headerFields,
+    objects,
+    tags,
+  };
 }
 
 // ─── Register all draft parsers ────────────────────────────────────

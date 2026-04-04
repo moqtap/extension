@@ -47,8 +47,9 @@ const filterText = ref('');
 function streamLabel(stream: StreamEntry): string {
   if (stream.isControl) return 'Control';
   const track = resolveTrack(stream);
-  if (track) return track.fullName;
-  if (stream.trackAlias != null) return `alias:${stream.trackAlias}`;
+  const suffix = stream.datagramGroupKey ? ` g:${stream.groupId}` : '';
+  if (track) return track.fullName + suffix;
+  if (stream.trackAlias != null) return `alias:${stream.trackAlias}${suffix}`;
   return `#${stream.streamId}`;
 }
 
@@ -237,7 +238,10 @@ function transferSummary(list: StreamEntry[]): string {
               :class="{ selected: stream.streamId === props.selectedId }"
               @click="emit('inspect', stream.streamId)"
             >
-              <span v-if="!compact" class="col-id mono">{{ stream.streamId }}</span>
+              <span v-if="!compact" class="col-id mono">
+                <span v-if="stream.datagramGroupKey" class="dg-badge" title="Datagram group">DG</span>
+                <template v-else>{{ stream.streamId }}</template>
+              </span>
               <span
                 v-if="!compact"
                 class="col-dir"
@@ -265,15 +269,36 @@ function transferSummary(list: StreamEntry[]): string {
                 >
                   JSON
                 </span>
+                <span
+                  v-else-if="stream.contentType === 'cbor'"
+                  class="content-badge content-cbor"
+                >
+                  CBOR
+                </span>
+                <span
+                  v-else-if="stream.contentType === 'msgpack'"
+                  class="content-badge content-msgpack"
+                >
+                  MPK
+                </span>
               </span>
               <span class="col-track" :title="stream.isControl ? 'MoQT control stream (bidi)' : resolveTrack(stream)?.fullName">
                 <span v-if="stream.isControl" class="track-control">MoQT Control</span>
-                <span v-else-if="resolveTrack(stream)" class="track-tag">{{ resolveTrack(stream)!.fullName }}</span>
-                <span v-else-if="stream.trackAlias != null" class="track-alias mono">alias:{{ stream.trackAlias }}</span>
+                <span v-else-if="resolveTrack(stream)" class="track-tag">
+                  {{ resolveTrack(stream)!.fullName }}
+                  <span v-if="stream.datagramGroupKey" class="group-tag mono">g:{{ stream.groupId }}</span>
+                </span>
+                <span v-else-if="stream.trackAlias != null" class="track-alias mono">
+                  alias:{{ stream.trackAlias }}
+                  <span v-if="stream.datagramGroupKey" class="group-tag">g:{{ stream.groupId }}</span>
+                </span>
                 <span v-else class="track-alias mono">#{{ stream.streamId }}</span>
               </span>
               <span v-if="!compact" class="col-status">
-                <span class="badge" :class="stream.closed ? 'badge-closed' : 'badge-open'">
+                <span v-if="stream.datagramGroupKey" class="badge badge-dg" :title="`${stream.datagramCount} datagrams`">
+                  {{ stream.datagramCount }} dg
+                </span>
+                <span v-else class="badge" :class="stream.closed ? 'badge-closed' : 'badge-open'">
                   {{ stream.closed ? 'closed' : 'open' }}
                 </span>
               </span>
@@ -463,6 +488,37 @@ function transferSummary(list: StreamEntry[]): string {
   background: var(--content-fmp4-bg);
   color: var(--content-fmp4-color);
   cursor: default;
+}
+.content-cbor {
+  background: var(--content-cbor-bg);
+  color: var(--content-cbor-color);
+}
+.content-msgpack {
+  background: var(--content-msgpack-bg);
+  color: var(--content-msgpack-color);
+}
+
+.dg-badge {
+  display: inline-block;
+  font-size: 8px;
+  font-weight: 700;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--content-cbor-bg, #3d3d50);
+  color: var(--content-cbor-color, #c0a0ff);
+  letter-spacing: 0.3px;
+  line-height: 1.5;
+}
+
+.group-tag {
+  font-size: 9px;
+  color: var(--text-secondary);
+  margin-left: 3px;
+}
+
+.badge-dg {
+  background: var(--content-cbor-bg, #3d3d50);
+  color: var(--content-cbor-color, #c0a0ff);
 }
 
 .track-control {

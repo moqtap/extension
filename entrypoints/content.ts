@@ -26,6 +26,8 @@ let buffer: ContentToBackgroundMsg[] = [];
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
+  matchOriginAsFallback: true,
   runAt: 'document_start',
   world: 'MAIN',
 
@@ -99,6 +101,11 @@ function bootstrap() {
         const sessionId = streamToSession.get(streamId);
         if (!sessionId) return;
         send({ type: 'stream:created', sessionId, streamId, stack });
+      },
+      onDatagram(data, direction) {
+        if (!activeSessionId) return;
+        const copy = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+        send({ type: 'datagram:data', sessionId: activeSessionId, direction, data: copy });
       },
     },
     (sessionId, reason) => {
@@ -396,6 +403,40 @@ function __moqtapTapIncoming(incoming, isBidi) {
   };
 }
 
+function __moqtapInterceptDatagrams(dg, sessionId) {
+  if (!dg || typeof dg !== "object") return;
+  if (dg.readable && typeof dg.readable === "object" && typeof dg.readable.getReader === "function") {
+    var origGetReader = dg.readable.getReader.bind(dg.readable);
+    dg.readable.getReader = function() {
+      var reader = origGetReader();
+      var origRead = reader.read.bind(reader);
+      reader.read = function() {
+        return origRead().then(function(result) {
+          if (!result.done && result.value instanceof Uint8Array) {
+            __moqtapSend({ type: "datagram:data", sessionId: sessionId, direction: "rx", data: __moqtapCopyBuf(result.value) });
+          }
+          return result;
+        });
+      };
+      return reader;
+    };
+  }
+  if (dg.writable && typeof dg.writable === "object" && typeof dg.writable.getWriter === "function") {
+    var origGetWriter = dg.writable.getWriter.bind(dg.writable);
+    dg.writable.getWriter = function() {
+      var writer = origGetWriter();
+      var origWrite = writer.write.bind(writer);
+      writer.write = function(chunk) {
+        if (chunk instanceof Uint8Array) {
+          __moqtapSend({ type: "datagram:data", sessionId: sessionId, direction: "tx", data: __moqtapCopyBuf(chunk) });
+        }
+        return origWrite(chunk);
+      };
+      return writer;
+    };
+  }
+}
+
 var __moqtapNextStreamId = 0;
 var OrigWT = self.WebTransport;
 if (OrigWT) {
@@ -431,6 +472,7 @@ if (OrigWT) {
     }
     __moqtapTapIncoming(inst.incomingBidirectionalStreams, true);
     __moqtapTapIncoming(inst.incomingUnidirectionalStreams, false);
+    __moqtapInterceptDatagrams(inst.datagrams, session.id);
     var __reported = false;
     function __reportClose(reason) {
       if (__reported) return;
@@ -478,7 +520,7 @@ function send(msg: ContentToBackgroundMsg) {
 function forward(msg: ContentToBackgroundMsg) {
   try {
     const transfers: Transferable[] = [];
-    if (msg.type === 'stream:data' && msg.data instanceof ArrayBuffer) {
+    if ((msg.type === 'stream:data' || msg.type === 'datagram:data') && msg.data instanceof ArrayBuffer) {
       transfers.push(msg.data);
     }
     window.postMessage({ source: 'moqtap-content', payload: msg }, '*', transfers);

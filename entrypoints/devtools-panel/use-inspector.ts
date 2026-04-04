@@ -27,9 +27,13 @@ export interface SessionEntry {
   closedReason?: string;
   protocol: 'moqt' | 'moqt-unknown-draft' | 'unknown' | 'detecting';
   draft?: string;
+  /** Non-zero when session originates from an iframe */
+  frameId?: number;
   streams: Map<number, StreamEntry>;
   messages: MessageEntry[];
   tracks: Map<string, TrackEntry>;
+  /** Datagram groups indexed by "trackAlias:groupId" */
+  datagramGroups: Map<string, DatagramGroupEntry>;
   /** True when session was loaded from an imported .moqtrace file */
   imported?: boolean;
   /** Whether stream data recording is active (default true) */
@@ -48,6 +52,10 @@ export interface TrackEntry {
   errorReason?: string;
   /** Assigned color index for consistent color-coding */
   colorIndex: number;
+  subscribedAt?: number;
+  subscribeOkAt?: number;
+  subscribeErrorAt?: number;
+  subscribeDoneAt?: number;
 }
 
 export interface StreamEntry {
@@ -69,6 +77,27 @@ export interface StreamEntry {
   trackAlias?: number;
   /** True when this stream is the MoQT bidirectional control stream */
   isControl?: boolean;
+  /** When set, this entry represents a datagram group (not a real stream) */
+  datagramGroupKey?: string;
+  /** Number of datagrams in the group */
+  datagramCount?: number;
+  /** MoQT group ID (for datagram groups) */
+  groupId?: number;
+}
+
+export interface DatagramGroupEntry {
+  /** Unique key: "trackAlias:groupId" */
+  groupKey: string;
+  trackAlias: number;
+  groupId: number;
+  direction: 'tx' | 'rx';
+  closed: boolean;
+  byteCount: number;
+  datagramCount: number;
+  contentType: StreamContentType;
+  mediaInfo?: PayloadMediaInfo;
+  firstDataAt?: number;
+  lastDataAt?: number;
 }
 
 export interface MessageEntry {
@@ -112,6 +141,7 @@ export function useInspector() {
         streams: new Map(),
         messages: [],
         tracks: new Map(),
+        datagramGroups: new Map(),
       };
       sessions.value.set(sessionId, session);
     }
@@ -125,6 +155,7 @@ export function useInspector() {
         session.url = msg.url;
         session.createdAt = msg.createdAt;
         session.protocol = 'detecting';
+        if (msg.frameId) session.frameId = msg.frameId;
         // Auto-select first session
         if (!selectedSessionId.value) {
           selectedSessionId.value = msg.sessionId;
@@ -270,11 +301,19 @@ export function useInspector() {
               status: msg.status,
               errorReason: msg.errorReason,
               colorIndex: nextColorIndex++,
+              subscribedAt: msg.subscribedAt,
+              subscribeOkAt: msg.subscribeOkAt,
+              subscribeErrorAt: msg.subscribeErrorAt,
+              subscribeDoneAt: msg.subscribeDoneAt,
             };
             session.tracks.set(msg.subscribeId, track);
           } else {
             track.status = msg.status;
             track.errorReason = msg.errorReason;
+            if (msg.subscribedAt != null) track.subscribedAt = msg.subscribedAt;
+            if (msg.subscribeOkAt != null) track.subscribeOkAt = msg.subscribeOkAt;
+            if (msg.subscribeErrorAt != null) track.subscribeErrorAt = msg.subscribeErrorAt;
+            if (msg.subscribeDoneAt != null) track.subscribeDoneAt = msg.subscribeDoneAt;
           }
           triggerUpdate();
         }
@@ -312,14 +351,78 @@ export function useInspector() {
         break;
       }
 
-      case 'panel:streams-cleared': {
+      case 'panel:datagram:data': {
         const session = sessions.value.get(msg.sessionId);
-        if (session) {
-          for (const [id, stream] of session.streams) {
-            if (!stream.isControl) session.streams.delete(id);
+        if (!session) break;
+        if (session.streamRecording === false) break;
+
+        {
+          const gk = `${msg.trackAlias}:${msg.groupId}`;
+          let group = session.datagramGroups.get(gk);
+          const now = Date.now();
+          if (!group) {
+            group = {
+              groupKey: gk,
+              trackAlias: msg.trackAlias,
+              groupId: msg.groupId,
+              direction: msg.direction,
+              closed: false,
+              byteCount: 0,
+              datagramCount: 0,
+              contentType: msg.contentType ?? 'binary',
+              mediaInfo: msg.mediaInfo,
+              firstDataAt: now,
+            };
+            session.datagramGroups.set(gk, group);
+          } else if (msg.isNewGroup && msg.contentType != null) {
+            group.contentType = msg.contentType;
+            group.mediaInfo = msg.mediaInfo;
           }
+          group.byteCount += msg.byteLength;
+          group.datagramCount++;
+          group.lastDataAt = now;
+          if (msg.endOfGroup) group.closed = true;
+
           triggerUpdate();
         }
+        break;
+      }
+
+      case 'panel:datagram-group:info': {
+        // State replay: background tells us about existing datagram groups
+        const session = sessions.value.get(msg.sessionId);
+        if (session) {
+          session.datagramGroups.set(msg.groupKey, {
+            groupKey: msg.groupKey,
+            trackAlias: msg.trackAlias,
+            groupId: msg.groupId,
+            direction: msg.direction,
+            closed: msg.closed,
+            byteCount: msg.byteCount,
+            datagramCount: msg.datagramCount,
+            contentType: msg.contentType ?? 'binary',
+            mediaInfo: msg.mediaInfo,
+            firstDataAt: msg.firstDataAt,
+          });
+          triggerUpdate();
+        }
+        break;
+      }
+
+      case 'panel:datagram-group-data-response': {
+        const pending = pendingDataRequests.get(msg.requestId);
+        if (pending) {
+          pendingDataRequests.delete(msg.requestId);
+          pending.resolve(msg.data ? base64ToBytes(msg.data) : null);
+        }
+        break;
+      }
+
+      case 'panel:streams-cleared': {
+        // No-op: the optimistic clear in clearStreams() already removed
+        // streams from the UI. Acting on this confirmation would incorrectly
+        // remove streams that arrived between the optimistic clear and this
+        // response (race condition with in-flight stream:data messages).
         break;
       }
 
@@ -403,6 +506,38 @@ export function useInspector() {
     });
   }
 
+  /** Load datagram group data — from local cache (imports) or background (live sessions) */
+  async function getDatagramGroupData(sessionId: string, groupKey: string): Promise<Uint8Array | null> {
+    const session = sessions.value.get(sessionId);
+    if (!session) return null;
+    const group = session.datagramGroups.get(groupKey);
+    if (!group || group.byteCount === 0) return null;
+
+    // Imported traces: data is in local memory
+    const importKey = `${sessionId}:dg:${groupKey}`;
+    const imported = importedStreamData.get(importKey);
+    if (imported) return imported;
+
+    if (!port) return null;
+
+    const requestId = nextRequestId++;
+    const tabId = chrome.devtools.inspectedWindow.tabId;
+    return new Promise<Uint8Array | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingDataRequests.delete(requestId);
+        console.warn('[moqtap panel] datagram group data request timed out');
+        resolve(null);
+      }, 10000);
+      pendingDataRequests.set(requestId, {
+        resolve: (data) => {
+          clearTimeout(timeout);
+          resolve(data);
+        },
+      });
+      port!.postMessage({ type: 'panel:request-datagram-group-data', tabId, sessionId, groupKey, requestId });
+    });
+  }
+
   function setStreamRecording(sessionId: string, recording: boolean) {
     // Optimistic update — apply immediately so UI responds instantly
     const session = sessions.value.get(sessionId);
@@ -416,13 +551,14 @@ export function useInspector() {
   }
 
   function clearStreams(sessionId: string) {
-    // Optimistic update — clear streams from UI immediately,
+    // Optimistic update — clear streams and datagram groups from UI immediately,
     // but preserve the control stream (it's always-open and unrecoverable)
     const session = sessions.value.get(sessionId);
     if (session) {
       for (const [id, stream] of session.streams) {
         if (!stream.isControl) session.streams.delete(id);
       }
+      session.datagramGroups.clear();
       triggerUpdate();
     }
     if (!port) return;
@@ -435,7 +571,7 @@ export function useInspector() {
     if (!session || session.protocol !== 'moqt') return;
 
     try {
-      const trace = await buildTrace(session, getStreamData);
+      const trace = await buildTrace(session, getStreamData, getDatagramGroupData);
       const binary = writeMoqtrace(trace);
       const draft = session.draft ?? 'unknown';
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -492,11 +628,15 @@ export function useInspector() {
       streams: new Map(),
       messages: [],
       tracks: new Map(),
+      datagramGroups: new Map(),
       imported: true,
     };
 
     // Collect payload data per stream to write to IndexedDB after session is built
     const streamPayloads = new Map<number, Uint8Array[]>();
+    // Collect datagram payloads keyed by groupKey ("trackAlias:groupId")
+    // For imported traces, we use trackAlias=0 since we don't have it
+    const dgPayloads = new Map<string, Uint8Array[]>();
 
     // Reconstruct state from trace events
     for (const event of trace.events) {
@@ -514,7 +654,7 @@ export function useInspector() {
           });
 
           // Extract track info from control messages
-          extractTrackFromImported(session, msg, ce.direction === 0 ? 'tx' : 'rx');
+          extractTrackFromImported(session, msg, ce.direction === 0 ? 'tx' : 'rx', ce.timestamp);
           break;
         }
 
@@ -537,6 +677,21 @@ export function useInspector() {
         case 'object-payload': {
           const op = event as ObjectPayloadEvent;
           const streamId = Number(op.streamId);
+
+          // Detect datagram-style events: streamId=0 with groupId
+          if (streamId === 0 && op.groupId !== undefined) {
+            const groupId = Number(op.groupId);
+            const gk = `0:${groupId}`; // trackAlias=0 for imports
+            if (op.payload && op.payload.length > 0) {
+              let payloads = dgPayloads.get(gk);
+              if (!payloads) {
+                payloads = [];
+                dgPayloads.set(gk, payloads);
+              }
+              payloads.push(op.payload instanceof Uint8Array ? op.payload : new Uint8Array(op.payload as ArrayLike<number>));
+            }
+            break;
+          }
 
           // Ensure stream entry exists
           if (!session.streams.has(streamId)) {
@@ -597,6 +752,50 @@ export function useInspector() {
       importedStreamData.set(`${sessionId}:${streamId}`, merged);
     }
 
+    // Reconstruct datagram groups from imported trace
+    for (const [gk, payloads] of dgPayloads) {
+      const parts = gk.split(':');
+      const trackAlias = Number(parts[0]);
+      const groupId = Number(parts[1]);
+
+      // Build length-prefixed datagram group data (matching heap store format)
+      let totalLen = 0;
+      for (const chunk of payloads) totalLen += 4 + chunk.length;
+      const merged = new Uint8Array(totalLen);
+      const dv = new DataView(merged.buffer);
+      let offset = 0;
+      for (let i = 0; i < payloads.length; i++) {
+        const chunk = payloads[i];
+        dv.setUint32(offset, chunk.length, true);
+        merged.set(chunk, offset + 4);
+        offset += 4 + chunk.length;
+      }
+
+      // Detect content from first payload
+      let ct: StreamContentType = 'binary';
+      let mediaInfo: PayloadMediaInfo | undefined;
+      if (payloads.length > 0) {
+        ct = detectContentType(payloads[0]);
+        if (ct === 'fmp4') {
+          mediaInfo = detectMediaInfo(payloads[0]) ?? undefined;
+        }
+      }
+
+      session.datagramGroups.set(gk, {
+        groupKey: gk,
+        trackAlias,
+        groupId,
+        direction: 'rx',
+        closed: true,
+        byteCount: totalLen,
+        datagramCount: payloads.length,
+        contentType: ct,
+        mediaInfo,
+      });
+
+      importedStreamData.set(`${sessionId}:dg:${gk}`, merged);
+    }
+
     sessions.value.set(sessionId, session);
     selectedSessionId.value = sessionId;
     triggerUpdate();
@@ -607,6 +806,7 @@ export function useInspector() {
     session: SessionEntry,
     msg: Record<string, unknown>,
     direction: 'tx' | 'rx',
+    timestamp?: number,
   ) {
     const msgType = String(msg.type ?? '');
 
@@ -624,22 +824,30 @@ export function useInspector() {
         direction,
         status: 'pending',
         colorIndex: nextColorIndex++,
+        subscribedAt: timestamp,
       });
     } else if (msgType === 'subscribe_ok') {
       const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '');
       const track = session.tracks.get(subscribeId);
-      if (track) track.status = 'active';
+      if (track) {
+        track.status = 'active';
+        track.subscribeOkAt = timestamp;
+      }
     } else if (msgType === 'subscribe_error') {
       const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '');
       const track = session.tracks.get(subscribeId);
       if (track) {
         track.status = 'error';
         track.errorReason = String(msg.reasonPhrase ?? msg.reason_phrase ?? '');
+        track.subscribeErrorAt = timestamp;
       }
     } else if (msgType === 'subscribe_done' || msgType === 'unsubscribe') {
       const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '');
       const track = session.tracks.get(subscribeId);
-      if (track) track.status = 'done';
+      if (track) {
+        track.status = 'done';
+        track.subscribeDoneAt = timestamp;
+      }
     }
   }
 
@@ -664,6 +872,7 @@ export function useInspector() {
     selectSession,
     clearSessions,
     getStreamData,
+    getDatagramGroupData,
     exportTrace,
     importTrace,
     setStreamRecording,

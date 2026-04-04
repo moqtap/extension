@@ -108,6 +108,9 @@ const sessionStats = computed(() => {
         <span class="badge" :class="protocolBadge(session).class">
           {{ protocolBadge(session).label }}
         </span>
+        <span v-if="session.frameId" class="badge badge-iframe">
+          iframe
+        </span>
         <span v-if="session.imported" class="badge badge-imported">
           imported
         </span>

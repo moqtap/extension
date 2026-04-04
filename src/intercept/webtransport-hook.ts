@@ -29,6 +29,8 @@ export interface StreamInterceptor {
   onClose(streamId: number): void;
   onError(streamId: number, error: unknown): void;
   onStreamCreated?(streamId: number, stack: string): void;
+  /** Called for each datagram received or sent via WebTransport datagrams. */
+  onDatagram?(data: Uint8Array, direction: 'tx' | 'rx'): void;
 }
 
 // Stored per-global so uninstallWebTransportHook can restore without
@@ -117,6 +119,11 @@ export function installWebTransportHook(
       onStream,
       false,
     );
+
+    // Intercept datagrams (readable = rx, writable = tx)
+    if (onStream.onDatagram) {
+      interceptDatagrams(instance.datagrams, onStream);
+    }
 
     // Monitor connection lifecycle promises
     if (onSessionClosed) {
@@ -288,6 +295,62 @@ function tapIncomingStreams(
       });
     return reader;
   };
+}
+
+/**
+ * Intercept the datagrams property of a WebTransport instance.
+ * Tees the readable side (rx) and wraps the writable side (tx).
+ */
+function interceptDatagrams(
+  datagrams: unknown,
+  interceptor: StreamInterceptor,
+): void {
+  if (!datagrams || typeof datagrams !== 'object') return;
+  const dg = datagrams as {
+    readable?: unknown;
+    writable?: unknown;
+  };
+
+  // Intercept incoming datagrams (rx) by wrapping getReader
+  if (dg.readable && typeof dg.readable === 'object') {
+    const rs = dg.readable as { getReader: () => ReadableStreamReader };
+    if (typeof rs.getReader === 'function') {
+      const origGetReader = rs.getReader.bind(rs);
+      rs.getReader = () => {
+        const reader = origGetReader();
+        const origRead = reader.read.bind(reader);
+        reader.read = () =>
+          origRead().then(
+            (result: ReadableStreamReadResult<unknown>) => {
+              if (!result.done && result.value instanceof Uint8Array) {
+                interceptor.onDatagram!(result.value, 'rx');
+              }
+              return result;
+            },
+          );
+        return reader;
+      };
+    }
+  }
+
+  // Intercept outgoing datagrams (tx) by wrapping getWriter
+  if (dg.writable && typeof dg.writable === 'object') {
+    const ws = dg.writable as { getWriter: () => WritableStreamWriter };
+    if (typeof ws.getWriter === 'function') {
+      const origGetWriter = ws.getWriter.bind(ws);
+      ws.getWriter = () => {
+        const writer = origGetWriter();
+        const origWrite = writer.write.bind(writer);
+        writer.write = (chunk?: unknown) => {
+          if (chunk instanceof Uint8Array) {
+            interceptor.onDatagram!(chunk, 'tx');
+          }
+          return origWrite(chunk);
+        };
+        return writer;
+      };
+    }
+  }
 }
 
 // Minimal type stubs for stream reader/writer used in interception.
