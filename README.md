@@ -4,12 +4,16 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 
 ## Features
 
-- Intercepts all WebTransport connections on a page (main thread + workers)
+- Intercepts all WebTransport connections on a page (main thread, workers, and iframes)
 - Auto-detects MoQT protocol and draft version from wire bytes
 - Decodes control messages with full field display
-- Tracks subscriptions with namespace/track name display
-- Stream data viewer with hex and JSON modes
+- Tracks tab with per-track subscription state, timing, and namespace grouping
+- WebTransport datagram interception and decoding (shown in Streams tab)
+- Stream content detection: JSON, CBOR, MessagePack, and ISO BMFF media (CMAF, LOC, fMP4)
+- Hex viewer with inline object boundary annotations and object navigation
 - Live bitrate display for active connections
+- Filter toolbar for messages (active only, group by namespace, TX/RX direction) and streams (text search)
+- Recording toggle and clear controls for stream data
 - Stack traces for control messages and stream creation
 - Export/import `.moqtrace` trace files
 - Graceful handling of non-MoQT WebTransport connections
