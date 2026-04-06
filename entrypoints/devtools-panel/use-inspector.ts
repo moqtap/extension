@@ -118,6 +118,8 @@ export function useInspector() {
   const midSessionOpen = ref(false);
   /** Worker URLs where instrumentation was blocked by CSP */
   const cspBlockedWorkers = ref<string[]>([]);
+  /** Worker origin exclusion list (auto-detected + manual) */
+  const workerExclusions = ref<Record<string, import('@/src/messaging/types').ExclusionEntry>>({});
   /** Unistream creation stacks (ephemeral, keyed by "sessionId:streamId") */
   const streamCreationStacks = ref<Map<string, string>>(new Map());
 
@@ -333,6 +335,11 @@ export function useInspector() {
         break;
       }
 
+      case 'panel:exclusion-list': {
+        workerExclusions.value = msg.exclusions;
+        break;
+      }
+
       case 'panel:stream-data-response': {
         const pending = pendingDataRequests.get(msg.requestId);
         if (pending) {
@@ -456,6 +463,8 @@ export function useInspector() {
 
     // Tell background which tab we're inspecting
     port.postMessage({ type: 'panel:connect', tabId });
+    // Request the current exclusion list
+    port.postMessage({ type: 'panel:request-exclusions', tabId });
   }
 
   function selectSession(sessionId: string | null) {
@@ -472,6 +481,18 @@ export function useInspector() {
       const tabId = chrome.devtools.inspectedWindow.tabId;
       port.postMessage({ type: 'panel:clear', tabId });
     }
+  }
+
+  function addWorkerExclusion(origin: string) {
+    if (!port) return;
+    const tabId = chrome.devtools.inspectedWindow.tabId;
+    port.postMessage({ type: 'panel:add-exclusion', tabId, origin });
+  }
+
+  function removeWorkerExclusion(origin: string) {
+    if (!port) return;
+    const tabId = chrome.devtools.inspectedWindow.tabId;
+    port.postMessage({ type: 'panel:remove-exclusion', tabId, origin });
   }
 
   /** Load stream data — from local cache (imports) or background (live sessions) */
@@ -868,6 +889,7 @@ export function useInspector() {
     connected,
     midSessionOpen,
     cspBlockedWorkers,
+    workerExclusions,
     streamCreationStacks,
     selectSession,
     clearSessions,
@@ -877,5 +899,7 @@ export function useInspector() {
     importTrace,
     setStreamRecording,
     clearStreams,
+    addWorkerExclusion,
+    removeWorkerExclusion,
   };
 }

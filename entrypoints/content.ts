@@ -8,11 +8,11 @@
  * is flushed and live forwarding begins.
  *
  * Worker wrapping uses blob URLs with importScripts/import to inject the
- * WebTransport hook before the worker's own code runs. Some sites break
- * when their workers run inside a blob context (self.location changes),
- * so known-incompatible domains are excluded via WORKER_EXCLUSIONS.
- * Sites with strict CSP that blocks blob: in worker-src get an automatic
- * fallback — the original worker is created without instrumentation.
+ * WebTransport hook before the worker's own code runs. A Proxy-based
+ * recovery system handles CSP failures transparently: if the blob worker
+ * fails (sync or async), the Proxy terminates it and creates the original
+ * uninstrumented worker, replaying any buffered operations. The origin is
+ * then auto-excluded so future page loads skip wrapping entirely.
  */
 
 import { installWebTransportHook } from '@/src/intercept/webtransport-hook';
@@ -20,6 +20,35 @@ import type { ContentToBackgroundMsg } from '@/src/messaging/types';
 
 /** Max buffered events before oldest are dropped (prevents memory leaks on pages that never open DevTools) */
 const MAX_BUFFER = 500;
+
+/**
+ * Origins where worker wrapping is known to fail (CSP, etc.).
+ * Seeded synchronously from localStorage, then merged with the global
+ * exclusion list relayed by the bridge from browser.storage.local.
+ */
+const excludedOrigins = new Set<string>();
+
+let currentOrigin = '';
+try { currentOrigin = location.origin; } catch { /* opaque origin */ }
+
+// Seed from localStorage for instant synchronous check
+try {
+  const raw = localStorage.getItem('__moqtap_excluded_origins');
+  if (raw) {
+    const arr = JSON.parse(raw) as string[];
+    for (const o of arr) excludedOrigins.add(o);
+  }
+  // Also check legacy single-origin flag
+  const legacy = localStorage.getItem('__moqtap_csp_blocked');
+  if (legacy && currentOrigin) {
+    const ts = Number(legacy);
+    if (Date.now() - ts < 24 * 60 * 60 * 1000) {
+      excludedOrigins.add(currentOrigin);
+    } else {
+      localStorage.removeItem('__moqtap_csp_blocked');
+    }
+  }
+} catch { /* localStorage may be disabled */ }
 
 let activated = false;
 let buffer: ContentToBackgroundMsg[] = [];
@@ -32,6 +61,17 @@ export default defineContentScript({
   world: 'MAIN',
 
   main() {
+    // Listen for exclusion list from bridge (relayed from browser.storage.local).
+    // This arrives async but merges into the set used by the fast-path check.
+    // Workers created before it arrives still go through the Proxy safety net.
+    window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
+      if (event.data?.source === 'moqtap-exclusions') {
+        const origins = event.data.origins as string[];
+        for (const o of origins) excludedOrigins.add(o);
+      }
+    });
+
     // Listen for activation signal from bridge (ISOLATED world)
     window.addEventListener('message', (event) => {
       if (event.source !== window) return;
@@ -117,30 +157,174 @@ function bootstrap() {
   patchWorkerConstructor(WORKER_HOOK_SOURCE);
 }
 
-// ─── CSP blocklist (learned, per-origin, localStorage) ────────────────
+// ─── Exclusion persistence ────────────────────────────────────────────
 
-const CSP_BLOCK_KEY = '__moqtap_csp_blocked';
-/** How long a CSP block record is valid (24 hours) */
-const CSP_BLOCK_TTL = 24 * 60 * 60 * 1000;
-
-/** Check if this origin has previously failed blob: worker creation */
-function isCspBlocked(): boolean {
+/** Persist a new auto-exclusion to localStorage + notify bridge for global storage */
+function addExclusion(origin: string, workerUrl: string, error: string) {
+  excludedOrigins.add(origin);
+  // Persist to localStorage for fast synchronous check on future loads
   try {
-    const raw = localStorage.getItem(CSP_BLOCK_KEY);
-    if (!raw) return false;
-    const ts = Number(raw);
-    if (Date.now() - ts < CSP_BLOCK_TTL) return true;
-    // Expired — remove stale entry
-    localStorage.removeItem(CSP_BLOCK_KEY);
+    const raw = localStorage.getItem('__moqtap_excluded_origins');
+    const arr: string[] = raw ? JSON.parse(raw) : [];
+    if (!arr.includes(origin)) {
+      arr.push(origin);
+      localStorage.setItem('__moqtap_excluded_origins', JSON.stringify(arr));
+    }
+    // Clean up legacy key
+    localStorage.removeItem('__moqtap_csp_blocked');
   } catch { /* localStorage may be disabled */ }
-  return false;
+  // Notify bridge → background for global persistence
+  send({
+    type: 'worker:csp-recovered',
+    origin,
+    workerUrl,
+    error,
+  } as ContentToBackgroundMsg);
 }
 
-/** Record that blob: workers are blocked on this origin */
-function markCspBlocked() {
-  try {
-    localStorage.setItem(CSP_BLOCK_KEY, String(Date.now()));
-  } catch { /* localStorage may be disabled */ }
+// ─── Worker Proxy with recovery ──────────────────────────────────────
+
+/** How long to wait for heartbeat/error before committing (ms) */
+const PROBATION_MS = 500;
+
+type BufferedOp =
+  | { k: 'pm'; args: [message: unknown, transfer: Transferable[]] }
+  | { k: 'ael'; args: [type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions] }
+  | { k: 'rel'; args: [type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions] }
+  | { k: 'set'; prop: 'onmessage' | 'onerror' | 'onmessageerror'; value: unknown };
+
+/**
+ * Wrap an instrumented Worker in a Proxy that detects async CSP failures
+ * and transparently recovers by creating the original uninstrumented Worker.
+ *
+ * During a short probation period, all caller operations are buffered.
+ * The proxy commits to the instrumented worker on heartbeat receipt,
+ * or recovers on error, or commits on timeout.
+ */
+function createWorkerProxy(
+  OrigWorker: new (url: string | URL, options?: WorkerOptions) => Worker,
+  instrumentedWorker: Worker,
+  originalUrl: string | URL,
+  originalOptions: WorkerOptions | undefined,
+  blobUrl: string | URL,
+): Worker {
+  let worker = instrumentedWorker;
+  let settled = false;
+  const ops: BufferedOp[] = [];
+
+  function flush(target: Worker) {
+    for (const op of ops) {
+      switch (op.k) {
+        case 'pm': target.postMessage(op.args[0], op.args[1]); break;
+        case 'ael': target.addEventListener(...op.args); break;
+        case 'rel': target.removeEventListener(...op.args); break;
+        case 'set': (target as Record<string, unknown>)[op.prop] = op.value; break;
+      }
+    }
+    ops.length = 0;
+  }
+
+  function commit() {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    worker.removeEventListener('message', heartbeatListener);
+    worker.removeEventListener('error', errorListener, true);
+    attachWorkerListener(worker);
+    flush(worker);
+  }
+
+  function recover(errMsg: string) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    worker.removeEventListener('message', heartbeatListener);
+    worker.removeEventListener('error', errorListener, true);
+    worker.terminate();
+    revokeIfBlob(blobUrl);
+    // Create uninstrumented worker
+    worker = new OrigWorker(originalUrl, originalOptions);
+    flush(worker);
+    // Record exclusion
+    addExclusion(
+      currentOrigin,
+      new URL(String(originalUrl), location.href).href,
+      errMsg,
+    );
+  }
+
+  // Heartbeat: hook sends {source:"moqtap-hook-ready"} on successful load
+  const heartbeatListener = (ev: MessageEvent) => {
+    if (ev.data?.source === 'moqtap-hook-ready') {
+      ev.stopImmediatePropagation();
+      commit();
+    }
+  };
+  worker.addEventListener('message', heartbeatListener);
+
+  // Error: CSP or other load failure inside the blob worker
+  const errorListener = (ev: Event) => {
+    if (settled) return;
+    ev.stopImmediatePropagation();
+    (ev as ErrorEvent).preventDefault?.();
+    recover(String((ev as ErrorEvent).message || 'Worker load error'));
+  };
+  worker.addEventListener('error', errorListener, { capture: true, once: true });
+
+  // Timeout fallback: if no signal within PROBATION_MS, assume success
+  const timer = setTimeout(() => {
+    if (!settled) commit();
+  }, PROBATION_MS);
+
+  return new Proxy({} as Worker, {
+    get(_, prop) {
+      if (prop === 'postMessage') {
+        return (data: unknown, transfer?: Transferable[]) => {
+          if (settled) worker.postMessage(data, transfer ?? []);
+          else ops.push({ k: 'pm', args: [data, transfer ?? []] });
+        };
+      }
+      if (prop === 'terminate') {
+        return () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            worker.removeEventListener('message', heartbeatListener);
+            worker.removeEventListener('error', errorListener, true);
+          }
+          worker.terminate();
+        };
+      }
+      if (prop === 'addEventListener') {
+        return (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+          if (settled) worker.addEventListener(type, listener, options);
+          else ops.push({ k: 'ael', args: [type, listener, options] });
+        };
+      }
+      if (prop === 'removeEventListener') {
+        return (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => {
+          if (settled) worker.removeEventListener(type, listener, options);
+          else ops.push({ k: 'rel', args: [type, listener, options] });
+        };
+      }
+      const val = (worker as Record<string, unknown>)[prop as string];
+      return typeof val === 'function' ? (val as Function).bind(worker) : val;
+    },
+
+    set(_, prop, value) {
+      const p = prop as string;
+      if (!settled && (p === 'onmessage' || p === 'onerror' || p === 'onmessageerror')) {
+        ops.push({ k: 'set', prop: p, value });
+        return true;
+      }
+      (worker as Record<string, unknown>)[p] = value;
+      return true;
+    },
+
+    getPrototypeOf() {
+      return OrigWorker.prototype;
+    },
+  });
 }
 
 // ─── Worker constructor patching ──────────────────────────────────────
@@ -148,32 +332,36 @@ function markCspBlocked() {
 function patchWorkerConstructor(hookSource: string) {
   const glob = globalThis as Record<string, unknown>;
 
-  // If this origin previously blocked blob: workers, skip patching entirely.
-  // Zero latency — just a synchronous localStorage read.
-  if (isCspBlocked()) return;
+  // If this origin is already excluded, skip worker patching entirely
+  if (excludedOrigins.has(currentOrigin)) return;
 
   // Track within this page load so we don't send multiple warnings
   let cspWarned = false;
+  // Once we discover CSP blocks blob: workers, skip for rest of page life
+  let blocked = false;
 
   // Patch Worker
   const OriginalWorker = glob.Worker as (new (url: string | URL, options?: WorkerOptions) => Worker) | undefined;
   if (OriginalWorker) {
-    // Once we discover CSP blocks blob: workers, skip for rest of page life
-    let blocked = false;
-
     const PatchedWorker = function (this: unknown, url: string | URL, options?: WorkerOptions): Worker {
-      if (blocked) return new OriginalWorker(url, options);
+      if (blocked || excludedOrigins.has(currentOrigin)) {
+        return new OriginalWorker(url, options);
+      }
 
       const wrappedUrl = wrapWorkerScript(url, options, hookSource);
       try {
-        const worker = new OriginalWorker(wrappedUrl.url, wrappedUrl.options);
-        attachWorkerListener(worker);
-        return worker;
+        const instrumentedWorker = new OriginalWorker(wrappedUrl.url, wrappedUrl.options);
+        // Wrap in recovery proxy to handle async CSP failures
+        return createWorkerProxy(OriginalWorker, instrumentedWorker, url, options, wrappedUrl.url);
       } catch (err) {
-        // CSP blocked blob: worker — record for this origin and fall back
+        // Synchronous CSP failure — blob: worker creation blocked
         blocked = true;
-        markCspBlocked();
         revokeIfBlob(wrappedUrl.url);
+        addExclusion(
+          currentOrigin,
+          new URL(String(url), location.href).href,
+          String(err),
+        );
         if (!cspWarned) {
           cspWarned = true;
           send({
@@ -190,7 +378,7 @@ function patchWorkerConstructor(hookSource: string) {
     glob.Worker = PatchedWorker;
   }
 
-  // Patch SharedWorker
+  // Patch SharedWorker (simpler: async error detection, no Proxy recovery)
   const OriginalSharedWorker = glob.SharedWorker as (new (url: string | URL, options?: string | WorkerOptions) => SharedWorker) | undefined;
   if (OriginalSharedWorker) {
     let sharedBlocked = false;
@@ -198,7 +386,7 @@ function patchWorkerConstructor(hookSource: string) {
     const PatchedSharedWorker = function (this: unknown, url: string | URL, options?: string | WorkerOptions): SharedWorker {
       const opts: WorkerOptions | undefined = typeof options === 'string' ? { name: options } : options;
 
-      if (sharedBlocked) {
+      if (sharedBlocked || excludedOrigins.has(currentOrigin)) {
         const origOpts: string | WorkerOptions | undefined = typeof options === 'string' ? options : opts;
         return new OriginalSharedWorker(url, origOpts);
       }
@@ -207,11 +395,26 @@ function patchWorkerConstructor(hookSource: string) {
       try {
         const worker = new OriginalSharedWorker(wrappedUrl.url, wrappedUrl.options);
         attachSharedWorkerListener(worker);
+        // Async error detection for SharedWorker
+        worker.addEventListener('error', () => {
+          if (!sharedBlocked) {
+            sharedBlocked = true;
+            addExclusion(
+              currentOrigin,
+              new URL(String(url), location.href).href,
+              'SharedWorker async CSP failure',
+            );
+          }
+        }, { once: true });
         return worker;
       } catch (err) {
         sharedBlocked = true;
-        markCspBlocked();
         revokeIfBlob(wrappedUrl.url);
+        addExclusion(
+          currentOrigin,
+          new URL(String(url), location.href).href,
+          String(err),
+        );
         if (!cspWarned) {
           cspWarned = true;
           send({
@@ -266,12 +469,17 @@ function wrapWorkerScript(
   const resolvedUrl = new URL(String(url), location.href).href;
   const locationShim = buildLocationShim(resolvedUrl);
 
+  // Heartbeat: signals the hook loaded successfully.
+  // Classic workers: importScripts is synchronous — if it throws, the heartbeat never fires.
+  // Module workers: static import failure prevents module evaluation, so we use dynamic import.
+  const heartbeat = `try{self.postMessage({source:"moqtap-hook-ready"})}catch(e){}`;
+
   if (isModule) {
-    const wrapper = `${locationShim}${hookSource}\nimport "${resolvedUrl}";`;
+    const wrapper = `${locationShim}${hookSource}\nimport("${resolvedUrl}").then(function(){${heartbeat}},function(){});`;
     const blob = new Blob([wrapper], { type: 'application/javascript' });
     return { url: URL.createObjectURL(blob), options };
   } else {
-    const wrapper = `${locationShim}${hookSource}\nimportScripts("${resolvedUrl}");`;
+    const wrapper = `${locationShim}${hookSource}\nimportScripts("${resolvedUrl}");\n${heartbeat}`;
     const blob = new Blob([wrapper], { type: 'application/javascript' });
     return { url: URL.createObjectURL(blob), options };
   }

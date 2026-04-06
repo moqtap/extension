@@ -6,7 +6,25 @@ import { getCachedPref, savePref } from './prefs';
 import ConnectionList from './components/ConnectionList.vue';
 import SessionView from './components/SessionView.vue';
 
-const { sessions, selectedSessionId, midSessionOpen, cspBlockedWorkers, selectSession, clearSessions, getStreamData, getDatagramGroupData, exportTrace, importTrace, setStreamRecording, clearStreams } = useInspector();
+const { sessions, selectedSessionId, midSessionOpen, cspBlockedWorkers, workerExclusions, selectSession, clearSessions, getStreamData, getDatagramGroupData, exportTrace, importTrace, setStreamRecording, clearStreams, addWorkerExclusion, removeWorkerExclusion } = useInspector();
+
+const showExclusions = ref(false);
+const newExclusionOrigin = ref('');
+
+function handleAddExclusion() {
+  const origin = newExclusionOrigin.value.trim();
+  if (!origin) return;
+  // Normalise: ensure it looks like an origin (https://host)
+  try {
+    const url = new URL(origin.includes('://') ? origin : `https://${origin}`);
+    addWorkerExclusion(url.origin);
+    newExclusionOrigin.value = '';
+  } catch {
+    // Invalid URL — ignore
+  }
+}
+
+const exclusionCount = computed(() => Object.keys(workerExclusions.value).length);
 
 /* Reactive tick that drives the bitrate decay animation. */
 const bitrateTick = ref(0);
@@ -203,9 +221,36 @@ function statusColor(s: SessionEntry): string {
           </svg>
         </span>
         <span>
-          Worker instrumentation blocked by this site's security policy.
-          WebTransport connections inside Workers cannot be captured — only main-thread sessions will appear.
+          Worker instrumentation recovered for this site's security policy.
+          <a v-if="exclusionCount > 0" href="#" @click.prevent="showExclusions = !showExclusions">
+            {{ exclusionCount }} excluded origin{{ exclusionCount !== 1 ? 's' : '' }}
+          </a>
         </span>
+      </div>
+      <div v-if="exclusionCount > 0 && !cspBlockedWorkers.length" class="exclusion-toggle">
+        <a href="#" @click.prevent="showExclusions = !showExclusions">
+          {{ exclusionCount }} worker exclusion{{ exclusionCount !== 1 ? 's' : '' }}
+        </a>
+      </div>
+      <div v-if="showExclusions" class="exclusion-panel">
+        <div class="exclusion-header">Worker Origin Exclusions</div>
+        <div class="exclusion-list">
+          <div v-for="(entry, origin) in workerExclusions" :key="origin" class="exclusion-entry">
+            <span class="exclusion-origin">{{ origin }}</span>
+            <span :class="['exclusion-badge', entry.source]">{{ entry.source }}</span>
+            <button class="exclusion-remove" @click="removeWorkerExclusion(String(origin))" title="Remove exclusion">x</button>
+          </div>
+          <div v-if="exclusionCount === 0" class="exclusion-empty">No excluded origins.</div>
+        </div>
+        <div class="exclusion-add">
+          <input
+            v-model="newExclusionOrigin"
+            placeholder="https://example.com"
+            class="exclusion-input"
+            @keydown.enter="handleAddExclusion"
+          />
+          <button class="exclusion-add-btn" @click="handleAddExclusion">Add</button>
+        </div>
       </div>
       <SessionView
         v-if="selectedSession"
@@ -340,6 +385,107 @@ function statusColor(s: SessionEntry): string {
   color: var(--text-warning, #ffb347);
   flex-shrink: 0;
   display: flex;
+}
+.csp-warning-banner a,
+.exclusion-toggle a {
+  color: var(--text-link, #6eb5ff);
+  text-decoration: none;
+}
+.csp-warning-banner a:hover,
+.exclusion-toggle a:hover {
+  text-decoration: underline;
+}
+.exclusion-toggle {
+  padding: 4px 12px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.exclusion-panel {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  font-size: 11px;
+  padding: 8px 12px;
+}
+.exclusion-header {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+}
+.exclusion-list {
+  max-height: 140px;
+  overflow-y: auto;
+}
+.exclusion-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.exclusion-origin {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.exclusion-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.exclusion-badge.auto {
+  background: var(--text-warning, #ffb347);
+  color: #000;
+}
+.exclusion-badge.manual {
+  background: var(--text-link, #6eb5ff);
+  color: #000;
+}
+.exclusion-remove {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.exclusion-remove:hover {
+  color: var(--text-error, #ff6b6b);
+}
+.exclusion-empty {
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 4px 0;
+}
+.exclusion-add {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.exclusion-input {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 3px;
+}
+.exclusion-add-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.exclusion-add-btn:hover {
+  background: var(--border);
 }
 
 .sidebar-footer {

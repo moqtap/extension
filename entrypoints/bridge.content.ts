@@ -7,6 +7,10 @@
  * 2. Listens for activation signal from background (when a DevTools panel
  *    connects) and forwards it to the MAIN world content script.
  *
+ * Also reads the worker origin exclusion list from browser.storage.local
+ * at startup and relays it to the MAIN world so the content script can
+ * skip worker wrapping for known-bad origins.
+ *
  * Uses runtime.connect (persistent port) rather than sendMessage (one-shot)
  * so that high-frequency stream data doesn't create per-message channel
  * overhead. Single teardown on tab close instead of hundreds of in-flight
@@ -16,6 +20,9 @@
 import type { ContentToBackgroundMsg } from '@/src/messaging/types';
 import { bytesToBase64 } from '@/src/messaging/types';
 
+/** Storage key for the global worker origin exclusion list */
+const EXCLUSIONS_KEY = 'moqtap-worker-exclusions';
+
 export default defineContentScript({
   matches: ['<all_urls>'],
   allFrames: true,
@@ -23,6 +30,22 @@ export default defineContentScript({
   runAt: 'document_start',
 
   main() {
+
+    // ── Relay exclusion list to MAIN world ───────────────────────────
+    // Read from browser.storage.local and post to MAIN world so it can
+    // skip worker wrapping for known-bad origins. This is async, but the
+    // MAIN world Proxy safety net handles Workers created before it arrives.
+    try {
+      browser.storage.local.get(EXCLUSIONS_KEY).then((result) => {
+        const exclusions = result[EXCLUSIONS_KEY] as Record<string, unknown> | undefined;
+        if (exclusions) {
+          const origins = Object.keys(exclusions);
+          if (origins.length > 0) {
+            window.postMessage({ source: 'moqtap-exclusions', origins }, '*');
+          }
+        }
+      }).catch(() => { /* storage not available */ });
+    } catch { /* extension context invalidated */ }
 
     // ── Persistent port to background ────────────────────────────────
     let port: ReturnType<typeof browser.runtime.connect> | null = null;

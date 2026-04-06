@@ -12,6 +12,7 @@ import type {
   ContentToBackgroundMsg,
   BackgroundToPanelMsg,
   PanelToBackgroundMsg,
+  ExclusionEntry,
 } from '@/src/messaging/types';
 import { bytesToBase64, base64ToBytes } from '@/src/messaging/types';
 import { detectFromControlStream, type DetectionResult } from '@/src/detect/draft-detect';
@@ -1006,7 +1007,48 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number, fr
       });
       break;
     }
+
+    case 'worker:csp-recovered': {
+      // Persist auto-exclusion to global storage
+      persistExclusion(message.origin, 'auto', message.error);
+      sendToPanel(tabId, {
+        type: 'panel:worker-csp-warning',
+        workerUrl: message.workerUrl || message.origin,
+      });
+      break;
+    }
   }
+}
+
+// ─── Worker origin exclusion list (browser.storage.local) ────────────
+
+const EXCLUSIONS_KEY = 'moqtap-worker-exclusions';
+
+async function loadExclusions(): Promise<Record<string, ExclusionEntry>> {
+  try {
+    const result = await browser.storage.local.get(EXCLUSIONS_KEY);
+    return (result[EXCLUSIONS_KEY] as Record<string, ExclusionEntry>) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveExclusions(exclusions: Record<string, ExclusionEntry>): Promise<void> {
+  try {
+    await browser.storage.local.set({ [EXCLUSIONS_KEY]: exclusions });
+  } catch { /* storage not available */ }
+}
+
+async function persistExclusion(origin: string, source: 'auto' | 'manual', error?: string): Promise<void> {
+  const exclusions = await loadExclusions();
+  exclusions[origin] = { blockedAt: Date.now(), source, error };
+  await saveExclusions(exclusions);
+}
+
+async function removeExclusion(origin: string): Promise<void> {
+  const exclusions = await loadExclusions();
+  delete exclusions[origin];
+  await saveExclusions(exclusions);
 }
 
 /**
@@ -1271,6 +1313,37 @@ export default defineBackground(() => {
               sessionId: msg.sessionId,
             });
           }
+          break;
+        }
+
+        case 'panel:request-exclusions': {
+          loadExclusions().then((exclusions) => {
+            if (connectedTabId !== null) {
+              sendToPanel(connectedTabId, { type: 'panel:exclusion-list', exclusions });
+            }
+          });
+          break;
+        }
+
+        case 'panel:add-exclusion': {
+          persistExclusion(msg.origin, 'manual').then(() => {
+            return loadExclusions();
+          }).then((exclusions) => {
+            if (connectedTabId !== null) {
+              sendToPanel(connectedTabId, { type: 'panel:exclusion-list', exclusions });
+            }
+          });
+          break;
+        }
+
+        case 'panel:remove-exclusion': {
+          removeExclusion(msg.origin).then(() => {
+            return loadExclusions();
+          }).then((exclusions) => {
+            if (connectedTabId !== null) {
+              sendToPanel(connectedTabId, { type: 'panel:exclusion-list', exclusions });
+            }
+          });
           break;
         }
       }

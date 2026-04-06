@@ -83,6 +83,21 @@ export interface WorkerCspBlockedMsg {
   error: string;
 }
 
+export interface WorkerCspRecoveredMsg {
+  type: 'worker:csp-recovered';
+  tabId?: number;
+  origin: string;
+  workerUrl: string;
+  error: string;
+}
+
+/** Entry in the worker origin exclusion list (persisted in browser.storage.local) */
+export interface ExclusionEntry {
+  blockedAt: number;
+  source: 'auto' | 'manual';
+  error?: string;
+}
+
 export interface DatagramDataMsg {
   type: 'datagram:data';
   tabId?: number;
@@ -102,6 +117,7 @@ export type ContentToBackgroundMsg =
   | SessionClosedMsg
   | BridgeReadyMsg
   | WorkerCspBlockedMsg
+  | WorkerCspRecoveredMsg
   | DatagramDataMsg;
 
 // ─── Background -> Panel messages ────────────────────────────────────
@@ -304,6 +320,11 @@ export interface PanelDatagramGroupDataResponseMsg {
   data: string | null;
 }
 
+export interface PanelExclusionListMsg {
+  type: 'panel:exclusion-list';
+  exclusions: Record<string, ExclusionEntry>;
+}
+
 /** Messages sent from background to DevTools panel */
 export type BackgroundToPanelMsg =
   | PanelSessionOpenedMsg
@@ -323,7 +344,8 @@ export type BackgroundToPanelMsg =
   | PanelStreamsClearedMsg
   | PanelDatagramDataMsg
   | PanelDatagramGroupInfoMsg
-  | PanelDatagramGroupDataResponseMsg;
+  | PanelDatagramGroupDataResponseMsg
+  | PanelExclusionListMsg;
 
 // ─── Background -> Bridge messages ───────────────────────────────────
 
@@ -382,6 +404,23 @@ export interface PanelRequestDatagramGroupDataMsg {
   requestId: number;
 }
 
+export interface PanelRequestExclusionsMsg {
+  type: 'panel:request-exclusions';
+  tabId: number;
+}
+
+export interface PanelAddExclusionMsg {
+  type: 'panel:add-exclusion';
+  tabId: number;
+  origin: string;
+}
+
+export interface PanelRemoveExclusionMsg {
+  type: 'panel:remove-exclusion';
+  tabId: number;
+  origin: string;
+}
+
 /** Messages sent from DevTools panel to background */
 export type PanelToBackgroundMsg =
   | PanelConnectMsg
@@ -391,7 +430,10 @@ export type PanelToBackgroundMsg =
   | PanelRequestStreamDataMsg
   | PanelSetStreamRecordingMsg
   | PanelClearStreamsMsg
-  | PanelRequestDatagramGroupDataMsg;
+  | PanelRequestDatagramGroupDataMsg
+  | PanelRequestExclusionsMsg
+  | PanelAddExclusionMsg
+  | PanelRemoveExclusionMsg;
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
