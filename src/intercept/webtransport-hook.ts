@@ -25,12 +25,12 @@ export interface SessionLifecycleCallbacks {
 }
 
 export interface StreamInterceptor {
-  onData(streamId: number, data: Uint8Array, direction: 'tx' | 'rx', stack?: string): void;
-  onClose(streamId: number): void;
-  onError(streamId: number, error: unknown): void;
-  onStreamCreated?(streamId: number, stack: string): void;
+  onData(sessionId: string, streamId: number, data: Uint8Array, direction: 'tx' | 'rx', stack?: string): void;
+  onClose(sessionId: string, streamId: number): void;
+  onError(sessionId: string, streamId: number, error: unknown): void;
+  onStreamCreated?(sessionId: string, streamId: number, stack: string): void;
   /** Called for each datagram received or sent via WebTransport datagrams. */
-  onDatagram?(data: Uint8Array, direction: 'tx' | 'rx'): void;
+  onDatagram?(sessionId: string, data: Uint8Array, direction: 'tx' | 'rx'): void;
 }
 
 // Stored per-global so uninstallWebTransportHook can restore without
@@ -73,6 +73,7 @@ export function installWebTransportHook(
       url,
       createdAt: Date.now(),
     };
+    const sessionId = session.id;
     onSession(session);
 
     // Wrap createBidirectionalStream to intercept stream data
@@ -82,8 +83,8 @@ export function installWebTransportHook(
         const streamId = nextStreamId++;
         return origCreateBidi.apply(instance, args).then((stream: unknown) => {
           const s = stream as Record<string, unknown>;
-          wrapReadableStream(s.readable, streamId, 'rx', onStream);
-          wrapWritableStream(s.writable, streamId, 'tx', onStream, true);
+          wrapReadableStream(s.readable, sessionId, streamId, 'rx', onStream);
+          wrapWritableStream(s.writable, sessionId, streamId, 'tx', onStream, true);
           return stream;
         });
       };
@@ -97,8 +98,8 @@ export function installWebTransportHook(
         // Capture synchronously before the async boundary
         const stack = new Error().stack ?? '';
         return origCreateUni.apply(instance, args).then((writable: unknown) => {
-          wrapWritableStream(writable, streamId, 'tx', onStream);
-          onStream.onStreamCreated?.(streamId, stack);
+          wrapWritableStream(writable, sessionId, streamId, 'tx', onStream);
+          onStream.onStreamCreated?.(sessionId, streamId, stack);
           return writable;
         });
       };
@@ -107,6 +108,7 @@ export function installWebTransportHook(
     // Tap into incoming bidirectional streams
     tapIncomingStreams(
       instance.incomingBidirectionalStreams,
+      sessionId,
       () => nextStreamId++,
       onStream,
       true,
@@ -115,6 +117,7 @@ export function installWebTransportHook(
     // Tap into incoming unidirectional streams
     tapIncomingStreams(
       instance.incomingUnidirectionalStreams,
+      sessionId,
       () => nextStreamId++,
       onStream,
       false,
@@ -122,7 +125,7 @@ export function installWebTransportHook(
 
     // Intercept datagrams (readable = rx, writable = tx)
     if (onStream.onDatagram) {
-      interceptDatagrams(instance.datagrams, onStream);
+      interceptDatagrams(instance.datagrams, sessionId, onStream);
     }
 
     // Monitor connection lifecycle promises
@@ -194,6 +197,7 @@ export function uninstallWebTransportHook(target: typeof globalThis): void {
  */
 function wrapReadableStream(
   readable: unknown,
+  sessionId: string,
   streamId: number,
   direction: 'tx' | 'rx',
   interceptor: StreamInterceptor,
@@ -210,14 +214,14 @@ function wrapReadableStream(
       origRead().then(
         (result: ReadableStreamReadResult<unknown>) => {
           if (result.done) {
-            interceptor.onClose(streamId);
+            interceptor.onClose(sessionId, streamId);
           } else if (result.value instanceof Uint8Array) {
-            interceptor.onData(streamId, result.value, direction);
+            interceptor.onData(sessionId, streamId, result.value, direction);
           }
           return result;
         },
         (err: unknown) => {
-          interceptor.onError(streamId, err);
+          interceptor.onError(sessionId, streamId, err);
           throw err;
         },
       );
@@ -232,6 +236,7 @@ function wrapReadableStream(
  */
 function wrapWritableStream(
   writable: unknown,
+  sessionId: string,
   streamId: number,
   direction: 'tx' | 'rx',
   interceptor: StreamInterceptor,
@@ -248,13 +253,13 @@ function wrapWritableStream(
     writer.write = (chunk?: unknown) => {
       if (chunk instanceof Uint8Array) {
         const stack = captureStack ? new Error().stack : undefined;
-        interceptor.onData(streamId, chunk, direction, stack);
+        interceptor.onData(sessionId, streamId, chunk, direction, stack);
       }
       return origWrite(chunk);
     };
     const origClose = writer.close.bind(writer);
     writer.close = () => {
-      interceptor.onClose(streamId);
+      interceptor.onClose(sessionId, streamId);
       return origClose();
     };
     return writer;
@@ -267,6 +272,7 @@ function wrapWritableStream(
  */
 function tapIncomingStreams(
   incomingStreams: unknown,
+  sessionId: string,
   allocStreamId: () => number,
   interceptor: StreamInterceptor,
   isBidirectional: boolean,
@@ -285,10 +291,10 @@ function tapIncomingStreams(
           const streamId = allocStreamId();
           const stream = result.value as Record<string, unknown>;
           if (isBidirectional) {
-            wrapReadableStream(stream.readable, streamId, 'rx', interceptor);
-            wrapWritableStream(stream.writable, streamId, 'tx', interceptor);
+            wrapReadableStream(stream.readable, sessionId, streamId, 'rx', interceptor);
+            wrapWritableStream(stream.writable, sessionId, streamId, 'tx', interceptor);
           } else {
-            wrapReadableStream(stream, streamId, 'rx', interceptor);
+            wrapReadableStream(stream, sessionId, streamId, 'rx', interceptor);
           }
         }
         return result;
@@ -303,6 +309,7 @@ function tapIncomingStreams(
  */
 function interceptDatagrams(
   datagrams: unknown,
+  sessionId: string,
   interceptor: StreamInterceptor,
 ): void {
   if (!datagrams || typeof datagrams !== 'object') return;
@@ -323,7 +330,7 @@ function interceptDatagrams(
           origRead().then(
             (result: ReadableStreamReadResult<unknown>) => {
               if (!result.done && result.value instanceof Uint8Array) {
-                interceptor.onDatagram!(result.value, 'rx');
+                interceptor.onDatagram!(sessionId, result.value, 'rx');
               }
               return result;
             },
@@ -343,7 +350,7 @@ function interceptDatagrams(
         const origWrite = writer.write.bind(writer);
         writer.write = (chunk?: unknown) => {
           if (chunk instanceof Uint8Array) {
-            interceptor.onDatagram!(chunk, 'tx');
+            interceptor.onDatagram!(sessionId, chunk, 'tx');
           }
           return origWrite(chunk);
         };

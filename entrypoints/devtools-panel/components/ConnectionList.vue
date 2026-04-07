@@ -16,12 +16,14 @@ const emit = defineEmits<{
   select: [id: string];
 }>();
 
-function formatUrl(url: string): string {
+function formatUrl(url: string): { host: string; path: string } {
   try {
     const u = new URL(url);
-    return u.hostname + (u.port ? ':' + u.port : '') + u.pathname;
+    const host = u.hostname + (u.port ? ':' + u.port : '');
+    const path = u.pathname && u.pathname !== '/' ? u.pathname : '';
+    return { host, path };
   } catch {
-    return url;
+    return { host: url, path: '' };
   }
 }
 
@@ -57,6 +59,8 @@ const DECAY_WINDOW_MS = 5_000;
 interface SessionStats {
   totalBytes: number;
   bitrate: string | null;
+  urlHost: string;
+  urlPath: string;
 }
 
 /** Pre-compute per-session stats once per tick, avoiding double iteration in template */
@@ -86,7 +90,8 @@ const sessionStats = computed(() => {
       }
     }
 
-    map.set(session.sessionId, { totalBytes: bytes, bitrate });
+    const { host: urlHost, path: urlPath } = formatUrl(session.url);
+    map.set(session.sessionId, { totalBytes: bytes, bitrate, urlHost, urlPath });
   }
   return map;
 });
@@ -125,7 +130,7 @@ const sessionStats = computed(() => {
         <span v-else-if="(session.closed || session.imported) && sessionStats.get(session.sessionId)!.totalBytes > 0" class="data-stat total-data">{{ formatBytes(sessionStats.get(session.sessionId)!.totalBytes) }}</span>
       </div>
       <div class="connection-url mono" :title="session.url">
-        {{ formatUrl(session.url) }}
+        <span class="url-host">{{ sessionStats.get(session.sessionId)!.urlHost }}</span><span v-if="sessionStats.get(session.sessionId)!.urlPath" class="url-path">{{ sessionStats.get(session.sessionId)!.urlPath }}</span>
       </div>
       <div class="connection-meta">
         <span>{{ formatTime(session.createdAt) }}</span>
@@ -170,10 +175,29 @@ const sessionStats = computed(() => {
 
 .connection-url {
   color: var(--text-url);
-  white-space: nowrap;
+  display: flex;
+  min-width: 0;
+  margin-bottom: 2px;
+}
+
+.url-host {
+  flex: 1 1000 auto;
+  min-width: 2ch;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 2px;
+  white-space: nowrap;
+}
+
+.url-path {
+  /* flex-shrink is 1/10000 of the host's, so the host ellipsizes essentially
+     to completion before the path begins to shrink. A very small but non-zero
+     value avoids a Chromium quirk where shrink:1 + overflow:hidden + ellipsis
+     triggers a phantom ellipsis even when the content fits. */
+  flex: 0 0.1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .connection-meta {

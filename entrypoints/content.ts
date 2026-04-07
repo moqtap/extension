@@ -93,9 +93,6 @@ export default defineContentScript({
 // ─── Bootstrap ────────────────────────────────────────────────────────
 
 function bootstrap() {
-  let activeSessionId: string | null = null;
-  const streamToSession = new Map<number, string>();
-
   // The hook code that will be injected into workers (as a string).
   const WORKER_HOOK_SOURCE = buildWorkerHookSource();
 
@@ -103,7 +100,6 @@ function bootstrap() {
   installWebTransportHook(
     globalThis,
     (session) => {
-      activeSessionId = session.id;
       send({
         type: 'session:opened',
         sessionId: session.id,
@@ -112,40 +108,23 @@ function bootstrap() {
       });
     },
     {
-      onData(streamId, data, direction, stack) {
-        if (!streamToSession.has(streamId) && activeSessionId) {
-          streamToSession.set(streamId, activeSessionId);
-        }
-        const sessionId = streamToSession.get(streamId);
-        if (!sessionId) return;
+      onData(sessionId, streamId, data, direction, stack) {
         // Copy the buffer so the page retains the original and we can transfer the copy
         const copy = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
         send({ type: 'stream:data', sessionId, streamId, direction, data: copy, stack });
       },
-      onClose(streamId) {
-        const sessionId = streamToSession.get(streamId);
-        if (!sessionId) return;
-        streamToSession.delete(streamId);
+      onClose(sessionId, streamId) {
         send({ type: 'stream:closed', sessionId, streamId });
       },
-      onError(streamId, error) {
-        const sessionId = streamToSession.get(streamId);
-        if (!sessionId) return;
-        streamToSession.delete(streamId);
+      onError(sessionId, streamId, error) {
         send({ type: 'stream:error', sessionId, streamId, error: String(error) });
       },
-      onStreamCreated(streamId, stack) {
-        if (!streamToSession.has(streamId) && activeSessionId) {
-          streamToSession.set(streamId, activeSessionId);
-        }
-        const sessionId = streamToSession.get(streamId);
-        if (!sessionId) return;
+      onStreamCreated(sessionId, streamId, stack) {
         send({ type: 'stream:created', sessionId, streamId, stack });
       },
-      onDatagram(data, direction) {
-        if (!activeSessionId) return;
+      onDatagram(sessionId, data, direction) {
         const copy = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-        send({ type: 'datagram:data', sessionId: activeSessionId, direction, data: copy });
+        send({ type: 'datagram:data', sessionId, direction, data: copy });
       },
     },
     (sessionId, reason) => {
@@ -516,8 +495,9 @@ function attachSharedWorkerListener(worker: SharedWorker) {
 function buildWorkerHookSource(): string {
   return `(function(){
 "use strict";
+var __moqtapInstanceId = Math.random().toString(36).slice(2, 10);
 var __moqtapSessionCounter = 0;
-function __moqtapGenId() { return "wt-w-" + Date.now() + "-" + (++__moqtapSessionCounter); }
+function __moqtapGenId() { return "wt-w-" + __moqtapInstanceId + "-" + (++__moqtapSessionCounter); }
 
 function __moqtapCopyBuf(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -531,10 +511,7 @@ function __moqtapSend(msg) {
   } catch(e) {}
 }
 
-var __moqtapActiveSession = null;
-var __moqtapStreamMap = new Map();
-
-function __moqtapWrapReadable(rs, sid, dir) {
+function __moqtapWrapReadable(rs, sessionId, sid, dir) {
   if (!rs || typeof rs !== "object" || typeof rs.getReader !== "function") return;
   var orig = rs.getReader.bind(rs);
   rs.getReader = function() {
@@ -543,17 +520,13 @@ function __moqtapWrapReadable(rs, sid, dir) {
     reader.read = function() {
       return origRead().then(function(result) {
         if (result.done) {
-          var sessId = __moqtapStreamMap.get(sid);
-          if (sessId) { __moqtapStreamMap.delete(sid); __moqtapSend({ type: "stream:closed", sessionId: sessId, streamId: sid }); }
+          __moqtapSend({ type: "stream:closed", sessionId: sessionId, streamId: sid });
         } else if (result.value instanceof Uint8Array) {
-          if (!__moqtapStreamMap.has(sid) && __moqtapActiveSession) __moqtapStreamMap.set(sid, __moqtapActiveSession);
-          var sessId2 = __moqtapStreamMap.get(sid);
-          if (sessId2) __moqtapSend({ type: "stream:data", sessionId: sessId2, streamId: sid, direction: dir, data: __moqtapCopyBuf(result.value) });
+          __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(result.value) });
         }
         return result;
       }, function(err) {
-        var sessId = __moqtapStreamMap.get(sid);
-        if (sessId) { __moqtapStreamMap.delete(sid); __moqtapSend({ type: "stream:error", sessionId: sessId, streamId: sid, error: String(err) }); }
+        __moqtapSend({ type: "stream:error", sessionId: sessionId, streamId: sid, error: String(err) });
         throw err;
       });
     };
@@ -561,7 +534,7 @@ function __moqtapWrapReadable(rs, sid, dir) {
   };
 }
 
-function __moqtapWrapWritable(ws, sid, dir, captureStack) {
+function __moqtapWrapWritable(ws, sessionId, sid, dir, captureStack) {
   if (!ws || typeof ws !== "object" || typeof ws.getWriter !== "function") return;
   var orig = ws.getWriter.bind(ws);
   ws.getWriter = function() {
@@ -569,24 +542,21 @@ function __moqtapWrapWritable(ws, sid, dir, captureStack) {
     var origWrite = writer.write.bind(writer);
     writer.write = function(chunk) {
       if (chunk instanceof Uint8Array) {
-        if (!__moqtapStreamMap.has(sid) && __moqtapActiveSession) __moqtapStreamMap.set(sid, __moqtapActiveSession);
-        var sessId = __moqtapStreamMap.get(sid);
         var stack = captureStack ? (new Error().stack || "") : undefined;
-        if (sessId) __moqtapSend({ type: "stream:data", sessionId: sessId, streamId: sid, direction: dir, data: __moqtapCopyBuf(chunk), stack: stack });
+        __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(chunk), stack: stack });
       }
       return origWrite(chunk);
     };
     var origClose = writer.close.bind(writer);
     writer.close = function() {
-      var sessId = __moqtapStreamMap.get(sid);
-      if (sessId) { __moqtapStreamMap.delete(sid); __moqtapSend({ type: "stream:closed", sessionId: sessId, streamId: sid }); }
+      __moqtapSend({ type: "stream:closed", sessionId: sessionId, streamId: sid });
       return origClose();
     };
     return writer;
   };
 }
 
-function __moqtapTapIncoming(incoming, isBidi) {
+function __moqtapTapIncoming(incoming, sessionId, isBidi) {
   if (!incoming || typeof incoming !== "object" || typeof incoming.getReader !== "function") return;
   var orig = incoming.getReader.bind(incoming);
   incoming.getReader = function() {
@@ -598,10 +568,10 @@ function __moqtapTapIncoming(incoming, isBidi) {
           var sid = __moqtapNextStreamId++;
           var stream = result.value;
           if (isBidi) {
-            __moqtapWrapReadable(stream.readable, sid, "rx");
-            __moqtapWrapWritable(stream.writable, sid, "tx");
+            __moqtapWrapReadable(stream.readable, sessionId, sid, "rx");
+            __moqtapWrapWritable(stream.writable, sessionId, sid, "tx");
           } else {
-            __moqtapWrapReadable(stream, sid, "rx");
+            __moqtapWrapReadable(stream, sessionId, sid, "rx");
           }
         }
         return result;
@@ -651,15 +621,15 @@ if (OrigWT) {
   var PatchedWT = function(url, options) {
     var inst = new OrigWT(url, options);
     var session = { id: __moqtapGenId(), url: url, createdAt: Date.now() };
-    __moqtapActiveSession = session.id;
-    __moqtapSend({ type: "session:opened", sessionId: session.id, url: url, createdAt: session.createdAt });
+    var sessionId = session.id;
+    __moqtapSend({ type: "session:opened", sessionId: sessionId, url: url, createdAt: session.createdAt });
     var origBidi = inst.createBidirectionalStream;
     if (typeof origBidi === "function") {
       inst.createBidirectionalStream = function() {
         var sid = __moqtapNextStreamId++;
         return origBidi.apply(inst, arguments).then(function(stream) {
-          __moqtapWrapReadable(stream.readable, sid, "rx");
-          __moqtapWrapWritable(stream.writable, sid, "tx", true);
+          __moqtapWrapReadable(stream.readable, sessionId, sid, "rx");
+          __moqtapWrapWritable(stream.writable, sessionId, sid, "tx", true);
           return stream;
         });
       };
@@ -670,17 +640,15 @@ if (OrigWT) {
         var sid = __moqtapNextStreamId++;
         var stack = new Error().stack || "";
         return origUni.apply(inst, arguments).then(function(writable) {
-          __moqtapWrapWritable(writable, sid, "tx");
-          if (!__moqtapStreamMap.has(sid) && __moqtapActiveSession) __moqtapStreamMap.set(sid, __moqtapActiveSession);
-          var sessId = __moqtapStreamMap.get(sid);
-          if (sessId) __moqtapSend({ type: "stream:created", sessionId: sessId, streamId: sid, stack: stack });
+          __moqtapWrapWritable(writable, sessionId, sid, "tx");
+          __moqtapSend({ type: "stream:created", sessionId: sessionId, streamId: sid, stack: stack });
           return writable;
         });
       };
     }
-    __moqtapTapIncoming(inst.incomingBidirectionalStreams, true);
-    __moqtapTapIncoming(inst.incomingUnidirectionalStreams, false);
-    __moqtapInterceptDatagrams(inst.datagrams, session.id);
+    __moqtapTapIncoming(inst.incomingBidirectionalStreams, sessionId, true);
+    __moqtapTapIncoming(inst.incomingUnidirectionalStreams, sessionId, false);
+    __moqtapInterceptDatagrams(inst.datagrams, sessionId);
     var __reported = false;
     function __reportClose(reason) {
       if (__reported) return;
