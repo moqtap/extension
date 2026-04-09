@@ -169,4 +169,5 @@ html, body, #app {
   height: 100%;
   color: var(--text-secondary);
   font-size: 13px;
+  padding: 10px;
 }

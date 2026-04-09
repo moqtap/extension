@@ -24,17 +24,23 @@ export function useAutoScroll(containerRef: Ref<HTMLElement | null>) {
   }
 
   let observer: MutationObserver | null = null;
+  let scrollRafPending = false;
 
   onMounted(() => {
     const el = containerRef.value;
     if (!el) return;
     el.addEventListener('scroll', onScroll, { passive: true });
 
-    // Auto-scroll when new content is added
+    // Auto-scroll when new content is added.
+    // Coalesce multiple mutations into a single rAF to avoid layout
+    // thrashing when many messages arrive in the same frame.
     observer = new MutationObserver(() => {
-      if (isAtBottom.value) {
-        requestAnimationFrame(() => scrollToBottom());
-      }
+      if (!isAtBottom.value || scrollRafPending) return;
+      scrollRafPending = true;
+      requestAnimationFrame(() => {
+        scrollRafPending = false;
+        scrollToBottom();
+      });
     });
     observer.observe(el, { childList: true, subtree: true });
   });

@@ -26,9 +26,13 @@ function handleAddExclusion() {
 
 const exclusionCount = computed(() => Object.keys(workerExclusions.value).length);
 
-/* Reactive tick that drives the bitrate decay animation. */
+/* Reactive tick that drives the bitrate decay animation.
+   Gated behind rAF so it pauses when the panel is backgrounded,
+   avoiding a burst of reactive recalculations on refocus. */
 const bitrateTick = ref(0);
-const bitrateTickInterval = setInterval(() => { bitrateTick.value++; }, 500);
+const bitrateTickInterval = setInterval(() => {
+  requestAnimationFrame(() => { bitrateTick.value++; });
+}, 500);
 onBeforeUnmount(() => clearInterval(bitrateTickInterval));
 
 const NARROW_THRESHOLD = 500;
@@ -254,6 +258,7 @@ function statusColor(s: SessionEntry): string {
       </div>
       <SessionView
         v-if="selectedSession"
+        :key="selectedSession.sessionId"
         :session="selectedSession"
         :get-stream-data="getStreamData"
         :get-datagram-group-data="getDatagramGroupData"

@@ -438,13 +438,18 @@ export function useInspector() {
 
   // Force reactivity trigger since we mutate objects in place.
   // Uses shallowRef + triggerRef to avoid copying the entire Map.
-  let updateTimer: ReturnType<typeof setTimeout> | null = null;
+  // We use rAF instead of setTimeout so that:
+  //  - updates naturally pause when the panel is backgrounded/minimized
+  //  - on refocus we get exactly one batched trigger per frame, avoiding
+  //    the burst of work that setTimeout (throttled to 1/sec) would cause
+  let updateScheduled = false;
   function triggerUpdate() {
-    if (updateTimer) return;
-    updateTimer = setTimeout(() => {
-      updateTimer = null;
+    if (updateScheduled) return;
+    updateScheduled = true;
+    requestAnimationFrame(() => {
+      updateScheduled = false;
       triggerRef(sessions);
-    }, 16); // batch at ~60fps
+    });
   }
 
   function connect() {

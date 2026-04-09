@@ -197,7 +197,7 @@ function createWorkerProxy(
         case 'pm': target.postMessage(op.args[0], op.args[1]); break;
         case 'ael': target.addEventListener(...op.args); break;
         case 'rel': target.removeEventListener(...op.args); break;
-        case 'set': (target as Record<string, unknown>)[op.prop] = op.value; break;
+        case 'set': (target as unknown as Record<string, unknown>)[op.prop] = op.value; break;
       }
     }
     ops.length = 0;
@@ -286,7 +286,7 @@ function createWorkerProxy(
           else ops.push({ k: 'rel', args: [type, listener, options] });
         };
       }
-      const val = (worker as Record<string, unknown>)[prop as string];
+      const val = (worker as unknown as Record<string, unknown>)[prop as string];
       return typeof val === 'function' ? (val as Function).bind(worker) : val;
     },
 
@@ -296,7 +296,7 @@ function createWorkerProxy(
         ops.push({ k: 'set', prop: p, value });
         return true;
       }
-      (worker as Record<string, unknown>)[p] = value;
+      (worker as unknown as Record<string, unknown>)[p] = value;
       return true;
     },
 

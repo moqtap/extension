@@ -8,10 +8,13 @@
 import { createCodec, type BaseCodec, type DecodeResult } from '@moqtap/codec';
 import type { SupportedDraft } from '../types/common';
 
-const codecs = new Map<SupportedDraft, BaseCodec>();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyCodec = BaseCodec<any>;
+
+const codecs = new Map<SupportedDraft, AnyCodec>();
 
 /** Get (or lazily create) the codec for a given draft */
-export function getCodec(draft: SupportedDraft): BaseCodec {
+export function getCodec(draft: SupportedDraft): AnyCodec {
   if (!codecs.has(draft)) {
     codecs.set(draft, createCodec({ draft }));
   }

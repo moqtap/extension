@@ -16,8 +16,11 @@ const props = defineProps<{
 }>();
 
 // ── Bitrate tick (same pattern as ConnectionList.vue) ────────────
+// Gated behind rAF so it pauses when the panel is backgrounded.
 const bitrateTick = ref(0);
-const bitrateTickInterval = setInterval(() => { bitrateTick.value++; }, 500);
+const bitrateTickInterval = setInterval(() => {
+  requestAnimationFrame(() => { bitrateTick.value++; });
+}, 500);
 onBeforeUnmount(() => clearInterval(bitrateTickInterval));
 
 // ── Filter state (reuse same prefs as TrackList sidebar) ─────────

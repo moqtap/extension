@@ -2,9 +2,12 @@
 import { ref, computed, onBeforeUnmount } from 'vue';
 import type { SessionEntry } from '../use-inspector';
 
-/* Reactive tick that drives the bitrate decay animation. */
+/* Reactive tick that drives the bitrate decay animation.
+   Gated behind rAF so it pauses when the panel is backgrounded. */
 const bitrateTick = ref(0);
-const bitrateTickInterval = setInterval(() => { bitrateTick.value++; }, 500);
+const bitrateTickInterval = setInterval(() => {
+  requestAnimationFrame(() => { bitrateTick.value++; });
+}, 500);
 onBeforeUnmount(() => clearInterval(bitrateTickInterval));
 
 const props = defineProps<{
