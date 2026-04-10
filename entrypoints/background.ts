@@ -148,6 +148,37 @@ function sendToPanel(tabId: number, msg: BackgroundToPanelMsg) {
   }
 }
 
+// ── Batched panel notifications for high-frequency messages ──────
+// Instead of sending one port.postMessage per stream chunk / datagram,
+// we accumulate them and flush periodically.  This reduces the number
+// of IPC messages from O(objects) to O(time / BATCH_INTERVAL), which
+// prevents the panel from freezing when it returns from background.
+
+const BATCH_INTERVAL = 50; // ms — 20 flushes/sec, barely perceptible latency
+const pendingBatches = new Map<number, BackgroundToPanelMsg[]>();
+let batchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueForPanel(tabId: number, msg: BackgroundToPanelMsg) {
+  let items = pendingBatches.get(tabId);
+  if (!items) {
+    items = [];
+    pendingBatches.set(tabId, items);
+  }
+  items.push(msg);
+  if (!batchTimer) {
+    batchTimer = setTimeout(flushPanelBatches, BATCH_INTERVAL);
+  }
+}
+
+function flushPanelBatches() {
+  batchTimer = null;
+  for (const [tabId, items] of pendingBatches) {
+    if (items.length === 0) continue;
+    const batch = items.splice(0);
+    sendToPanel(tabId, { type: 'panel:batch', items: batch });
+  }
+}
+
 /** Try to detect MoQT draft from accumulated bytes on a given stream.
  *  Returns track updates discovered during initial message decoding. */
 function attemptDetection(session: SessionRecord, streamId: number): TrackRecord[] {
@@ -807,7 +838,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number, fr
         appendStreamData(message.sessionId, message.streamId, bytes);
         stream.byteCount += bytes.length;
 
-        // Send metadata-only notification to panel
+        // Queue metadata-only notification for panel (batched)
         const panelMsg: BackgroundToPanelMsg = {
           type: 'panel:stream:data',
           sessionId: message.sessionId,
@@ -821,7 +852,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number, fr
             ...(isControlStream ? { isControl: true } : {}),
           } : {}),
         };
-        sendToPanel(tabId, panelMsg);
+        queueForPanel(tabId, panelMsg);
 
         // Record stream data in trace
         if (session.recorder) {
@@ -968,7 +999,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number, fr
         }
       }
 
-      // Notify panel
+      // Queue datagram notification for panel (batched)
       const panelMsg: BackgroundToPanelMsg = {
         type: 'panel:datagram:data',
         sessionId: message.sessionId,
@@ -984,7 +1015,7 @@ function handleContentMessage(message: ContentToBackgroundMsg, tabId: number, fr
         } : {}),
         ...(decoded.endOfGroup ? { endOfGroup: true } : {}),
       };
-      sendToPanel(tabId, panelMsg);
+      queueForPanel(tabId, panelMsg);
 
       // Record in trace
       if (session.recorder) {

@@ -325,6 +325,18 @@ export interface PanelExclusionListMsg {
   exclusions: Record<string, ExclusionEntry>;
 }
 
+/**
+ * Batch wrapper for high-frequency panel messages.
+ *
+ * Background aggregates stream:data and datagram:data notifications
+ * into periodic batches (~50 ms) to reduce port.postMessage overhead
+ * and avoid flooding the panel when it returns from background.
+ */
+export interface PanelBatchMsg {
+  type: 'panel:batch';
+  items: BackgroundToPanelMsg[];
+}
+
 /** Messages sent from background to DevTools panel */
 export type BackgroundToPanelMsg =
   | PanelSessionOpenedMsg
@@ -345,7 +357,8 @@ export type BackgroundToPanelMsg =
   | PanelDatagramDataMsg
   | PanelDatagramGroupInfoMsg
   | PanelDatagramGroupDataResponseMsg
-  | PanelExclusionListMsg;
+  | PanelExclusionListMsg
+  | PanelBatchMsg;
 
 // ─── Background -> Bridge messages ───────────────────────────────────
 

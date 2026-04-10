@@ -150,7 +150,9 @@ export function useInspector() {
     return session;
   }
 
-  function handleMessage(msg: BackgroundToPanelMsg) {
+  /** Process a single message, mutating state in place.
+   *  Returns true if the sessions Map was mutated (needs triggerRef). */
+  function handleMessage(msg: BackgroundToPanelMsg): boolean {
     switch (msg.type) {
       case 'panel:session:opened': {
         const session = getOrCreateSession(msg.sessionId);
@@ -162,8 +164,7 @@ export function useInspector() {
         if (!selectedSessionId.value) {
           selectedSessionId.value = msg.sessionId;
         }
-        triggerUpdate();
-        break;
+        return true;
       }
 
       case 'panel:detection': {
@@ -173,9 +174,9 @@ export function useInspector() {
           if (msg.result.protocol === 'moqt') {
             session.draft = msg.result.draft;
           }
-          triggerUpdate();
+          return true;
         }
-        break;
+        return false;
       }
 
       case 'panel:control-message': {
@@ -189,19 +190,19 @@ export function useInspector() {
             raw: base64ToBytes(msg.raw),
             stack: msg.stack,
           });
-          triggerUpdate();
+          return true;
         }
-        break;
+        return false;
       }
 
       case 'panel:stream:data': {
         // Metadata-only: background has already written bytes to IndexedDB
         const session = sessions.value.get(msg.sessionId);
-        if (!session) break;
+        if (!session) return false;
         // When recording is paused, ignore stream data notifications
         // (background will also stop sending them once it processes the toggle,
         // but this guards against in-flight messages)
-        if (session.streamRecording === false) break;
+        if (session.streamRecording === false) return false;
 
         {
           let stream = session.streams.get(msg.streamId);
@@ -230,10 +231,8 @@ export function useInspector() {
           stream.lastDataAt = now;
           stream.byteCount += msg.byteLength;
           stream.chunkCount++;
-
-          triggerUpdate();
         }
-        break;
+        return true;
       }
 
       case 'panel:stream:info': {
@@ -252,9 +251,9 @@ export function useInspector() {
             isControl: msg.isControl,
             firstDataAt: msg.firstDataAt,
           });
-          triggerUpdate();
+          return true;
         }
-        break;
+        return false;
       }
 
       case 'panel:stream:closed': {
@@ -263,17 +262,16 @@ export function useInspector() {
           const stream = session.streams.get(msg.streamId);
           if (stream) {
             stream.closed = true;
-            triggerUpdate();
+            return true;
           }
         }
-        break;
+        return false;
       }
 
       case 'panel:stream-created': {
         const key = `${msg.sessionId}:${msg.streamId}`;
         streamCreationStacks.value.set(key, msg.stack);
-        triggerUpdate();
-        break;
+        return true;
       }
 
       case 'panel:session:closed': {
@@ -281,9 +279,9 @@ export function useInspector() {
         if (session) {
           session.closed = true;
           session.closedReason = msg.reason;
-          triggerUpdate();
+          return true;
         }
-        break;
+        return false;
       }
 
       case 'panel:track-update': {
@@ -317,14 +315,14 @@ export function useInspector() {
             if (msg.subscribeErrorAt != null) track.subscribeErrorAt = msg.subscribeErrorAt;
             if (msg.subscribeDoneAt != null) track.subscribeDoneAt = msg.subscribeDoneAt;
           }
-          triggerUpdate();
+          return true;
         }
-        break;
+        return false;
       }
 
       case 'panel:instrumented': {
         midSessionOpen.value = msg.hadPreExistingSessions;
-        break;
+        return false;
       }
 
       case 'panel:worker-csp-warning': {
@@ -332,12 +330,12 @@ export function useInspector() {
         if (!cspBlockedWorkers.value.includes(url)) {
           cspBlockedWorkers.value = [...cspBlockedWorkers.value, url];
         }
-        break;
+        return false;
       }
 
       case 'panel:exclusion-list': {
         workerExclusions.value = msg.exclusions;
-        break;
+        return false;
       }
 
       case 'panel:stream-data-response': {
@@ -346,22 +344,22 @@ export function useInspector() {
           pendingDataRequests.delete(msg.requestId);
           pending.resolve(msg.data ? base64ToBytes(msg.data) : null);
         }
-        break;
+        return false;
       }
 
       case 'panel:stream-recording': {
         const session = sessions.value.get(msg.sessionId);
         if (session) {
           session.streamRecording = msg.recording;
-          triggerUpdate();
+          return true;
         }
-        break;
+        return false;
       }
 
       case 'panel:datagram:data': {
         const session = sessions.value.get(msg.sessionId);
-        if (!session) break;
-        if (session.streamRecording === false) break;
+        if (!session) return false;
+        if (session.streamRecording === false) return false;
 
         {
           const gk = `${msg.trackAlias}:${msg.groupId}`;
@@ -389,10 +387,8 @@ export function useInspector() {
           group.datagramCount++;
           group.lastDataAt = now;
           if (msg.endOfGroup) group.closed = true;
-
-          triggerUpdate();
         }
-        break;
+        return true;
       }
 
       case 'panel:datagram-group:info': {
@@ -411,9 +407,9 @@ export function useInspector() {
             mediaInfo: msg.mediaInfo,
             firstDataAt: msg.firstDataAt,
           });
-          triggerUpdate();
+          return true;
         }
-        break;
+        return false;
       }
 
       case 'panel:datagram-group-data-response': {
@@ -422,7 +418,7 @@ export function useInspector() {
           pendingDataRequests.delete(msg.requestId);
           pending.resolve(msg.data ? base64ToBytes(msg.data) : null);
         }
-        break;
+        return false;
       }
 
       case 'panel:streams-cleared': {
@@ -430,26 +426,60 @@ export function useInspector() {
         // streams from the UI. Acting on this confirmation would incorrectly
         // remove streams that arrived between the optimistic clear and this
         // response (race condition with in-flight stream:data messages).
-        break;
+        return false;
       }
 
+      default:
+        return false;
     }
   }
 
-  // Force reactivity trigger since we mutate objects in place.
-  // Uses shallowRef + triggerRef to avoid copying the entire Map.
-  // We use rAF instead of setTimeout so that:
-  //  - updates naturally pause when the panel is backgrounded/minimized
-  //  - on refocus we get exactly one batched trigger per frame, avoiding
-  //    the burst of work that setTimeout (throttled to 1/sec) would cause
-  let updateScheduled = false;
-  function triggerUpdate() {
-    if (updateScheduled) return;
-    updateScheduled = true;
-    requestAnimationFrame(() => {
-      updateScheduled = false;
-      triggerRef(sessions);
-    });
+  // ── Message queue + render coalescing ────────────────────────────
+  // Instead of processing each port.onMessage synchronously (which
+  // causes the browser to interleave message tasks with expensive Vue
+  // renders when thousands of messages are queued), we accumulate
+  // incoming messages and drain the entire queue in a single rAF pass.
+  // This way ALL pending mutations are applied before a single
+  // triggerRef / Vue render, turning O(messages × render) into
+  // O(messages) + O(1 render).
+
+  const messageQueue: BackgroundToPanelMsg[] = [];
+  let drainScheduled = false;
+
+  function enqueueMessage(msg: BackgroundToPanelMsg) {
+    messageQueue.push(msg);
+    if (!drainScheduled) {
+      drainScheduled = true;
+      requestAnimationFrame(drainMessageQueue);
+    }
+  }
+
+  function drainMessageQueue() {
+    drainScheduled = false;
+    // Drain fully — new messages arriving mid-drain are appended to
+    // the same array and picked up by the loop's length check.
+    let mutated = false;
+    for (let i = 0; i < messageQueue.length; i++) {
+      if (applyMessage(messageQueue[i])) mutated = true;
+    }
+    messageQueue.length = 0;
+    if (mutated) triggerRef(sessions);
+  }
+
+  /** Apply a single message, mutating state in place.
+   *  Returns true if sessions Map was mutated (needs triggerRef). */
+  function applyMessage(msg: BackgroundToPanelMsg): boolean {
+    switch (msg.type) {
+      case 'panel:batch': {
+        let m = false;
+        for (const item of msg.items) {
+          if (applyMessage(item)) m = true;
+        }
+        return m;
+      }
+      default:
+        return handleMessage(msg);
+    }
   }
 
   function connect() {
@@ -457,9 +487,7 @@ export function useInspector() {
     port = chrome.runtime.connect({ name: 'moqtap-panel' });
     connected.value = true;
 
-    port.onMessage.addListener((msg: BackgroundToPanelMsg) => {
-      handleMessage(msg);
-    });
+    port.onMessage.addListener(enqueueMessage);
 
     port.onDisconnect.addListener(() => {
       connected.value = false;
@@ -569,7 +597,7 @@ export function useInspector() {
     const session = sessions.value.get(sessionId);
     if (session) {
       session.streamRecording = recording;
-      triggerUpdate();
+      triggerRef(sessions);
     }
     if (!port) return;
     const tabId = chrome.devtools.inspectedWindow.tabId;
@@ -585,7 +613,7 @@ export function useInspector() {
         if (!stream.isControl) session.streams.delete(id);
       }
       session.datagramGroups.clear();
-      triggerUpdate();
+      triggerRef(sessions);
     }
     if (!port) return;
     const tabId = chrome.devtools.inspectedWindow.tabId;
@@ -824,7 +852,7 @@ export function useInspector() {
 
     sessions.value.set(sessionId, session);
     selectedSessionId.value = sessionId;
-    triggerUpdate();
+    triggerRef(sessions);
   }
 
   /** Extract track subscription info from an imported control message */
