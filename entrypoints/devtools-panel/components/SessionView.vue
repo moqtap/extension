@@ -1,59 +1,68 @@
 <script lang="ts" setup>
-import { ref, computed, watch } from 'vue';
-import type { SessionEntry, StreamContentType } from '../use-inspector';
-import ControlMessageLog from './ControlMessageLog.vue';
-import StreamList from './StreamList.vue';
-import StreamDataViewer from './StreamDataViewer.vue';
-import TrackList from './TrackList.vue';
-import TracksTab from './TracksTab.vue';
+import { computed, ref, watch } from 'vue'
+import type { SessionEntry, StreamContentType } from '../use-inspector'
+import ControlMessageLog from './ControlMessageLog.vue'
+import StreamDataViewer from './StreamDataViewer.vue'
+import StreamList from './StreamList.vue'
+import TrackList from './TrackList.vue'
+import TracksTab from './TracksTab.vue'
 
 const props = defineProps<{
-  session: SessionEntry;
-  getStreamData: (sessionId: string, streamId: number) => Promise<Uint8Array | null>;
-  getDatagramGroupData: (sessionId: string, groupKey: string) => Promise<Uint8Array | null>;
-  setStreamRecording: (sessionId: string, recording: boolean) => void;
-  clearStreams: (sessionId: string) => void;
-}>();
+  session: SessionEntry
+  getStreamData: (
+    sessionId: string,
+    streamId: number,
+  ) => Promise<Uint8Array | null>
+  getDatagramGroupData: (
+    sessionId: string,
+    groupKey: string,
+  ) => Promise<Uint8Array | null>
+  setStreamRecording: (sessionId: string, recording: boolean) => void
+  clearStreams: (sessionId: string) => void
+}>()
 
 const emit = defineEmits<{
-  exportTrace: [sessionId: string];
-}>();
+  exportTrace: [sessionId: string]
+}>()
 
-type Tab = 'messages' | 'streams' | 'details' | 'tracks';
-const activeTab = ref<Tab>('messages');
+type Tab = 'messages' | 'streams' | 'details' | 'tracks'
+const activeTab = ref<Tab>('messages')
 
 // Reset tab if tracks tab is active but protocol is no longer moqt
-watch(() => props.session.protocol, (proto) => {
-  if (activeTab.value === 'tracks' && proto !== 'moqt') {
-    activeTab.value = 'messages';
-  }
-});
+watch(
+  () => props.session.protocol,
+  (proto) => {
+    if (activeTab.value === 'tracks' && proto !== 'moqt') {
+      activeTab.value = 'messages'
+    }
+  },
+)
 
-const selectedStreamId = ref<number | null>(null);
-const selectedStreamData = ref<Uint8Array | null>(null);
-const selectedContentType = ref<StreamContentType>('binary');
-const loadingStream = ref(false);
-const trackFilter = ref<string | null>(null);
+const selectedStreamId = ref<number | null>(null)
+const selectedStreamData = ref<Uint8Array | null>(null)
+const selectedContentType = ref<StreamContentType>('binary')
+const loadingStream = ref(false)
+const trackFilter = ref<string | null>(null)
 /** byteCount at the time we last loaded stream data — used to detect new arrivals */
-const loadedByteCount = ref(0);
+const loadedByteCount = ref(0)
 
 /** Map from synthetic datagram group streamId → groupKey (for data loading) */
-const dgIdToGroupKey = new Map<number, string>();
-let nextDgSyntheticId = -1;
+const dgIdToGroupKey = new Map<number, string>()
+let nextDgSyntheticId = -1
 
 function getOrCreateDgId(groupKey: string): number {
   for (const [id, gk] of dgIdToGroupKey) {
-    if (gk === groupKey) return id;
+    if (gk === groupKey) return id
   }
-  const id = nextDgSyntheticId--;
-  dgIdToGroupKey.set(id, groupKey);
-  return id;
+  const id = nextDgSyntheticId--
+  dgIdToGroupKey.set(id, groupKey)
+  return id
 }
 
 const streamList = computed(() => {
-  const items = Array.from(props.session.streams.values());
+  const items = Array.from(props.session.streams.values())
   for (const dg of props.session.datagramGroups.values()) {
-    const syntheticId = getOrCreateDgId(dg.groupKey);
+    const syntheticId = getOrCreateDgId(dg.groupKey)
     items.push({
       streamId: syntheticId,
       direction: dg.direction,
@@ -68,97 +77,107 @@ const streamList = computed(() => {
       datagramGroupKey: dg.groupKey,
       datagramCount: dg.datagramCount,
       groupId: dg.groupId,
-    });
+    })
   }
-  return items;
-});
-const trackList = computed(() => Array.from(props.session.tracks.values()));
-const hasTracks = computed(() => props.session.tracks.size > 0);
+  return items
+})
+const trackList = computed(() => Array.from(props.session.tracks.values()))
+const hasTracks = computed(() => props.session.tracks.size > 0)
 const selectedStream = computed(() => {
-  if (selectedStreamId.value == null) return null;
+  if (selectedStreamId.value == null) return null
   // Check real streams first
-  const stream = props.session.streams.get(selectedStreamId.value);
-  if (stream) return stream;
+  const stream = props.session.streams.get(selectedStreamId.value)
+  if (stream) return stream
   // Check synthetic datagram group entries
-  return streamList.value.find((s) => s.streamId === selectedStreamId.value) ?? null;
-});
+  return (
+    streamList.value.find((s) => s.streamId === selectedStreamId.value) ?? null
+  )
+})
 
 /** True when the currently-viewed stream has received more data since we loaded it */
 const hasNewData = computed(() => {
-  if (loadingStream.value) return false;
-  const stream = selectedStream.value;
-  if (!stream || stream.byteCount === 0) return false;
-  return stream.byteCount > loadedByteCount.value;
-});
+  if (loadingStream.value) return false
+  const stream = selectedStream.value
+  if (!stream || stream.byteCount === 0) return false
+  return stream.byteCount > loadedByteCount.value
+})
 
 /** Filter messages by track if a track filter is active */
 const filteredMessages = computed(() => {
-  if (!trackFilter.value) return props.session.messages;
+  if (!trackFilter.value) return props.session.messages
   // Find the track's subscribeId and filter messages that mention it
-  const track = props.session.tracks.get(trackFilter.value);
-  if (!track) return props.session.messages;
-  const subId = track.subscribeId;
+  const track = props.session.tracks.get(trackFilter.value)
+  if (!track) return props.session.messages
+  const subId = track.subscribeId
   return props.session.messages.filter((msg) => {
-    if (!msg.decoded || typeof msg.decoded !== 'object') return false;
-    const d = msg.decoded as Record<string, unknown>;
-    const msgSubId = String(d.subscribeId ?? d.request_id ?? d.subscribe_id ?? '');
-    return msgSubId === subId;
-  });
-});
+    if (!msg.decoded || typeof msg.decoded !== 'object') return false
+    const d = msg.decoded as Record<string, unknown>
+    const msgSubId = String(
+      d.subscribeId ?? d.request_id ?? d.subscribe_id ?? '',
+    )
+    return msgSubId === subId
+  })
+})
 
 function protocolLabel(session: SessionEntry): string {
   switch (session.protocol) {
     case 'moqt':
-      return `MoQT draft-${session.draft}`;
+      return `MoQT draft-${session.draft}`
     case 'moqt-unknown-draft':
-      return 'MoQT (unknown draft)';
+      return 'MoQT (unknown draft)'
     case 'detecting':
-      return 'Detecting...';
+      return 'Detecting...'
     default:
-      return 'WebTransport (non-MoQT)';
+      return 'WebTransport (non-MoQT)'
   }
 }
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 async function showStreamData(streamId: number) {
-  selectedStreamId.value = streamId;
+  selectedStreamId.value = streamId
 
   // Determine if this is a datagram group (synthetic negative ID)
-  const dgGroupKey = dgIdToGroupKey.get(streamId);
+  const dgGroupKey = dgIdToGroupKey.get(streamId)
   const stream = dgGroupKey
     ? streamList.value.find((s) => s.streamId === streamId)
-    : props.session.streams.get(streamId);
+    : props.session.streams.get(streamId)
 
-  selectedContentType.value = stream?.contentType ?? 'binary';
-  loadingStream.value = true;
+  selectedContentType.value = stream?.contentType ?? 'binary'
+  loadingStream.value = true
   try {
     if (dgGroupKey) {
-      selectedStreamData.value = await props.getDatagramGroupData(props.session.sessionId, dgGroupKey);
+      selectedStreamData.value = await props.getDatagramGroupData(
+        props.session.sessionId,
+        dgGroupKey,
+      )
     } else {
-      selectedStreamData.value = await props.getStreamData(props.session.sessionId, streamId);
+      selectedStreamData.value = await props.getStreamData(
+        props.session.sessionId,
+        streamId,
+      )
     }
-    loadedByteCount.value = stream?.byteCount ?? 0;
+    loadedByteCount.value = stream?.byteCount ?? 0
   } catch {
-    selectedStreamData.value = null;
+    selectedStreamData.value = null
   } finally {
-    loadingStream.value = false;
+    loadingStream.value = false
   }
 }
 
 async function refreshStreamData() {
-  if (selectedStreamId.value == null) return;
-  await showStreamData(selectedStreamId.value);
+  if (selectedStreamId.value == null) return
+  await showStreamData(selectedStreamId.value)
 }
 
 function closeStreamData() {
-  selectedStreamId.value = null;
-  selectedStreamData.value = null;
-  loadedByteCount.value = 0;
+  selectedStreamId.value = null
+  selectedStreamData.value = null
+  loadedByteCount.value = 0
 }
 </script>
 
@@ -202,8 +221,22 @@ function closeStreamData() {
           @click="emit('exportTrace', session.sessionId)"
         >
           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M8 1v9M8 10L5 7M8 10l3-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M3 12v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path
+              d="M8 1v9M8 10L5 7M8 10l3-3"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M3 12v2h10v-2"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           <span class="export-label">.moqtrace</span>
         </button>
@@ -220,7 +253,11 @@ function closeStreamData() {
         v-if="activeTab === 'messages'"
         :messages="filteredMessages"
       />
-      <div v-else-if="activeTab === 'streams'" class="streams-panel" :class="{ 'has-detail': selectedStreamId != null }">
+      <div
+        v-else-if="activeTab === 'streams'"
+        class="streams-panel"
+        :class="{ 'has-detail': selectedStreamId != null }"
+      >
         <StreamList
           :streams="streamList"
           :selected-id="selectedStreamId"
@@ -228,20 +265,28 @@ function closeStreamData() {
           :compact="selectedStreamId != null"
           :recording="session.streamRecording !== false"
           @inspect="showStreamData"
-          @toggle-recording="props.setStreamRecording(session.sessionId, $event)"
+          @toggle-recording="
+            props.setStreamRecording(session.sessionId, $event)
+          "
           @clear="props.clearStreams(session.sessionId)"
         />
         <div v-if="selectedStreamId != null" class="stream-detail">
           <div class="detail-header">
             <span class="detail-title mono">
-              <template v-if="selectedStream?.datagramGroupKey">DG g:{{ selectedStream.groupId }}</template>
+              <template v-if="selectedStream?.datagramGroupKey"
+                >DG g:{{ selectedStream.groupId }}</template
+              >
               <template v-else>Stream #{{ selectedStreamId }}</template>
             </span>
             <span v-if="selectedStream" class="detail-meta">
               {{ selectedStream.direction === 'tx' ? 'TX' : 'RX' }}
               · {{ formatBytes(selectedStream.byteCount) }}
-              <template v-if="selectedStream.datagramGroupKey"> · {{ selectedStream.datagramCount }} datagrams</template>
-              <template v-else-if="selectedStream.chunkCount > 0"> · {{ selectedStream.chunkCount }} chunks</template>
+              <template v-if="selectedStream.datagramGroupKey">
+                · {{ selectedStream.datagramCount }} datagrams</template
+              >
+              <template v-else-if="selectedStream.chunkCount > 0">
+                · {{ selectedStream.chunkCount }} chunks</template
+              >
               · {{ selectedStream.closed ? 'closed' : 'open' }}
             </span>
             <button
@@ -254,12 +299,25 @@ function closeStreamData() {
               Refresh
             </button>
             <button class="detail-close" title="Close" @click="closeStreamData">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+              >
+                <path
+                  d="M3.5 3.5l9 9m0-9l-9 9"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  fill="none"
+                  stroke-linecap="round"
+                />
               </svg>
             </button>
           </div>
-          <div v-if="loadingStream" class="detail-loading">Loading stream data...</div>
+          <div v-if="loadingStream" class="detail-loading">
+            Loading stream data...
+          </div>
           <StreamDataViewer
             v-else-if="selectedStreamData"
             :data="selectedStreamData"
@@ -274,10 +332,7 @@ function closeStreamData() {
           <div v-else class="detail-empty">No data available</div>
         </div>
       </div>
-      <TracksTab
-        v-else-if="activeTab === 'tracks'"
-        :session="session"
-      />
+      <TracksTab v-else-if="activeTab === 'tracks'" :session="session" />
       <div v-else-if="activeTab === 'details'" class="details-panel">
         <table class="details-table mono">
           <tbody>
@@ -315,10 +370,20 @@ function closeStreamData() {
             </tr>
             <tr>
               <td class="details-label">Total Data</td>
-              <td>{{ formatBytes(
-                Array.from(session.streams.values()).reduce((s, st) => s + st.byteCount, 0) +
-                Array.from(session.datagramGroups.values()).reduce((s, dg) => s + dg.byteCount, 0)
-              ) }}</td>
+              <td>
+                {{
+                  formatBytes(
+                    Array.from(session.streams.values()).reduce(
+                      (s, st) => s + st.byteCount,
+                      0,
+                    ) +
+                      Array.from(session.datagramGroups.values()).reduce(
+                        (s, dg) => s + dg.byteCount,
+                        0,
+                      ),
+                  )
+                }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -463,8 +528,13 @@ function closeStreamData() {
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
 .detail-close {

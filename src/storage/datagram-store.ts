@@ -15,136 +15,139 @@
  * from stream pages.
  */
 
-import type { StreamContentType, PayloadMediaInfo } from '../detect/content-detect';
+import type {
+  PayloadMediaInfo,
+  StreamContentType,
+} from '../detect/content-detect'
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const DB_NAME = 'moqtap-streams'; // shared DB with chunk-store
-const DB_VERSION = 1;
-const STORE_NAME = 'pages';
+const DB_NAME = 'moqtap-streams' // shared DB with chunk-store
+const DB_VERSION = 1
+const STORE_NAME = 'pages'
 
 /** Page size: 1 MB — matches chunk-store page size. */
-const PAGE_SIZE = 1024 * 1024;
+const PAGE_SIZE = 1024 * 1024
 
 /** Evict backed pages with refCount=0 after this idle duration. */
-const EVICT_IDLE_MS = 60_000;
+const EVICT_IDLE_MS = 60_000
 
 /** Length-prefix size for each datagram entry in the heap. */
-const HEADER_SIZE = 4;
+const HEADER_SIZE = 4
 
 // ── IDB ────────────────────────────────────────────────────────────
 
-let dbPromise: Promise<IDBDatabase> | null = null;
+let dbPromise: Promise<IDBDatabase> | null = null
 
 function openDb(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
+  if (dbPromise) return dbPromise
   dbPromise = new Promise((resolve, reject) => {
     try {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      const req = indexedDB.open(DB_NAME, DB_VERSION)
       req.onupgradeneeded = () => {
-        const db = req.result;
+        const db = req.result
         if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME);
+          db.createObjectStore(STORE_NAME)
         }
-      };
-      req.onsuccess = () => resolve(req.result);
+      }
+      req.onsuccess = () => resolve(req.result)
       req.onerror = () => {
-        console.error('[moqtap dg-store] IDB open failed:', req.error);
-        dbPromise = null;
-        reject(req.error);
-      };
+        console.error('[moqtap dg-store] IDB open failed:', req.error)
+        dbPromise = null
+        reject(req.error)
+      }
     } catch (err) {
-      console.error('[moqtap dg-store] indexedDB.open threw:', err);
-      dbPromise = null;
-      reject(err);
+      console.error('[moqtap dg-store] indexedDB.open threw:', err)
+      dbPromise = null
+      reject(err)
     }
-  });
-  return dbPromise;
+  })
+  return dbPromise
 }
 
 function idbKey(sessionId: string, pageIndex: number): string {
-  return `${sessionId}:dg:p${pageIndex}`;
+  return `${sessionId}:dg:p${pageIndex}`
 }
 
 // ── Per-datagram metadata ──────────────────────────────────────────
 
 export interface DatagramMeta {
   /** Sequential index within the session (for ordering). */
-  index: number;
-  trackAlias: number;
-  groupId: number;
-  objectId: number;
-  publisherPriority: number;
-  direction: 'tx' | 'rx';
-  timestamp: number;
+  index: number
+  trackAlias: number
+  groupId: number
+  objectId: number
+  publisherPriority: number
+  direction: 'tx' | 'rx'
+  timestamp: number
   /** Heap page index. */
-  pageIndex: number;
+  pageIndex: number
   /** Byte offset within the page (points to the 4-byte length prefix). */
-  offset: number;
+  offset: number
   /** Length of raw datagram bytes (excludes the 4-byte prefix). */
-  rawLength: number;
+  rawLength: number
 }
 
 // ── Datagram group ─────────────────────────────────────────────────
 
 export interface DatagramGroupState {
-  trackAlias: number;
-  groupId: number;
+  trackAlias: number
+  groupId: number
   /** Indices into the session's DatagramMeta array. */
-  datagramIndices: number[];
-  totalPayloadBytes: number;
-  count: number;
-  firstTimestamp: number;
-  lastTimestamp: number;
-  direction: 'tx' | 'rx';
+  datagramIndices: number[]
+  totalPayloadBytes: number
+  count: number
+  firstTimestamp: number
+  lastTimestamp: number
+  direction: 'tx' | 'rx'
   /** Detected content type (from first datagram payload). */
-  contentType?: StreamContentType;
+  contentType?: StreamContentType
   /** ISO BMFF media info (from first datagram payload). */
-  mediaInfo?: PayloadMediaInfo;
+  mediaInfo?: PayloadMediaInfo
   /** True when endOfGroup was received or session closed. */
-  closed: boolean;
+  closed: boolean
 }
 
 export function datagramGroupKey(trackAlias: number, groupId: number): string {
-  return `${trackAlias}:${groupId}`;
+  return `${trackAlias}:${groupId}`
 }
 
 // ── Page cache with ref counting ──────────────────────────────────
 
 interface CachedPage {
-  data: Uint8Array;
+  data: Uint8Array
   /** True once the page has been written to IDB (can be evicted when refCount=0). */
-  backed: boolean;
+  backed: boolean
   /** Reference count: pages with refCount > 0 are pinned in memory. */
-  refCount: number;
+  refCount: number
   /** Timestamp of last access (for LRU eviction). */
-  lastAccessed: number;
+  lastAccessed: number
 }
 
 /** Memory cache: idbKey → CachedPage */
-const pageCache = new Map<string, CachedPage>();
+const pageCache = new Map<string, CachedPage>()
 
 // ── Per-session heap state ─────────────────────────────────────────
 
 interface HeapState {
-  sessionId: string;
+  sessionId: string
   /** Write buffer: incoming datagram bytes not yet sealed into a page. */
-  writeBuf: Uint8Array[];
-  writeBufBytes: number;
+  writeBuf: Uint8Array[]
+  writeBufBytes: number
   /** Number of sealed pages. */
-  pageCount: number;
+  pageCount: number
   /** Total raw bytes stored (including length prefixes). */
-  totalHeapBytes: number;
+  totalHeapBytes: number
   /** All datagram metadata entries (ordered by arrival). */
-  datagrams: DatagramMeta[];
+  datagrams: DatagramMeta[]
   /** Groups indexed by "trackAlias:groupId". */
-  groups: Map<string, DatagramGroupState>;
+  groups: Map<string, DatagramGroupState>
 }
 
-const heaps = new Map<string, HeapState>();
+const heaps = new Map<string, HeapState>()
 
 function getOrCreateHeap(sessionId: string): HeapState {
-  let heap = heaps.get(sessionId);
+  let heap = heaps.get(sessionId)
   if (!heap) {
     heap = {
       sessionId,
@@ -154,19 +157,19 @@ function getOrCreateHeap(sessionId: string): HeapState {
       totalHeapBytes: 0,
       datagrams: [],
       groups: new Map(),
-    };
-    heaps.set(sessionId, heap);
+    }
+    heaps.set(sessionId, heap)
   }
-  return heap;
+  return heap
 }
 
 // ── Write path ─────────────────────────────────────────────────────
 
 export interface AppendDatagramResult {
-  meta: DatagramMeta;
-  group: DatagramGroupState;
+  meta: DatagramMeta
+  group: DatagramGroupState
   /** True if this is the first datagram in the group. */
-  isNewGroup: boolean;
+  isNewGroup: boolean
 }
 
 /**
@@ -180,28 +183,32 @@ export function appendDatagram(
   sessionId: string,
   raw: Uint8Array,
   decoded: {
-    trackAlias: number;
-    groupId: number;
-    objectId: number;
-    publisherPriority: number;
-    endOfGroup?: boolean;
+    trackAlias: number
+    groupId: number
+    objectId: number
+    publisherPriority: number
+    endOfGroup?: boolean
   },
   direction: 'tx' | 'rx',
 ): AppendDatagramResult {
-  const heap = getOrCreateHeap(sessionId);
-  const now = Date.now();
+  const heap = getOrCreateHeap(sessionId)
+  const now = Date.now()
 
   // Calculate where this datagram will land in the heap
-  const entrySize = HEADER_SIZE + raw.length;
-  const pageIndex = heap.pageCount + (heap.writeBufBytes + entrySize > PAGE_SIZE && heap.writeBufBytes > 0 ? 1 : 0);
+  const entrySize = HEADER_SIZE + raw.length
+  const pageIndex =
+    heap.pageCount +
+    (heap.writeBufBytes + entrySize > PAGE_SIZE && heap.writeBufBytes > 0
+      ? 1
+      : 0)
   // Determine offset: if we're about to seal, it will be at offset 0 of new page,
   // otherwise at current writeBufBytes
-  let offset: number;
+  let offset: number
   if (heap.writeBufBytes > 0 && heap.writeBufBytes + entrySize > PAGE_SIZE) {
     // Will seal current page first, so this goes at offset 0 of next page
-    offset = 0;
+    offset = 0
   } else {
-    offset = heap.writeBufBytes;
+    offset = heap.writeBufBytes
   }
 
   // Build metadata entry
@@ -216,33 +223,33 @@ export function appendDatagram(
     pageIndex: pageIndex,
     offset,
     rawLength: raw.length,
-  };
+  }
 
-  heap.datagrams.push(meta);
+  heap.datagrams.push(meta)
 
   // Write length-prefixed entry to heap buffer
-  const header = new Uint8Array(HEADER_SIZE);
-  const view = new DataView(header.buffer);
-  view.setUint32(0, raw.length, true); // little-endian
+  const header = new Uint8Array(HEADER_SIZE)
+  const view = new DataView(header.buffer)
+  view.setUint32(0, raw.length, true) // little-endian
 
   // Check if we need to seal before appending
   if (heap.writeBufBytes > 0 && heap.writeBufBytes + entrySize > PAGE_SIZE) {
-    sealPage(heap);
+    sealPage(heap)
   }
 
-  heap.writeBuf.push(header, raw);
-  heap.writeBufBytes += entrySize;
-  heap.totalHeapBytes += entrySize;
+  heap.writeBuf.push(header, raw)
+  heap.writeBufBytes += entrySize
+  heap.totalHeapBytes += entrySize
 
   // Seal full pages
   while (heap.writeBufBytes >= PAGE_SIZE) {
-    sealPage(heap);
+    sealPage(heap)
   }
 
   // Update group
-  const gk = datagramGroupKey(decoded.trackAlias, decoded.groupId);
-  let group = heap.groups.get(gk);
-  const isNewGroup = !group;
+  const gk = datagramGroupKey(decoded.trackAlias, decoded.groupId)
+  let group = heap.groups.get(gk)
+  const isNewGroup = !group
   if (!group) {
     group = {
       trackAlias: decoded.trackAlias,
@@ -254,82 +261,92 @@ export function appendDatagram(
       lastTimestamp: now,
       direction,
       closed: false,
-    };
-    heap.groups.set(gk, group);
+    }
+    heap.groups.set(gk, group)
   }
 
-  group.datagramIndices.push(meta.index);
-  group.totalPayloadBytes += raw.length;
-  group.count++;
-  group.lastTimestamp = now;
+  group.datagramIndices.push(meta.index)
+  group.totalPayloadBytes += raw.length
+  group.count++
+  group.lastTimestamp = now
 
   if (decoded.endOfGroup) {
-    group.closed = true;
+    group.closed = true
   }
 
-  return { meta, group, isNewGroup };
+  return { meta, group, isNewGroup }
 }
 
 /** Seal the current write buffer into a page and flush to IDB. */
 function sealPage(heap: HeapState): void {
-  const page = drainWriteBuf(heap, Math.min(heap.writeBufBytes, PAGE_SIZE));
-  const pi = heap.pageCount++;
-  const key = idbKey(heap.sessionId, pi);
+  const page = drainWriteBuf(heap, Math.min(heap.writeBufBytes, PAGE_SIZE))
+  const pi = heap.pageCount++
+  const key = idbKey(heap.sessionId, pi)
 
-  pageCache.set(key, { data: page, backed: false, refCount: 0, lastAccessed: Date.now() });
-  writePageToIdb(key, page);
+  pageCache.set(key, {
+    data: page,
+    backed: false,
+    refCount: 0,
+    lastAccessed: Date.now(),
+  })
+  writePageToIdb(key, page)
 }
 
 function drainWriteBuf(heap: HeapState, count: number): Uint8Array {
-  const out = new Uint8Array(count);
-  let offset = 0;
+  const out = new Uint8Array(count)
+  let offset = 0
   while (offset < count && heap.writeBuf.length > 0) {
-    const chunk = heap.writeBuf[0];
-    const need = count - offset;
+    const chunk = heap.writeBuf[0]
+    const need = count - offset
     if (chunk.length <= need) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-      heap.writeBuf.shift();
+      out.set(chunk, offset)
+      offset += chunk.length
+      heap.writeBuf.shift()
     } else {
-      out.set(chunk.subarray(0, need), offset);
-      heap.writeBuf[0] = chunk.subarray(need);
-      offset += need;
+      out.set(chunk.subarray(0, need), offset)
+      heap.writeBuf[0] = chunk.subarray(need)
+      offset += need
     }
   }
-  heap.writeBufBytes -= count;
-  return out;
+  heap.writeBufBytes -= count
+  return out
 }
 
 /** Flush remaining write buffer as final page. Call on session close. */
 export function flushDatagramHeap(sessionId: string): void {
-  const heap = heaps.get(sessionId);
-  if (!heap || heap.writeBufBytes === 0) return;
+  const heap = heaps.get(sessionId)
+  if (!heap || heap.writeBufBytes === 0) return
 
-  const page = drainWriteBuf(heap, heap.writeBufBytes);
-  const pi = heap.pageCount++;
-  const key = idbKey(sessionId, pi);
+  const page = drainWriteBuf(heap, heap.writeBufBytes)
+  const pi = heap.pageCount++
+  const key = idbKey(sessionId, pi)
 
-  pageCache.set(key, { data: page, backed: false, refCount: 0, lastAccessed: Date.now() });
-  writePageToIdb(key, page);
+  pageCache.set(key, {
+    data: page,
+    backed: false,
+    refCount: 0,
+    lastAccessed: Date.now(),
+  })
+  writePageToIdb(key, page)
 }
 
 /** Fire-and-forget write to IDB. */
 function writePageToIdb(key: string, data: Uint8Array): void {
   openDb()
     .then((db) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(data, key);
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.objectStore(STORE_NAME).put(data, key)
       tx.oncomplete = () => {
-        const cached = pageCache.get(key);
-        if (cached) cached.backed = true;
-      };
+        const cached = pageCache.get(key)
+        if (cached) cached.backed = true
+      }
       tx.onerror = () => {
-        console.error('[moqtap dg-store] page write failed:', key, tx.error);
-      };
+        console.error('[moqtap dg-store] page write failed:', key, tx.error)
+      }
     })
     .catch((err) => {
-      console.error('[moqtap dg-store] page write failed (no db):', err);
-    });
+      console.error('[moqtap dg-store] page write failed (no db):', err)
+    })
 }
 
 // ── Read path ──────────────────────────────────────────────────────
@@ -345,56 +362,56 @@ export async function loadDatagramGroupData(
   sessionId: string,
   groupKey: string,
 ): Promise<Uint8Array> {
-  const heap = heaps.get(sessionId);
-  if (!heap) return new Uint8Array(0);
+  const heap = heaps.get(sessionId)
+  if (!heap) return new Uint8Array(0)
 
-  const group = heap.groups.get(groupKey);
-  if (!group || group.count === 0) return new Uint8Array(0);
+  const group = heap.groups.get(groupKey)
+  if (!group || group.count === 0) return new Uint8Array(0)
 
   // Collect metadata for this group, sorted by objectId
   const metas = group.datagramIndices
     .map((i) => heap.datagrams[i])
-    .sort((a, b) => a.objectId - b.objectId);
+    .sort((a, b) => a.objectId - b.objectId)
 
   // Determine which pages we need
-  const neededPages = new Set<number>();
+  const neededPages = new Set<number>()
   for (const m of metas) {
-    neededPages.add(m.pageIndex);
+    neededPages.add(m.pageIndex)
   }
 
   // Load and pin pages
-  const pages = new Map<number, Uint8Array>();
+  const pages = new Map<number, Uint8Array>()
   for (const pi of neededPages) {
-    const page = await getPage(sessionId, pi, heap);
-    if (page) pages.set(pi, page);
+    const page = await getPage(sessionId, pi, heap)
+    if (page) pages.set(pi, page)
   }
 
   // Calculate total size and build output
-  let totalSize = 0;
+  let totalSize = 0
   for (const m of metas) {
-    totalSize += HEADER_SIZE + m.rawLength;
+    totalSize += HEADER_SIZE + m.rawLength
   }
 
-  const out = new Uint8Array(totalSize);
-  let offset = 0;
+  const out = new Uint8Array(totalSize)
+  let offset = 0
 
   for (const m of metas) {
-    const page = pages.get(m.pageIndex);
+    const page = pages.get(m.pageIndex)
     if (page) {
       // Copy the length-prefixed entry from the page
-      const entrySize = HEADER_SIZE + m.rawLength;
-      const src = page.subarray(m.offset, m.offset + entrySize);
-      out.set(src, offset);
-      offset += entrySize;
+      const entrySize = HEADER_SIZE + m.rawLength
+      const src = page.subarray(m.offset, m.offset + entrySize)
+      out.set(src, offset)
+      offset += entrySize
     }
   }
 
   // Release page refs
   for (const pi of neededPages) {
-    releasePageRef(sessionId, pi);
+    releasePageRef(sessionId, pi)
   }
 
-  return out;
+  return out
 }
 
 /**
@@ -402,13 +419,15 @@ export async function loadDatagramGroupData(
  * Returns all datagram metadata + the ability to extract raw bytes.
  */
 export function getDatagramMetas(sessionId: string): DatagramMeta[] {
-  const heap = heaps.get(sessionId);
-  return heap ? heap.datagrams : [];
+  const heap = heaps.get(sessionId)
+  return heap ? heap.datagrams : []
 }
 
-export function getDatagramGroups(sessionId: string): Map<string, DatagramGroupState> {
-  const heap = heaps.get(sessionId);
-  return heap ? heap.groups : new Map();
+export function getDatagramGroups(
+  sessionId: string,
+): Map<string, DatagramGroupState> {
+  const heap = heaps.get(sessionId)
+  return heap ? heap.groups : new Map()
 }
 
 /** Get a page with ref counting — from memory cache, or reload from IDB. */
@@ -417,65 +436,73 @@ async function getPage(
   pageIndex: number,
   heap: HeapState,
 ): Promise<Uint8Array | null> {
-  const key = idbKey(sessionId, pageIndex);
+  const key = idbKey(sessionId, pageIndex)
 
   // Check memory cache
-  const cached = pageCache.get(key);
+  const cached = pageCache.get(key)
   if (cached) {
-    cached.refCount++;
-    cached.lastAccessed = Date.now();
-    return cached.data;
+    cached.refCount++
+    cached.lastAccessed = Date.now()
+    return cached.data
   }
 
   // Check write buffer (current unflushed page)
   if (pageIndex === heap.pageCount && heap.writeBufBytes > 0) {
     // Materialize write buffer into a temporary page
-    let totalLen = 0;
-    for (const chunk of heap.writeBuf) totalLen += chunk.length;
-    const temp = new Uint8Array(totalLen);
-    let off = 0;
+    let totalLen = 0
+    for (const chunk of heap.writeBuf) totalLen += chunk.length
+    const temp = new Uint8Array(totalLen)
+    let off = 0
     for (const chunk of heap.writeBuf) {
-      temp.set(chunk, off);
-      off += chunk.length;
+      temp.set(chunk, off)
+      off += chunk.length
     }
     // Don't cache — it's mutable
-    return temp;
+    return temp
   }
 
   // Load from IDB and cache with ref
   try {
-    const db = await openDb();
-    const data = await readPageFromIdb(db, key);
+    const db = await openDb()
+    const data = await readPageFromIdb(db, key)
     if (data) {
-      pageCache.set(key, { data, backed: true, refCount: 1, lastAccessed: Date.now() });
+      pageCache.set(key, {
+        data,
+        backed: true,
+        refCount: 1,
+        lastAccessed: Date.now(),
+      })
     }
-    return data;
+    return data
   } catch {
-    return null;
+    return null
   }
 }
 
 function releasePageRef(sessionId: string, pageIndex: number): void {
-  const key = idbKey(sessionId, pageIndex);
-  const cached = pageCache.get(key);
+  const key = idbKey(sessionId, pageIndex)
+  const cached = pageCache.get(key)
   if (cached && cached.refCount > 0) {
-    cached.refCount--;
+    cached.refCount--
   }
 }
 
-function readPageFromIdb(db: IDBDatabase, key: string): Promise<Uint8Array | null> {
+function readPageFromIdb(
+  db: IDBDatabase,
+  key: string,
+): Promise<Uint8Array | null> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const req = tx.objectStore(STORE_NAME).get(key);
+    const tx = db.transaction(STORE_NAME, 'readonly')
+    const req = tx.objectStore(STORE_NAME).get(key)
     req.onsuccess = () => {
-      const result = req.result;
-      if (result == null) resolve(null);
-      else if (result instanceof Uint8Array) resolve(result);
-      else if (result instanceof ArrayBuffer) resolve(new Uint8Array(result));
-      else resolve(null);
-    };
-    req.onerror = () => reject(req.error);
-  });
+      const result = req.result
+      if (result == null) resolve(null)
+      else if (result instanceof Uint8Array) resolve(result)
+      else if (result instanceof ArrayBuffer) resolve(new Uint8Array(result))
+      else resolve(null)
+    }
+    req.onerror = () => reject(req.error)
+  })
 }
 
 // ── Memory eviction ────────────────────────────────────────────────
@@ -485,10 +512,10 @@ function readPageFromIdb(db: IDBDatabase, key: string): Promise<Uint8Array | nul
  * Called by chunk-store's eviction timer (shared).
  */
 export function evictStaleDatagramPages(): void {
-  const cutoff = Date.now() - EVICT_IDLE_MS;
+  const cutoff = Date.now() - EVICT_IDLE_MS
   for (const [key, page] of pageCache) {
     if (page.backed && page.refCount === 0 && page.lastAccessed < cutoff) {
-      pageCache.delete(key);
+      pageCache.delete(key)
     }
   }
 }
@@ -497,32 +524,32 @@ export function evictStaleDatagramPages(): void {
 
 /** Remove all datagram data for a session. */
 export async function clearDatagramData(sessionId: string): Promise<void> {
-  heaps.delete(sessionId);
+  heaps.delete(sessionId)
 
   // Clear page cache entries for this session's datagram pages
-  const prefix = `${sessionId}:dg:`;
+  const prefix = `${sessionId}:dg:`
   for (const key of pageCache.keys()) {
-    if (key.startsWith(prefix)) pageCache.delete(key);
+    if (key.startsWith(prefix)) pageCache.delete(key)
   }
 
   // Clear IDB pages
   try {
-    const db = await openDb();
+    const db = await openDb()
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
-      const req = store.openCursor(range);
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      const store = tx.objectStore(STORE_NAME)
+      const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`)
+      const req = store.openCursor(range)
       req.onsuccess = () => {
-        const cursor = req.result;
+        const cursor = req.result
         if (cursor) {
-          cursor.delete();
-          cursor.continue();
+          cursor.delete()
+          cursor.continue()
         }
-      };
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
   } catch {
     // IDB not available — memory already cleared
   }
@@ -530,6 +557,6 @@ export async function clearDatagramData(sessionId: string): Promise<void> {
 
 /** Clear all datagram data across all sessions. */
 export function clearAllDatagramData(): void {
-  heaps.clear();
+  heaps.clear()
   // IDB pages are cleared by chunk-store's clearAllData (shared store)
 }

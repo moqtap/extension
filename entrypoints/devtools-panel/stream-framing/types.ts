@@ -4,33 +4,33 @@
 
 export interface StreamObject {
   /** Byte offset of the object framing (objectId varint) in the stream */
-  offset: number;
+  offset: number
   /** Byte offset where payload begins */
-  payloadOffset: number;
+  payloadOffset: number
   /** Payload length in bytes */
-  payloadLength: number;
+  payloadLength: number
   /** Object ID from the framing */
-  objectId: number;
+  objectId: number
 }
 
 export interface ParsedStreamFraming {
   /** High-level stream kind */
-  streamType: 'subgroup' | 'fetch' | 'datagram' | null;
+  streamType: 'subgroup' | 'fetch' | 'datagram' | null
   /** Byte offset where the stream header ends (first object starts) */
-  headerEnd: number;
+  headerEnd: number
   /** Parsed header fields for display — draft-specific keys, generic values */
-  headerFields: Record<string, number>;
+  headerFields: Record<string, number>
   /** Parsed objects within the stream */
-  objects: StreamObject[];
+  objects: StreamObject[]
   /** Human-readable tags extracted from the header (for UI badges) */
-  tags: HeaderTag[];
+  tags: HeaderTag[]
 }
 
 export interface HeaderTag {
-  label: string;
-  value: string;
+  label: string
+  value: string
   /** Optional category for styling */
-  kind?: 'track' | 'group' | 'priority' | 'info';
+  kind?: 'track' | 'group' | 'priority' | 'info'
 }
 
-export type DraftParser = (data: Uint8Array) => ParsedStreamFraming | null;
+export type DraftParser = (data: Uint8Array) => ParsedStreamFraming | null

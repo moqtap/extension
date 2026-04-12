@@ -75,6 +75,7 @@ Page JS -> content.ts (MAIN world, hooks WebTransport)
 ```
 
 Key modules:
+
 - `src/detect/` — Draft auto-detection from CLIENT_SETUP wire bytes
 - `src/codec/` — Multi-draft facade over `@moqtap/codec`
 - `src/session/` — Session state machine (delegates to codec)

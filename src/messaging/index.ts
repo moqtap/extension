@@ -1,22 +1,22 @@
 export type {
-  ContentToBackgroundMsg,
   BackgroundToPanelMsg,
-  PanelToBackgroundMsg,
-  SessionOpenedMsg,
-  StreamDataMsg,
-  StreamClosedMsg,
-  StreamErrorMsg,
-  SessionClosedMsg,
-  PanelSessionOpenedMsg,
-  PanelDetectionMsg,
-  PanelControlMessageMsg,
-  PanelStreamOpenedMsg,
-  PanelStreamDataMsg,
-  PanelStreamClosedMsg,
-  PanelSessionClosedMsg,
+  ContentToBackgroundMsg,
   PanelConnectMsg,
+  PanelControlMessageMsg,
+  PanelDetectionMsg,
   PanelDisconnectMsg,
   PanelRequestStateMsg,
-} from './types';
+  PanelSessionClosedMsg,
+  PanelSessionOpenedMsg,
+  PanelStreamClosedMsg,
+  PanelStreamDataMsg,
+  PanelStreamOpenedMsg,
+  PanelToBackgroundMsg,
+  SessionClosedMsg,
+  SessionOpenedMsg,
+  StreamClosedMsg,
+  StreamDataMsg,
+  StreamErrorMsg,
+} from './types'
 
-export { bytesToBase64, base64ToBytes } from './types';
+export { base64ToBytes, bytesToBase64 } from './types'

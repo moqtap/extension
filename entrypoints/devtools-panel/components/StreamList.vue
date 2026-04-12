@@ -1,165 +1,178 @@
 <script lang="ts" setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
-import type { StreamEntry, TrackEntry, PayloadMediaInfo } from '../use-inspector';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import type {
+  PayloadMediaInfo,
+  StreamEntry,
+  TrackEntry,
+} from '../use-inspector'
 
-const ROW_HEIGHT = 24; // px — must match CSS .stream-row height
-const OVERSCAN = 10;   // extra rows rendered above/below viewport
+const ROW_HEIGHT = 24 // px — must match CSS .stream-row height
+const OVERSCAN = 10 // extra rows rendered above/below viewport
 
 const props = defineProps<{
-  streams: StreamEntry[];
-  selectedId: number | null;
+  streams: StreamEntry[]
+  selectedId: number | null
   /** Track registry for resolving trackAlias → track name */
-  tracks: Map<string, TrackEntry>;
+  tracks: Map<string, TrackEntry>
   /** When true, collapse to Track column only (detail panel is open) */
-  compact?: boolean;
+  compact?: boolean
   /** Whether stream data recording is active */
-  recording: boolean;
-}>();
+  recording: boolean
+}>()
 
 const emit = defineEmits<{
-  inspect: [streamId: number];
-  toggleRecording: [recording: boolean];
-  clear: [];
-}>();
+  inspect: [streamId: number]
+  toggleRecording: [recording: boolean]
+  clear: []
+}>()
 
 // ── Track lookup index (O(1) instead of O(n) per stream) ─────────
 const trackIndex = computed(() => {
-  const byAlias = new Map<string, TrackEntry>();
-  const bySubId = new Map<string, TrackEntry>();
+  const byAlias = new Map<string, TrackEntry>()
+  const bySubId = new Map<string, TrackEntry>()
   for (const track of props.tracks.values()) {
-    if (track.trackAlias) byAlias.set(track.trackAlias, track);
-    bySubId.set(track.subscribeId, track);
+    if (track.trackAlias) byAlias.set(track.trackAlias, track)
+    bySubId.set(track.subscribeId, track)
   }
-  return { byAlias, bySubId };
-});
+  return { byAlias, bySubId }
+})
 
 function resolveTrack(stream: StreamEntry): TrackEntry | null {
-  if (stream.trackAlias == null) return null;
-  const alias = String(stream.trackAlias);
-  const idx = trackIndex.value;
-  return idx.byAlias.get(alias) ?? idx.bySubId.get(alias) ?? null;
+  if (stream.trackAlias == null) return null
+  const alias = String(stream.trackAlias)
+  const idx = trackIndex.value
+  return idx.byAlias.get(alias) ?? idx.bySubId.get(alias) ?? null
 }
 
 // ── Filter ────────────────────────────────────────────────────────
-const filterText = ref('');
+const filterText = ref('')
 
 /** The display string used for matching — mirrors what the Track column shows */
 function streamLabel(stream: StreamEntry): string {
-  if (stream.isControl) return 'Control';
-  const track = resolveTrack(stream);
-  const suffix = stream.datagramGroupKey ? ` g:${stream.groupId}` : '';
-  if (track) return track.fullName + suffix;
-  if (stream.trackAlias != null) return `alias:${stream.trackAlias}${suffix}`;
-  return `#${stream.streamId}`;
+  if (stream.isControl) return 'Control'
+  const track = resolveTrack(stream)
+  const suffix = stream.datagramGroupKey ? ` g:${stream.groupId}` : ''
+  if (track) return track.fullName + suffix
+  if (stream.trackAlias != null) return `alias:${stream.trackAlias}${suffix}`
+  return `#${stream.streamId}`
 }
 
 const filteredStreams = computed(() => {
-  const q = filterText.value.trim().toLowerCase();
-  if (!q) return props.streams;
-  return props.streams.filter((s) => streamLabel(s).toLowerCase().includes(q));
-});
+  const q = filterText.value.trim().toLowerCase()
+  if (!q) return props.streams
+  return props.streams.filter((s) => streamLabel(s).toLowerCase().includes(q))
+})
 
-const isFiltered = computed(() => filteredStreams.value.length !== props.streams.length);
+const isFiltered = computed(
+  () => filteredStreams.value.length !== props.streams.length,
+)
 
 // ── Virtual scroll ───────────────────────────────────────────────
-const scrollContainer = ref<HTMLElement | null>(null);
-const scrollTop = ref(0);
-const containerHeight = ref(0);
+const scrollContainer = ref<HTMLElement | null>(null)
+const scrollTop = ref(0)
+const containerHeight = ref(0)
 
-const totalHeight = computed(() => filteredStreams.value.length * ROW_HEIGHT);
+const totalHeight = computed(() => filteredStreams.value.length * ROW_HEIGHT)
 
 const visibleRange = computed(() => {
-  const start = Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - OVERSCAN);
-  const visibleCount = Math.ceil(containerHeight.value / ROW_HEIGHT);
-  const end = Math.min(filteredStreams.value.length, start + visibleCount + OVERSCAN * 2);
-  return { start, end };
-});
+  const start = Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - OVERSCAN)
+  const visibleCount = Math.ceil(containerHeight.value / ROW_HEIGHT)
+  const end = Math.min(
+    filteredStreams.value.length,
+    start + visibleCount + OVERSCAN * 2,
+  )
+  return { start, end }
+})
 
 const visibleStreams = computed(() =>
   filteredStreams.value.slice(visibleRange.value.start, visibleRange.value.end),
-);
+)
 
-const offsetY = computed(() => visibleRange.value.start * ROW_HEIGHT);
+const offsetY = computed(() => visibleRange.value.start * ROW_HEIGHT)
 
 // ── Auto-scroll ──────────────────────────────────────────────────
-const SCROLL_THRESHOLD = 30;
-const isAtBottom = ref(true);
+const SCROLL_THRESHOLD = 30
+const isAtBottom = ref(true)
 
 function onScroll() {
-  const el = scrollContainer.value;
-  if (!el) return;
-  scrollTop.value = el.scrollTop;
-  isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
+  const el = scrollContainer.value
+  if (!el) return
+  scrollTop.value = el.scrollTop
+  isAtBottom.value =
+    el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD
 }
 
 function scrollToBottom() {
-  const el = scrollContainer.value;
-  if (!el || !isAtBottom.value) return;
-  el.scrollTop = el.scrollHeight;
+  const el = scrollContainer.value
+  if (!el || !isAtBottom.value) return
+  el.scrollTop = el.scrollHeight
 }
 
 // Auto-scroll when list grows
-watch(() => filteredStreams.value.length, () => {
-  if (isAtBottom.value) {
-    nextTick(scrollToBottom);
-  }
-});
+watch(
+  () => filteredStreams.value.length,
+  () => {
+    if (isAtBottom.value) {
+      nextTick(scrollToBottom)
+    }
+  },
+)
 
-let resizeObserver: ResizeObserver | null = null;
+let resizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
-  const el = scrollContainer.value;
-  if (!el) return;
-  containerHeight.value = el.clientHeight;
+  const el = scrollContainer.value
+  if (!el) return
+  containerHeight.value = el.clientHeight
   resizeObserver = new ResizeObserver((entries) => {
     for (const entry of entries) {
-      containerHeight.value = entry.contentRect.height;
+      containerHeight.value = entry.contentRect.height
     }
-  });
-  resizeObserver.observe(el);
-});
+  })
+  resizeObserver.observe(el)
+})
 
 onUnmounted(() => {
-  resizeObserver?.disconnect();
-});
+  resizeObserver?.disconnect()
+})
 
 // ── Footer stats ──────────────────────────────────────────────────
 function sumBytes(list: StreamEntry[], dir?: 'tx' | 'rx'): number {
-  let total = 0;
+  let total = 0
   for (const s of list) {
-    if (!dir || s.direction === dir) total += s.byteCount;
+    if (!dir || s.direction === dir) total += s.byteCount
   }
-  return total;
+  return total
 }
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function streamCount(list: StreamEntry[]): string {
-  return `${list.length} stream${list.length !== 1 ? 's' : ''}`;
+  return `${list.length} stream${list.length !== 1 ? 's' : ''}`
 }
 
 const VARIANT_LABELS: Record<string, string> = {
   cmaf: 'CMAF',
   loc: 'LOC',
   fmp4: 'fMP4',
-};
+}
 
 function mediaLabel(info: PayloadMediaInfo): string {
-  const label = VARIANT_LABELS[info.variant] ?? 'fMP4';
-  return `${label}(${info.boxes.length})`;
+  const label = VARIANT_LABELS[info.variant] ?? 'fMP4'
+  return `${label}(${info.boxes.length})`
 }
 
 function transferSummary(list: StreamEntry[]): string {
-  const tx = sumBytes(list, 'tx');
-  const rx = sumBytes(list, 'rx');
-  const parts: string[] = [];
-  if (tx > 0) parts.push(`\u2191 ${formatBytes(tx)}`);
-  if (rx > 0) parts.push(`\u2193 ${formatBytes(rx)}`);
-  return parts.join('  ');
+  const tx = sumBytes(list, 'tx')
+  const rx = sumBytes(list, 'rx')
+  const parts: string[] = []
+  if (tx > 0) parts.push(`↑ ${formatBytes(tx)}`)
+  if (rx > 0) parts.push(`↓ ${formatBytes(rx)}`)
+  return parts.join('  ')
 }
 </script>
 
@@ -169,7 +182,11 @@ function transferSummary(list: StreamEntry[]): string {
       <button
         class="toolbar-btn record-btn"
         :class="{ recording: props.recording }"
-        :title="props.recording ? 'Stop recording stream data' : 'Resume recording stream data'"
+        :title="
+          props.recording
+            ? 'Stop recording stream data'
+            : 'Resume recording stream data'
+        "
         @click="emit('toggleRecording', !props.recording)"
       >
         <span class="record-dot" />
@@ -179,9 +196,16 @@ function transferSummary(list: StreamEntry[]): string {
         title="Clear stream data"
         @click="emit('clear')"
       >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
-          <circle cx="8" cy="8" r="6.5"/>
-          <line x1="3.5" y1="12.5" x2="12.5" y2="3.5"/>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.3"
+        >
+          <circle cx="8" cy="8" r="6.5" />
+          <line x1="3.5" y1="12.5" x2="12.5" y2="3.5" />
         </svg>
       </button>
       <div class="filter-field">
@@ -199,7 +223,13 @@ function transferSummary(list: StreamEntry[]): string {
           @click="filterText = ''"
         >
           <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+            <path
+              d="M3.5 3.5l9 9m0-9l-9 9"
+              stroke="currentColor"
+              stroke-width="1.8"
+              fill="none"
+              stroke-linecap="round"
+            />
           </svg>
         </button>
       </div>
@@ -215,14 +245,8 @@ function transferSummary(list: StreamEntry[]): string {
       <span v-if="!compact" class="col-bytes">Bytes</span>
     </div>
 
-    <div
-      ref="scrollContainer"
-      class="stream-scroll"
-      @scroll.passive="onScroll"
-    >
-      <div v-if="streams.length === 0" class="empty-state">
-        No streams yet
-      </div>
+    <div ref="scrollContainer" class="stream-scroll" @scroll.passive="onScroll">
+      <div v-if="streams.length === 0" class="empty-state">No streams yet</div>
       <div v-else-if="filteredStreams.length === 0" class="empty-state">
         No streams match filter
       </div>
@@ -230,7 +254,10 @@ function transferSummary(list: StreamEntry[]): string {
         <!-- Spacer div sets total scrollable height -->
         <div class="virtual-spacer" :style="{ height: totalHeight + 'px' }">
           <!-- Visible rows, offset to their correct position -->
-          <div class="virtual-window" :style="{ transform: `translateY(${offsetY}px)` }">
+          <div
+            class="virtual-window"
+            :style="{ transform: `translateY(${offsetY}px)` }"
+          >
             <div
               v-for="stream in visibleStreams"
               :key="stream.streamId"
@@ -239,13 +266,20 @@ function transferSummary(list: StreamEntry[]): string {
               @click="emit('inspect', stream.streamId)"
             >
               <span v-if="!compact" class="col-id mono">
-                <span v-if="stream.datagramGroupKey" class="dg-badge" title="Datagram group">DG</span>
+                <span
+                  v-if="stream.datagramGroupKey"
+                  class="dg-badge"
+                  title="Datagram group"
+                  >DG</span
+                >
                 <template v-else>{{ stream.streamId }}</template>
               </span>
               <span
                 v-if="!compact"
                 class="col-dir"
-                :class="stream.direction === 'tx' ? 'direction-tx' : 'direction-rx'"
+                :class="
+                  stream.direction === 'tx' ? 'direction-tx' : 'direction-rx'
+                "
               >
                 {{ stream.direction === 'tx' ? 'TX' : 'RX' }}
               </span>
@@ -253,7 +287,7 @@ function transferSummary(list: StreamEntry[]): string {
                 <span
                   v-if="stream.contentType === 'fmp4' && stream.mediaInfo"
                   class="content-badge content-fmp4"
-                  :title="stream.mediaInfo.boxes.join(' \u00b7 ')"
+                  :title="stream.mediaInfo.boxes.join(' · ')"
                 >
                   {{ mediaLabel(stream.mediaInfo) }}
                 </span>
@@ -282,27 +316,55 @@ function transferSummary(list: StreamEntry[]): string {
                   MPK
                 </span>
               </span>
-              <span class="col-track" :title="stream.isControl ? 'MoQT control stream (bidi)' : resolveTrack(stream)?.fullName">
-                <span v-if="stream.isControl" class="track-control">MoQT Control</span>
+              <span
+                class="col-track"
+                :title="
+                  stream.isControl
+                    ? 'MoQT control stream (bidi)'
+                    : resolveTrack(stream)?.fullName
+                "
+              >
+                <span v-if="stream.isControl" class="track-control"
+                  >MoQT Control</span
+                >
                 <span v-else-if="resolveTrack(stream)" class="track-tag">
                   {{ resolveTrack(stream)!.fullName }}
-                  <span v-if="stream.datagramGroupKey" class="group-tag mono">g:{{ stream.groupId }}</span>
+                  <span v-if="stream.datagramGroupKey" class="group-tag mono"
+                    >g:{{ stream.groupId }}</span
+                  >
                 </span>
-                <span v-else-if="stream.trackAlias != null" class="track-alias mono">
+                <span
+                  v-else-if="stream.trackAlias != null"
+                  class="track-alias mono"
+                >
                   alias:{{ stream.trackAlias }}
-                  <span v-if="stream.datagramGroupKey" class="group-tag">g:{{ stream.groupId }}</span>
+                  <span v-if="stream.datagramGroupKey" class="group-tag"
+                    >g:{{ stream.groupId }}</span
+                  >
                 </span>
-                <span v-else class="track-alias mono">#{{ stream.streamId }}</span>
+                <span v-else class="track-alias mono"
+                  >#{{ stream.streamId }}</span
+                >
               </span>
               <span v-if="!compact" class="col-status">
-                <span v-if="stream.datagramGroupKey" class="badge badge-dg" :title="`${stream.datagramCount} datagrams`">
+                <span
+                  v-if="stream.datagramGroupKey"
+                  class="badge badge-dg"
+                  :title="`${stream.datagramCount} datagrams`"
+                >
                   {{ stream.datagramCount }} dg
                 </span>
-                <span v-else class="badge" :class="stream.closed ? 'badge-closed' : 'badge-open'">
+                <span
+                  v-else
+                  class="badge"
+                  :class="stream.closed ? 'badge-closed' : 'badge-open'"
+                >
                   {{ stream.closed ? 'closed' : 'open' }}
                 </span>
               </span>
-              <span v-if="!compact" class="col-bytes mono">{{ formatBytes(stream.byteCount) }}</span>
+              <span v-if="!compact" class="col-bytes mono">{{
+                formatBytes(stream.byteCount)
+              }}</span>
             </div>
           </div>
         </div>
@@ -312,7 +374,9 @@ function transferSummary(list: StreamEntry[]): string {
     <div v-if="streams.length > 0" class="stream-footer">
       <template v-if="isFiltered">
         <span class="footer-value">{{ streamCount(filteredStreams) }}</span>
-        <span class="footer-transfer">{{ transferSummary(filteredStreams) }}</span>
+        <span class="footer-transfer">{{
+          transferSummary(filteredStreams)
+        }}</span>
       </template>
       <template v-else>
         <span class="footer-value">{{ streamCount(streams) }}</span>
@@ -464,12 +528,33 @@ function transferSummary(list: StreamEntry[]): string {
   color: var(--text-primary);
 }
 
-.col-id { width: 30px; }
-.col-dir { width: 30px; text-align: center; font-weight: 600; font-size: 10px; }
-.col-type { width: 56px; text-align: center; }
-.col-track { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.col-status { width: 50px; }
-.col-bytes { width: 70px; text-align: right; }
+.col-id {
+  width: 30px;
+}
+.col-dir {
+  width: 30px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 10px;
+}
+.col-type {
+  width: 56px;
+  text-align: center;
+}
+.col-track {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.col-status {
+  width: 50px;
+}
+.col-bytes {
+  width: 70px;
+  text-align: right;
+}
 
 .content-badge {
   display: inline-block;

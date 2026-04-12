@@ -7,25 +7,25 @@
  * and manages subscription/fetch state.
  */
 
-import { createSessionState } from '@moqtap/codec/session';
-import { getCodec } from '../codec/control-message';
-import type { SupportedDraft } from '../types/common';
+import { createSessionState } from '@moqtap/codec/session'
+import { getCodec } from '../codec/control-message'
+import type { SupportedDraft } from '../types/common'
 
 // Re-export session types from the codec
 export type {
+  FetchPhase,
+  FetchState,
+  ProtocolViolation,
+  ProtocolViolationCode,
   SessionPhase,
   SessionState,
   SessionStateOptions,
-  TransitionResult,
-  ValidationResult,
-  ProtocolViolation,
-  ProtocolViolationCode,
   SideEffect,
   SubscriptionPhase,
   SubscriptionState,
-  FetchPhase,
-  FetchState,
-} from '@moqtap/codec/session';
+  TransitionResult,
+  ValidationResult,
+} from '@moqtap/codec/session'
 
 /**
  * Create a session state machine for the detected draft.
@@ -38,6 +38,6 @@ export function createExtensionSession(
   draft: SupportedDraft,
   role: 'client' | 'server' = 'client',
 ) {
-  const codec = getCodec(draft);
-  return createSessionState({ codec, role });
+  const codec = getCodec(draft)
+  return createSessionState({ codec, role })
 }

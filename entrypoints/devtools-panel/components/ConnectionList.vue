@@ -1,32 +1,34 @@
 <script lang="ts" setup>
-import { ref, computed, onBeforeUnmount } from 'vue';
-import type { SessionEntry } from '../use-inspector';
+import { computed, onBeforeUnmount, ref } from 'vue'
+import type { SessionEntry } from '../use-inspector'
 
 /* Reactive tick that drives the bitrate decay animation.
    Gated behind rAF so it pauses when the panel is backgrounded. */
-const bitrateTick = ref(0);
+const bitrateTick = ref(0)
 const bitrateTickInterval = setInterval(() => {
-  requestAnimationFrame(() => { bitrateTick.value++; });
-}, 500);
-onBeforeUnmount(() => clearInterval(bitrateTickInterval));
+  requestAnimationFrame(() => {
+    bitrateTick.value++
+  })
+}, 500)
+onBeforeUnmount(() => clearInterval(bitrateTickInterval))
 
 const props = defineProps<{
-  sessions: SessionEntry[];
-  selectedId: string | null;
-}>();
+  sessions: SessionEntry[]
+  selectedId: string | null
+}>()
 
 const emit = defineEmits<{
-  select: [id: string];
-}>();
+  select: [id: string]
+}>()
 
 function formatUrl(url: string): { host: string; path: string } {
   try {
-    const u = new URL(url);
-    const host = u.hostname + (u.port ? ':' + u.port : '');
-    const path = u.pathname && u.pathname !== '/' ? u.pathname : '';
-    return { host, path };
+    const u = new URL(url)
+    const host = u.hostname + (u.port ? ':' + u.port : '')
+    const path = u.pathname && u.pathname !== '/' ? u.pathname : ''
+    return { host, path }
   } catch {
-    return { host: url, path: '' };
+    return { host: url, path: '' }
   }
 }
 
@@ -35,76 +37,93 @@ function formatTime(ts: number): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-  });
+  })
 }
 
-function protocolBadge(session: SessionEntry): { label: string; class: string } {
+function protocolBadge(session: SessionEntry): {
+  label: string
+  class: string
+} {
   switch (session.protocol) {
     case 'moqt':
-      return { label: session.draft ? `MoQT d${session.draft}` : 'MoQT', class: 'badge-moqt' };
+      return {
+        label: session.draft ? `MoQT d${session.draft}` : 'MoQT',
+        class: 'badge-moqt',
+      }
     case 'moqt-unknown-draft':
-      return { label: 'MoQT ?', class: 'badge-moqt' };
+      return { label: 'MoQT ?', class: 'badge-moqt' }
     case 'detecting':
-      return { label: '...', class: 'badge-unknown' };
+      return { label: '...', class: 'badge-unknown' }
     default:
-      return { label: 'WT', class: 'badge-unknown' };
+      return { label: 'WT', class: 'badge-unknown' }
   }
 }
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
-const DECAY_WINDOW_MS = 5_000;
+const DECAY_WINDOW_MS = 5_000
 
 interface SessionStats {
-  totalBytes: number;
-  bitrate: string | null;
-  urlHost: string;
-  urlPath: string;
+  totalBytes: number
+  bitrate: string | null
+  urlHost: string
+  urlPath: string
 }
 
 /** Pre-compute per-session stats once per tick, avoiding double iteration in template */
 const sessionStats = computed(() => {
-  void bitrateTick.value; // reactive dependency — forces re-eval during decay
-  const map = new Map<string, SessionStats>();
+  void bitrateTick.value // reactive dependency — forces re-eval during decay
+  const map = new Map<string, SessionStats>()
   for (const session of props.sessions) {
-    let bytes = 0;
-    let earliest = Infinity;
-    let latest = 0;
+    let bytes = 0
+    let earliest = Infinity
+    let latest = 0
     for (const stream of session.streams.values()) {
-      bytes += stream.byteCount;
-      if (stream.firstDataAt && stream.firstDataAt < earliest) earliest = stream.firstDataAt;
-      if (stream.lastDataAt && stream.lastDataAt > latest) latest = stream.lastDataAt;
+      bytes += stream.byteCount
+      if (stream.firstDataAt && stream.firstDataAt < earliest)
+        earliest = stream.firstDataAt
+      if (stream.lastDataAt && stream.lastDataAt > latest)
+        latest = stream.lastDataAt
     }
 
-    let bitrate: string | null = null;
-    if (!session.closed && !session.imported && bytes > 0 && isFinite(earliest) && latest > 0) {
-      const activeSec = Math.max((latest - earliest) / 1000, 1);
-      const activeBps = (bytes * 8) / activeSec;
-      const decay = Math.max(0, 1 - (Date.now() - latest) / DECAY_WINDOW_MS);
+    let bitrate: string | null = null
+    if (
+      !session.closed &&
+      !session.imported &&
+      bytes > 0 &&
+      isFinite(earliest) &&
+      latest > 0
+    ) {
+      const activeSec = Math.max((latest - earliest) / 1000, 1)
+      const activeBps = (bytes * 8) / activeSec
+      const decay = Math.max(0, 1 - (Date.now() - latest) / DECAY_WINDOW_MS)
       if (decay > 0) {
-        const bps = activeBps * decay;
-        if (bps >= 1_000_000) bitrate = `${(bps / 1_000_000).toFixed(1)} Mbps`;
-        else if (bps >= 1_000) bitrate = `${(bps / 1_000).toFixed(0)} kbps`;
-        else if (bps >= 1) bitrate = `${Math.round(bps)} bps`;
+        const bps = activeBps * decay
+        if (bps >= 1_000_000) bitrate = `${(bps / 1_000_000).toFixed(1)} Mbps`
+        else if (bps >= 1_000) bitrate = `${(bps / 1_000).toFixed(0)} kbps`
+        else if (bps >= 1) bitrate = `${Math.round(bps)} bps`
       }
     }
 
-    const { host: urlHost, path: urlPath } = formatUrl(session.url);
-    map.set(session.sessionId, { totalBytes: bytes, bitrate, urlHost, urlPath });
+    const { host: urlHost, path: urlPath } = formatUrl(session.url)
+    map.set(session.sessionId, {
+      totalBytes: bytes,
+      bitrate,
+      urlHost,
+      urlPath,
+    })
   }
-  return map;
-});
+  return map
+})
 </script>
 
 <template>
   <div class="connection-list">
-    <div v-if="sessions.length === 0" class="empty-list">
-      No connections
-    </div>
+    <div v-if="sessions.length === 0" class="empty-list">No connections</div>
     <div
       v-for="session in sessions"
       :key="session.sessionId"
@@ -116,9 +135,7 @@ const sessionStats = computed(() => {
         <span class="badge" :class="protocolBadge(session).class">
           {{ protocolBadge(session).label }}
         </span>
-        <span v-if="session.frameId" class="badge badge-iframe">
-          iframe
-        </span>
+        <span v-if="session.frameId" class="badge badge-iframe"> iframe </span>
         <span v-if="session.imported" class="badge badge-imported">
           imported
         </span>
@@ -129,11 +146,31 @@ const sessionStats = computed(() => {
         >
           {{ session.closed ? 'closed' : 'open' }}
         </span>
-        <span v-if="sessionStats.get(session.sessionId)?.bitrate" class="data-stat bitrate">{{ sessionStats.get(session.sessionId)!.bitrate }}</span>
-        <span v-else-if="(session.closed || session.imported) && sessionStats.get(session.sessionId)!.totalBytes > 0" class="data-stat total-data">{{ formatBytes(sessionStats.get(session.sessionId)!.totalBytes) }}</span>
+        <span
+          v-if="sessionStats.get(session.sessionId)?.bitrate"
+          class="data-stat bitrate"
+          >{{ sessionStats.get(session.sessionId)!.bitrate }}</span
+        >
+        <span
+          v-else-if="
+            (session.closed || session.imported) &&
+            sessionStats.get(session.sessionId)!.totalBytes > 0
+          "
+          class="data-stat total-data"
+          >{{
+            formatBytes(sessionStats.get(session.sessionId)!.totalBytes)
+          }}</span
+        >
       </div>
       <div class="connection-url mono" :title="session.url">
-        <span class="url-host">{{ sessionStats.get(session.sessionId)!.urlHost }}</span><span v-if="sessionStats.get(session.sessionId)!.urlPath" class="url-path">{{ sessionStats.get(session.sessionId)!.urlPath }}</span>
+        <span class="url-host">{{
+          sessionStats.get(session.sessionId)!.urlHost
+        }}</span
+        ><span
+          v-if="sessionStats.get(session.sessionId)!.urlPath"
+          class="url-path"
+          >{{ sessionStats.get(session.sessionId)!.urlPath }}</span
+        >
       </div>
       <div class="connection-meta">
         <span>{{ formatTime(session.createdAt) }}</span>
@@ -213,7 +250,9 @@ const sessionStats = computed(() => {
 .data-stat {
   margin-left: auto;
   font-size: 10px;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace;
+  font-family:
+    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
+    monospace;
 }
 
 .bitrate {
@@ -223,6 +262,4 @@ const sessionStats = computed(() => {
 .total-data {
   color: var(--text-secondary);
 }
-
-
 </style>

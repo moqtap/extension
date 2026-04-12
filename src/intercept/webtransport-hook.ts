@@ -14,33 +14,39 @@
  */
 
 export interface InterceptedSession {
-  id: string;
-  url: string;
-  createdAt: number;
+  id: string
+  url: string
+  createdAt: number
 }
 
 export interface SessionLifecycleCallbacks {
-  onSession: (session: InterceptedSession) => void;
-  onSessionClosed: (sessionId: string, reason: string) => void;
+  onSession: (session: InterceptedSession) => void
+  onSessionClosed: (sessionId: string, reason: string) => void
 }
 
 export interface StreamInterceptor {
-  onData(sessionId: string, streamId: number, data: Uint8Array, direction: 'tx' | 'rx', stack?: string): void;
-  onClose(sessionId: string, streamId: number): void;
-  onError(sessionId: string, streamId: number, error: unknown): void;
-  onStreamCreated?(sessionId: string, streamId: number, stack: string): void;
+  onData(
+    sessionId: string,
+    streamId: number,
+    data: Uint8Array,
+    direction: 'tx' | 'rx',
+    stack?: string,
+  ): void
+  onClose(sessionId: string, streamId: number): void
+  onError(sessionId: string, streamId: number, error: unknown): void
+  onStreamCreated?(sessionId: string, streamId: number, stack: string): void
   /** Called for each datagram received or sent via WebTransport datagrams. */
-  onDatagram?(sessionId: string, data: Uint8Array, direction: 'tx' | 'rx'): void;
+  onDatagram?(sessionId: string, data: Uint8Array, direction: 'tx' | 'rx'): void
 }
 
 // Stored per-global so uninstallWebTransportHook can restore without
 // needing the return value from installWebTransportHook.
-const originalConstructors = new WeakMap<object, unknown>();
+const originalConstructors = new WeakMap<object, unknown>()
 
-let sessionCounter = 0;
+let sessionCounter = 0
 
 function generateSessionId(): string {
-  return `wt-${Date.now()}-${++sessionCounter}`;
+  return `wt-${Date.now()}-${++sessionCounter}`
 }
 
 /** Install the WebTransport monkey-patch on the given global object */
@@ -50,59 +56,79 @@ export function installWebTransportHook(
   onStream: StreamInterceptor,
   onSessionClosed?: (sessionId: string, reason: string) => void,
 ): () => void {
-  const glob = target as Record<string, unknown>;
-  const OriginalWebTransport = glob.WebTransport as (new (...args: unknown[]) => unknown) | undefined;
+  const glob = target as Record<string, unknown>
+  const OriginalWebTransport = glob.WebTransport as
+    | (new (...args: unknown[]) => unknown)
+    | undefined
 
   // No WebTransport on this global (e.g. Worker without WebTransport support).
   // Return a safe no-op cleanup.
   if (!OriginalWebTransport) {
-    return () => {};
+    return () => {}
   }
 
-  originalConstructors.set(target, OriginalWebTransport);
+  originalConstructors.set(target, OriginalWebTransport)
 
-  let nextStreamId = 0;
+  let nextStreamId = 0
 
-  function PatchedWebTransport(this: unknown, url: string, options?: Record<string, unknown>) {
+  function PatchedWebTransport(
+    this: unknown,
+    url: string,
+    options?: Record<string, unknown>,
+  ) {
     // Delegate to the real constructor
-    const instance = new (OriginalWebTransport as new (url: string, options?: Record<string, unknown>) => Record<string, unknown>)(url, options);
+    const instance = new (OriginalWebTransport as new (
+      url: string,
+      options?: Record<string, unknown>,
+    ) => Record<string, unknown>)(url, options)
 
     // Notify the session callback
     const session: InterceptedSession = {
       id: generateSessionId(),
       url,
       createdAt: Date.now(),
-    };
-    const sessionId = session.id;
-    onSession(session);
+    }
+    const sessionId = session.id
+    onSession(session)
 
     // Wrap createBidirectionalStream to intercept stream data
-    const origCreateBidi = instance.createBidirectionalStream as (...args: unknown[]) => Promise<unknown>;
+    const origCreateBidi = instance.createBidirectionalStream as (
+      ...args: unknown[]
+    ) => Promise<unknown>
     if (typeof origCreateBidi === 'function') {
       instance.createBidirectionalStream = (...args: unknown[]) => {
-        const streamId = nextStreamId++;
+        const streamId = nextStreamId++
         return origCreateBidi.apply(instance, args).then((stream: unknown) => {
-          const s = stream as Record<string, unknown>;
-          wrapReadableStream(s.readable, sessionId, streamId, 'rx', onStream);
-          wrapWritableStream(s.writable, sessionId, streamId, 'tx', onStream, true);
-          return stream;
-        });
-      };
+          const s = stream as Record<string, unknown>
+          wrapReadableStream(s.readable, sessionId, streamId, 'rx', onStream)
+          wrapWritableStream(
+            s.writable,
+            sessionId,
+            streamId,
+            'tx',
+            onStream,
+            true,
+          )
+          return stream
+        })
+      }
     }
 
     // Wrap createUnidirectionalStream to intercept outgoing data
-    const origCreateUni = instance.createUnidirectionalStream as (...args: unknown[]) => Promise<unknown>;
+    const origCreateUni = instance.createUnidirectionalStream as (
+      ...args: unknown[]
+    ) => Promise<unknown>
     if (typeof origCreateUni === 'function') {
       instance.createUnidirectionalStream = (...args: unknown[]) => {
-        const streamId = nextStreamId++;
+        const streamId = nextStreamId++
         // Capture synchronously before the async boundary
-        const stack = new Error().stack ?? '';
+        const stack = new Error().stack ?? ''
         return origCreateUni.apply(instance, args).then((writable: unknown) => {
-          wrapWritableStream(writable, sessionId, streamId, 'tx', onStream);
-          onStream.onStreamCreated?.(sessionId, streamId, stack);
-          return writable;
-        });
-      };
+          wrapWritableStream(writable, sessionId, streamId, 'tx', onStream)
+          onStream.onStreamCreated?.(sessionId, streamId, stack)
+          return writable
+        })
+      }
     }
 
     // Tap into incoming bidirectional streams
@@ -112,7 +138,7 @@ export function installWebTransportHook(
       () => nextStreamId++,
       onStream,
       true,
-    );
+    )
 
     // Tap into incoming unidirectional streams
     tapIncomingStreams(
@@ -121,71 +147,76 @@ export function installWebTransportHook(
       () => nextStreamId++,
       onStream,
       false,
-    );
+    )
 
     // Intercept datagrams (readable = rx, writable = tx)
     if (onStream.onDatagram) {
-      interceptDatagrams(instance.datagrams, sessionId, onStream);
+      interceptDatagrams(instance.datagrams, sessionId, onStream)
     }
 
     // Monitor connection lifecycle promises
     if (onSessionClosed) {
-      let reported = false;
+      let reported = false
       const reportClose = (reason: string) => {
-        if (reported) return;
-        reported = true;
-        onSessionClosed(session.id, reason);
-      };
+        if (reported) return
+        reported = true
+        onSessionClosed(session.id, reason)
+      }
 
       // .ready rejects when the connection fails to establish
       // (e.g. server unreachable, TLS error, QUIC handshake failure)
-      const ready = instance.ready as Promise<unknown> | undefined;
+      const ready = instance.ready as Promise<unknown> | undefined
       if (ready && typeof ready.then === 'function') {
         ready.then(undefined, (err) => {
-          reportClose(String(err));
-        });
+          reportClose(String(err))
+        })
       }
 
       // .closed resolves on clean close, rejects on error-based closure
-      const closed = instance.closed as Promise<{ closeCode?: number; reason?: string }> | undefined;
+      const closed = instance.closed as
+        | Promise<{ closeCode?: number; reason?: string }>
+        | undefined
       if (closed && typeof closed.then === 'function') {
         closed.then(
           (info) => {
-            const reason = (info && typeof info === 'object')
-              ? (info.reason || `code ${info.closeCode ?? 0}`)
-              : 'closed';
-            reportClose(reason);
+            const reason =
+              info && typeof info === 'object'
+                ? info.reason || `code ${info.closeCode ?? 0}`
+                : 'closed'
+            reportClose(reason)
           },
           (err) => {
-            reportClose(String(err));
+            reportClose(String(err))
           },
-        );
+        )
       }
     }
 
-    return instance;
+    return instance
   }
 
   // Preserve prototype chain so instanceof checks still work
-  PatchedWebTransport.prototype = (OriginalWebTransport as { prototype: unknown }).prototype;
-  Object.defineProperty(PatchedWebTransport, 'name', { value: 'WebTransport' });
+  PatchedWebTransport.prototype = (
+    OriginalWebTransport as { prototype: unknown }
+  ).prototype
+  Object.defineProperty(PatchedWebTransport, 'name', { value: 'WebTransport' })
 
-  glob.WebTransport = PatchedWebTransport;
+  glob.WebTransport = PatchedWebTransport
 
   // Return cleanup function
   return () => {
-    glob.WebTransport = OriginalWebTransport;
-    originalConstructors.delete(target);
-  };
+    glob.WebTransport = OriginalWebTransport
+    originalConstructors.delete(target)
+  }
 }
 
 /** Remove the monkey-patch and restore original WebTransport */
 export function uninstallWebTransportHook(target: typeof globalThis): void {
-  const glob = target as Record<string, unknown>;
-  const original = originalConstructors.get(target);
+  const glob = target as Record<string, unknown>
+  const original = originalConstructors.get(target)
   if (original) {
-    glob.WebTransport = original;
-    originalConstructors.delete(target);
+    glob.WebTransport = original
+    originalConstructors.delete(target)
   }
 }
 
@@ -202,31 +233,31 @@ function wrapReadableStream(
   direction: 'tx' | 'rx',
   interceptor: StreamInterceptor,
 ): void {
-  if (!readable || typeof readable !== 'object') return;
-  const rs = readable as { getReader: () => ReadableStreamReader };
-  if (typeof rs.getReader !== 'function') return;
+  if (!readable || typeof readable !== 'object') return
+  const rs = readable as { getReader: () => ReadableStreamReader }
+  if (typeof rs.getReader !== 'function') return
 
-  const origGetReader = rs.getReader.bind(rs);
+  const origGetReader = rs.getReader.bind(rs)
   rs.getReader = () => {
-    const reader = origGetReader();
-    const origRead = reader.read.bind(reader);
+    const reader = origGetReader()
+    const origRead = reader.read.bind(reader)
     reader.read = () =>
       origRead().then(
         (result: ReadableStreamReadResult<unknown>) => {
           if (result.done) {
-            interceptor.onClose(sessionId, streamId);
+            interceptor.onClose(sessionId, streamId)
           } else if (result.value instanceof Uint8Array) {
-            interceptor.onData(sessionId, streamId, result.value, direction);
+            interceptor.onData(sessionId, streamId, result.value, direction)
           }
-          return result;
+          return result
         },
         (err: unknown) => {
-          interceptor.onError(sessionId, streamId, err);
-          throw err;
+          interceptor.onError(sessionId, streamId, err)
+          throw err
         },
-      );
-    return reader;
-  };
+      )
+    return reader
+  }
 }
 
 /**
@@ -242,28 +273,28 @@ function wrapWritableStream(
   interceptor: StreamInterceptor,
   captureStack = false,
 ): void {
-  if (!writable || typeof writable !== 'object') return;
-  const ws = writable as { getWriter: () => WritableStreamWriter };
-  if (typeof ws.getWriter !== 'function') return;
+  if (!writable || typeof writable !== 'object') return
+  const ws = writable as { getWriter: () => WritableStreamWriter }
+  if (typeof ws.getWriter !== 'function') return
 
-  const origGetWriter = ws.getWriter.bind(ws);
+  const origGetWriter = ws.getWriter.bind(ws)
   ws.getWriter = () => {
-    const writer = origGetWriter();
-    const origWrite = writer.write.bind(writer);
+    const writer = origGetWriter()
+    const origWrite = writer.write.bind(writer)
     writer.write = (chunk?: unknown) => {
       if (chunk instanceof Uint8Array) {
-        const stack = captureStack ? new Error().stack : undefined;
-        interceptor.onData(sessionId, streamId, chunk, direction, stack);
+        const stack = captureStack ? new Error().stack : undefined
+        interceptor.onData(sessionId, streamId, chunk, direction, stack)
       }
-      return origWrite(chunk);
-    };
-    const origClose = writer.close.bind(writer);
+      return origWrite(chunk)
+    }
+    const origClose = writer.close.bind(writer)
     writer.close = () => {
-      interceptor.onClose(sessionId, streamId);
-      return origClose();
-    };
-    return writer;
-  };
+      interceptor.onClose(sessionId, streamId)
+      return origClose()
+    }
+    return writer
+  }
 }
 
 /**
@@ -277,30 +308,42 @@ function tapIncomingStreams(
   interceptor: StreamInterceptor,
   isBidirectional: boolean,
 ): void {
-  if (!incomingStreams || typeof incomingStreams !== 'object') return;
-  const rs = incomingStreams as { getReader: () => ReadableStreamReader };
-  if (typeof rs.getReader !== 'function') return;
+  if (!incomingStreams || typeof incomingStreams !== 'object') return
+  const rs = incomingStreams as { getReader: () => ReadableStreamReader }
+  if (typeof rs.getReader !== 'function') return
 
-  const origGetReader = rs.getReader.bind(rs);
+  const origGetReader = rs.getReader.bind(rs)
   rs.getReader = () => {
-    const reader = origGetReader();
-    const origRead = reader.read.bind(reader);
+    const reader = origGetReader()
+    const origRead = reader.read.bind(reader)
     reader.read = () =>
       origRead().then((result: ReadableStreamReadResult<unknown>) => {
         if (!result.done && result.value) {
-          const streamId = allocStreamId();
-          const stream = result.value as Record<string, unknown>;
+          const streamId = allocStreamId()
+          const stream = result.value as Record<string, unknown>
           if (isBidirectional) {
-            wrapReadableStream(stream.readable, sessionId, streamId, 'rx', interceptor);
-            wrapWritableStream(stream.writable, sessionId, streamId, 'tx', interceptor);
+            wrapReadableStream(
+              stream.readable,
+              sessionId,
+              streamId,
+              'rx',
+              interceptor,
+            )
+            wrapWritableStream(
+              stream.writable,
+              sessionId,
+              streamId,
+              'tx',
+              interceptor,
+            )
           } else {
-            wrapReadableStream(stream, sessionId, streamId, 'rx', interceptor);
+            wrapReadableStream(stream, sessionId, streamId, 'rx', interceptor)
           }
         }
-        return result;
-      });
-    return reader;
-  };
+        return result
+      })
+    return reader
+  }
 }
 
 /**
@@ -312,50 +355,48 @@ function interceptDatagrams(
   sessionId: string,
   interceptor: StreamInterceptor,
 ): void {
-  if (!datagrams || typeof datagrams !== 'object') return;
+  if (!datagrams || typeof datagrams !== 'object') return
   const dg = datagrams as {
-    readable?: unknown;
-    writable?: unknown;
-  };
+    readable?: unknown
+    writable?: unknown
+  }
 
   // Intercept incoming datagrams (rx) by wrapping getReader
   if (dg.readable && typeof dg.readable === 'object') {
-    const rs = dg.readable as { getReader: () => ReadableStreamReader };
+    const rs = dg.readable as { getReader: () => ReadableStreamReader }
     if (typeof rs.getReader === 'function') {
-      const origGetReader = rs.getReader.bind(rs);
+      const origGetReader = rs.getReader.bind(rs)
       rs.getReader = () => {
-        const reader = origGetReader();
-        const origRead = reader.read.bind(reader);
+        const reader = origGetReader()
+        const origRead = reader.read.bind(reader)
         reader.read = () =>
-          origRead().then(
-            (result: ReadableStreamReadResult<unknown>) => {
-              if (!result.done && result.value instanceof Uint8Array) {
-                interceptor.onDatagram!(sessionId, result.value, 'rx');
-              }
-              return result;
-            },
-          );
-        return reader;
-      };
+          origRead().then((result: ReadableStreamReadResult<unknown>) => {
+            if (!result.done && result.value instanceof Uint8Array) {
+              interceptor.onDatagram!(sessionId, result.value, 'rx')
+            }
+            return result
+          })
+        return reader
+      }
     }
   }
 
   // Intercept outgoing datagrams (tx) by wrapping getWriter
   if (dg.writable && typeof dg.writable === 'object') {
-    const ws = dg.writable as { getWriter: () => WritableStreamWriter };
+    const ws = dg.writable as { getWriter: () => WritableStreamWriter }
     if (typeof ws.getWriter === 'function') {
-      const origGetWriter = ws.getWriter.bind(ws);
+      const origGetWriter = ws.getWriter.bind(ws)
       ws.getWriter = () => {
-        const writer = origGetWriter();
-        const origWrite = writer.write.bind(writer);
+        const writer = origGetWriter()
+        const origWrite = writer.write.bind(writer)
         writer.write = (chunk?: unknown) => {
           if (chunk instanceof Uint8Array) {
-            interceptor.onDatagram!(sessionId, chunk, 'tx');
+            interceptor.onDatagram!(sessionId, chunk, 'tx')
           }
-          return origWrite(chunk);
-        };
-        return writer;
-      };
+          return origWrite(chunk)
+        }
+        return writer
+      }
     }
   }
 }
@@ -363,15 +404,15 @@ function interceptDatagrams(
 // Minimal type stubs for stream reader/writer used in interception.
 // These are intentionally narrow — we only need the methods we wrap.
 interface ReadableStreamReader {
-  read: () => Promise<ReadableStreamReadResult<unknown>>;
-  releaseLock: () => void;
+  read: () => Promise<ReadableStreamReadResult<unknown>>
+  releaseLock: () => void
 }
 interface ReadableStreamReadResult<T> {
-  done: boolean;
-  value?: T;
+  done: boolean
+  value?: T
 }
 interface WritableStreamWriter {
-  write: (chunk?: unknown) => Promise<void>;
-  close: () => Promise<void>;
-  releaseLock: () => void;
+  write: (chunk?: unknown) => Promise<void>
+  close: () => Promise<void>
+  releaseLock: () => void
 }

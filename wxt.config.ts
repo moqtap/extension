@@ -1,4 +1,4 @@
-import { defineConfig } from 'wxt';
+import { defineConfig } from 'wxt'
 
 // See https://wxt.dev/api/config.html
 export default defineConfig({
@@ -6,7 +6,8 @@ export default defineConfig({
   manifestVersion: 3,
   manifest: {
     name: 'WebTransport Inspector by moqtap',
-    description: 'DevTools extension for inspecting WebTransport connections and MoQT protocol traffic',
+    description:
+      'DevTools extension for inspecting WebTransport connections and MoQT protocol traffic',
     permissions: ['storage'],
     devtools_page: 'devtools.html',
     browser_specific_settings: {
@@ -18,4 +19,4 @@ export default defineConfig({
       },
     },
   },
-});
+})

@@ -1,24 +1,27 @@
 <script lang="ts" setup>
-import { computed, ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
-import type { StreamObject } from '../stream-framing';
-import { detectMediaInfo } from '@/src/detect/bmff-boxes';
+import { detectMediaInfo } from '@/src/detect/bmff-boxes'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { StreamObject } from '../stream-framing'
 
-const props = withDefaults(defineProps<{
-  data: Uint8Array;
-  /** Number of leading bytes that are MoQT protocol framing (dimmed in display) */
-  headerSize?: number;
-  /** Parsed object boundaries for per-object annotation */
-  objects?: StreamObject[];
-}>(), {
-  headerSize: 0,
-});
+const props = withDefaults(
+  defineProps<{
+    data: Uint8Array
+    /** Number of leading bytes that are MoQT protocol framing (dimmed in display) */
+    headerSize?: number
+    /** Parsed object boundaries for per-object annotation */
+    objects?: StreamObject[]
+  }>(),
+  {
+    headerSize: 0,
+  },
+)
 
-const BYTES_PER_ROW = 16;
+const BYTES_PER_ROW = 16
 /** Fixed row height — enforced via CSS `height` + `box-sizing: border-box` on both
  *  `.hex-row` and `.hex-banner` to guarantee uniform virtual-scroll rows. */
-const ROW_HEIGHT = 20;
+const ROW_HEIGHT = 20
 /** Extra rows rendered above/below the visible viewport to avoid flicker during scroll */
-const OVERSCAN = 10;
+const OVERSCAN = 10
 
 /**
  * Per-byte annotation:
@@ -28,295 +31,326 @@ const OVERSCAN = 10;
  *   'odd'     — payload byte in an odd-indexed object
  *   'none'    — no annotation
  */
-type ByteKind = 'header' | 'framing' | 'even' | 'odd' | 'none';
+type ByteKind = 'header' | 'framing' | 'even' | 'odd' | 'none'
 
 // ── Per-object media annotation ──────────────────────────────────
 interface ObjectAnnotation {
-  objectId: number;
-  payloadSize: number;
-  boxes: string[] | null;
-  variant: string | null;
+  objectId: number
+  payloadSize: number
+  boxes: string[] | null
+  variant: string | null
 }
 
 const objectAnnotations = computed((): ObjectAnnotation[] => {
-  if (!props.objects) return [];
+  if (!props.objects) return []
   return props.objects.map((obj) => {
-    const end = Math.min(obj.payloadOffset + obj.payloadLength, props.data.length);
-    const payload = end > obj.payloadOffset
-      ? props.data.subarray(obj.payloadOffset, end)
-      : null;
-    const media = payload && payload.length >= 8 ? detectMediaInfo(payload) : null;
+    const end = Math.min(
+      obj.payloadOffset + obj.payloadLength,
+      props.data.length,
+    )
+    const payload =
+      end > obj.payloadOffset
+        ? props.data.subarray(obj.payloadOffset, end)
+        : null
+    const media =
+      payload && payload.length >= 8 ? detectMediaInfo(payload) : null
     return {
       objectId: obj.objectId,
       payloadSize: obj.payloadLength,
       boxes: media?.boxes ?? null,
       variant: media?.variant ?? null,
-    };
-  });
-});
+    }
+  })
+})
 
 function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 const VARIANT_LABELS: Record<string, string> = {
   cmaf: 'CMAF',
   loc: 'LOC',
   fmp4: 'fMP4',
-};
+}
 
 /** Box description without "obj N" prefix — for inline banners */
 function formatBannerContent(ann: ObjectAnnotation): string {
-  const parts: string[] = [];
+  const parts: string[] = []
   if (ann.boxes && ann.boxes.length > 0) {
-    const varLabel = ann.variant ? VARIANT_LABELS[ann.variant] ?? '' : '';
-    parts.push(varLabel ? `${varLabel}: ${ann.boxes.join(' + ')}` : ann.boxes.join(' + '));
+    const varLabel = ann.variant ? (VARIANT_LABELS[ann.variant] ?? '') : ''
+    parts.push(
+      varLabel
+        ? `${varLabel}: ${ann.boxes.join(' + ')}`
+        : ann.boxes.join(' + '),
+    )
   }
-  parts.push(formatSize(ann.payloadSize));
-  return parts.join(' \u00b7 ');
+  parts.push(formatSize(ann.payloadSize))
+  return parts.join(' · ')
 }
 
 /** Full label including "obj N" — for sticky overlay */
 function formatBannerLabel(ann: ObjectAnnotation): string {
-  return `obj ${ann.objectId} \u00b7 ${formatBannerContent(ann)}`;
+  return `obj ${ann.objectId} · ${formatBannerContent(ann)}`
 }
 
 // ── Banner row positions ─────────────────────────────────────────
 interface BannerPosition {
-  dataRow: number;     // data row this banner appears before
-  virtualRow: number;  // virtual row index (accounts for prior banners)
-  objectIdx: number;   // index into props.objects
+  dataRow: number // data row this banner appears before
+  virtualRow: number // virtual row index (accounts for prior banners)
+  objectIdx: number // index into props.objects
 }
 
 const bannerPositions = computed((): BannerPosition[] => {
-  if (!props.objects || props.objects.length < 2) return [];
+  if (!props.objects || props.objects.length < 2) return []
 
-  const positions: BannerPosition[] = [];
+  const positions: BannerPosition[] = []
   for (let i = 0; i < props.objects.length; i++) {
-    const dataRow = Math.floor(props.objects[i].offset / BYTES_PER_ROW);
-    positions.push({ dataRow, virtualRow: 0, objectIdx: i });
+    const dataRow = Math.floor(props.objects[i].offset / BYTES_PER_ROW)
+    positions.push({ dataRow, virtualRow: 0, objectIdx: i })
   }
   // Sort by data row then object index (should already be in order)
-  positions.sort((a, b) => a.dataRow - b.dataRow || a.objectIdx - b.objectIdx);
+  positions.sort((a, b) => a.dataRow - b.dataRow || a.objectIdx - b.objectIdx)
   // Compute virtual positions: virtual = dataRow + index (each prior banner shifts by 1)
   for (let i = 0; i < positions.length; i++) {
-    positions[i].virtualRow = positions[i].dataRow + i;
+    positions[i].virtualRow = positions[i].dataRow + i
   }
-  return positions;
-});
+  return positions
+})
 
 // ── Virtual scroll state ─────────────────────────────────────────
-const totalDataRows = computed(() => Math.ceil(props.data.length / BYTES_PER_ROW));
-const totalVirtualRows = computed(() => totalDataRows.value + bannerPositions.value.length);
+const totalDataRows = computed(() =>
+  Math.ceil(props.data.length / BYTES_PER_ROW),
+)
+const totalVirtualRows = computed(
+  () => totalDataRows.value + bannerPositions.value.length,
+)
 
-const scrollContainer = ref<HTMLElement | null>(null);
-const scrollTop = ref(0);
-const viewportHeight = ref(400);
+const scrollContainer = ref<HTMLElement | null>(null)
+const scrollTop = ref(0)
+const viewportHeight = ref(400)
 
 function onScroll() {
-  if (!scrollContainer.value) return;
-  scrollTop.value = scrollContainer.value.scrollTop;
+  if (!scrollContainer.value) return
+  scrollTop.value = scrollContainer.value.scrollTop
 }
 
-let resizeObserver: ResizeObserver | null = null;
+let resizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   if (scrollContainer.value) {
-    viewportHeight.value = scrollContainer.value.clientHeight;
+    viewportHeight.value = scrollContainer.value.clientHeight
     resizeObserver = new ResizeObserver(() => {
       if (scrollContainer.value) {
-        viewportHeight.value = scrollContainer.value.clientHeight;
+        viewportHeight.value = scrollContainer.value.clientHeight
       }
-    });
-    resizeObserver.observe(scrollContainer.value);
+    })
+    resizeObserver.observe(scrollContainer.value)
   }
-});
+})
 
 onBeforeUnmount(() => {
-  resizeObserver?.disconnect();
-});
+  resizeObserver?.disconnect()
+})
 
 // Reset scroll when data changes
-watch(() => props.data, () => {
-  scrollTop.value = 0;
-  nextTick(() => {
-    if (scrollContainer.value) scrollContainer.value.scrollTop = 0;
-  });
-});
+watch(
+  () => props.data,
+  () => {
+    scrollTop.value = 0
+    nextTick(() => {
+      if (scrollContainer.value) scrollContainer.value.scrollTop = 0
+    })
+  },
+)
 
 // ── Virtual row mapping ──────────────────────────────────────────
 type ResolvedRow =
   | { type: 'banner'; bannerIdx: number }
-  | { type: 'data'; dataRow: number };
+  | { type: 'data'; dataRow: number }
 
 function resolveVirtualRow(vRow: number): ResolvedRow {
-  const positions = bannerPositions.value;
-  let bannersBeforeOrAt = 0;
+  const positions = bannerPositions.value
+  let bannersBeforeOrAt = 0
   for (let i = 0; i < positions.length; i++) {
     if (positions[i].virtualRow === vRow) {
-      return { type: 'banner', bannerIdx: i };
+      return { type: 'banner', bannerIdx: i }
     }
     if (positions[i].virtualRow < vRow) {
-      bannersBeforeOrAt = i + 1;
+      bannersBeforeOrAt = i + 1
     } else {
-      break;
+      break
     }
   }
-  return { type: 'data', dataRow: vRow - bannersBeforeOrAt };
+  return { type: 'data', dataRow: vRow - bannersBeforeOrAt }
 }
 
 // ── Visible row range ────────────────────────────────────────────
 const startVRow = computed(() =>
   Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - OVERSCAN),
-);
+)
 const endVRow = computed(() =>
-  Math.min(totalVirtualRows.value, Math.ceil((scrollTop.value + viewportHeight.value) / ROW_HEIGHT) + OVERSCAN),
-);
+  Math.min(
+    totalVirtualRows.value,
+    Math.ceil((scrollTop.value + viewportHeight.value) / ROW_HEIGHT) + OVERSCAN,
+  ),
+)
 
-const topSpacer = computed(() => startVRow.value * ROW_HEIGHT);
-const bottomSpacer = computed(() => Math.max(0, (totalVirtualRows.value - endVRow.value) * ROW_HEIGHT));
+const topSpacer = computed(() => startVRow.value * ROW_HEIGHT)
+const bottomSpacer = computed(() =>
+  Math.max(0, (totalVirtualRows.value - endVRow.value) * ROW_HEIGHT),
+)
 
 // ── Byte annotation ─────────────────────────────────────────────
-const FULL_ANNOTATION_THRESHOLD = 65536;
+const FULL_ANNOTATION_THRESHOLD = 65536
 
 const fullByteKinds = computed<ByteKind[] | null>(() => {
-  if (props.data.length > FULL_ANNOTATION_THRESHOLD) return null;
-  return computeByteKinds(0, props.data.length);
-});
+  if (props.data.length > FULL_ANNOTATION_THRESHOLD) return null
+  return computeByteKinds(0, props.data.length)
+})
 
 function computeByteKinds(from: number, to: number): ByteKind[] {
-  const len = props.data.length;
-  const size = to - from;
-  const kinds: ByteKind[] = new Array(size).fill('none');
-  const hs = props.headerSize;
-  const objs = props.objects;
+  const len = props.data.length
+  const size = to - from
+  const kinds: ByteKind[] = new Array(size).fill('none')
+  const hs = props.headerSize
+  const objs = props.objects
 
-  const headerEnd = Math.min(hs, len, to);
+  const headerEnd = Math.min(hs, len, to)
   for (let i = Math.max(from, 0); i < headerEnd; i++) {
-    kinds[i - from] = 'header';
+    kinds[i - from] = 'header'
   }
 
   if (objs && objs.length > 0) {
     for (let idx = 0; idx < objs.length; idx++) {
-      const obj = objs[idx];
-      const payloadKind: ByteKind = idx % 2 === 0 ? 'even' : 'odd';
+      const obj = objs[idx]
+      const payloadKind: ByteKind = idx % 2 === 0 ? 'even' : 'odd'
 
-      const framingEnd = Math.min(obj.payloadOffset, len, to);
+      const framingEnd = Math.min(obj.payloadOffset, len, to)
       for (let i = Math.max(obj.offset, from); i < framingEnd; i++) {
-        kinds[i - from] = 'framing';
+        kinds[i - from] = 'framing'
       }
 
-      const payloadEnd = Math.min(obj.payloadOffset + obj.payloadLength, len, to);
+      const payloadEnd = Math.min(
+        obj.payloadOffset + obj.payloadLength,
+        len,
+        to,
+      )
       for (let i = Math.max(obj.payloadOffset, from); i < payloadEnd; i++) {
-        kinds[i - from] = payloadKind;
+        kinds[i - from] = payloadKind
       }
     }
   }
 
-  return kinds;
+  return kinds
 }
 
 // ── Visible entries ──────────────────────────────────────────────
 type DataEntry = {
-  type: 'data';
-  offset: number;
-  hex: string[];
-  ascii: string;
-  kinds: ByteKind[];
-};
+  type: 'data'
+  offset: number
+  hex: string[]
+  ascii: string
+  kinds: ByteKind[]
+}
 type BannerEntry = {
-  type: 'banner';
-  objectIdx: number;
+  type: 'banner'
+  objectIdx: number
   /** Content description (boxes, size) for inline display */
-  content: string;
+  content: string
   /** Full label including "obj N" for sticky overlay */
-  label: string;
+  label: string
   /** Byte column (0-15) where the object starts on the next hex row */
-  byteColumn: number;
-};
-type VisibleEntry = DataEntry | BannerEntry;
+  byteColumn: number
+}
+type VisibleEntry = DataEntry | BannerEntry
 
 const visibleEntries = computed<VisibleEntry[]>(() => {
-  const d = props.data;
-  const sv = startVRow.value;
-  const ev = endVRow.value;
+  const d = props.data
+  const sv = startVRow.value
+  const ev = endVRow.value
 
   // Resolve all virtual rows first to determine data row range for annotations
-  const resolved: ResolvedRow[] = [];
-  let minDataRow = Infinity;
-  let maxDataRow = -1;
+  const resolved: ResolvedRow[] = []
+  let minDataRow = Infinity
+  let maxDataRow = -1
   for (let v = sv; v < ev; v++) {
-    const r = resolveVirtualRow(v);
-    resolved.push(r);
+    const r = resolveVirtualRow(v)
+    resolved.push(r)
     if (r.type === 'data') {
-      if (r.dataRow < minDataRow) minDataRow = r.dataRow;
-      if (r.dataRow > maxDataRow) maxDataRow = r.dataRow;
+      if (r.dataRow < minDataRow) minDataRow = r.dataRow
+      if (r.dataRow > maxDataRow) maxDataRow = r.dataRow
     }
   }
 
   // Compute byte annotations for visible data range
-  let kinds: ByteKind[];
-  let kindsOffset: number;
+  let kinds: ByteKind[]
+  let kindsOffset: number
   if (fullByteKinds.value) {
-    kinds = fullByteKinds.value;
-    kindsOffset = 0;
+    kinds = fullByteKinds.value
+    kindsOffset = 0
   } else if (minDataRow <= maxDataRow) {
-    const byteStart = minDataRow * BYTES_PER_ROW;
-    const byteEnd = Math.min((maxDataRow + 1) * BYTES_PER_ROW, d.length);
-    kinds = computeByteKinds(byteStart, byteEnd);
-    kindsOffset = byteStart;
+    const byteStart = minDataRow * BYTES_PER_ROW
+    const byteEnd = Math.min((maxDataRow + 1) * BYTES_PER_ROW, d.length)
+    kinds = computeByteKinds(byteStart, byteEnd)
+    kindsOffset = byteStart
   } else {
-    kinds = [];
-    kindsOffset = 0;
+    kinds = []
+    kindsOffset = 0
   }
 
   // Build entries
-  const entries: VisibleEntry[] = [];
-  const annotations = objectAnnotations.value;
+  const entries: VisibleEntry[] = []
+  const annotations = objectAnnotations.value
 
   for (const r of resolved) {
     if (r.type === 'banner') {
-      const pos = bannerPositions.value[r.bannerIdx];
-      const ann = annotations[pos.objectIdx];
-      const obj = props.objects![pos.objectIdx];
+      const pos = bannerPositions.value[r.bannerIdx]
+      const ann = annotations[pos.objectIdx]
+      const obj = props.objects![pos.objectIdx]
       entries.push({
         type: 'banner',
         objectIdx: pos.objectIdx,
         content: ann ? formatBannerContent(ann) : formatSize(obj.payloadLength),
         label: ann ? formatBannerLabel(ann) : `obj ${obj.objectId}`,
         byteColumn: obj.offset % BYTES_PER_ROW,
-      });
+      })
     } else {
-      const offset = r.dataRow * BYTES_PER_ROW;
-      const slice = d.subarray(offset, Math.min(offset + BYTES_PER_ROW, d.length));
-      const hex: string[] = [];
-      const rowKinds: ByteKind[] = [];
-      let ascii = '';
+      const offset = r.dataRow * BYTES_PER_ROW
+      const slice = d.subarray(
+        offset,
+        Math.min(offset + BYTES_PER_ROW, d.length),
+      )
+      const hex: string[] = []
+      const rowKinds: ByteKind[] = []
+      let ascii = ''
       for (let j = 0; j < BYTES_PER_ROW; j++) {
         if (j < slice.length) {
-          hex.push(slice[j].toString(16).padStart(2, '0'));
-          ascii += slice[j] >= 0x20 && slice[j] <= 0x7e ? String.fromCharCode(slice[j]) : '.';
-          rowKinds.push(kinds[offset + j - kindsOffset] ?? 'none');
+          hex.push(slice[j].toString(16).padStart(2, '0'))
+          ascii +=
+            slice[j] >= 0x20 && slice[j] <= 0x7e
+              ? String.fromCharCode(slice[j])
+              : '.'
+          rowKinds.push(kinds[offset + j - kindsOffset] ?? 'none')
         } else {
-          hex.push('  ');
-          ascii += ' ';
-          rowKinds.push('none');
+          hex.push('  ')
+          ascii += ' '
+          rowKinds.push('none')
         }
       }
-      entries.push({ type: 'data', offset, hex, ascii, kinds: rowKinds });
+      entries.push({ type: 'data', offset, hex, ascii, kinds: rowKinds })
     }
   }
-  return entries;
-});
+  return entries
+})
 
 // ── Sticky object overlay ────────────────────────────────────────
 interface StickyInfo {
-  label: string;
+  label: string
   /** Index in bannerPositions (for navigation) */
-  bannerIdx: number;
-  totalObjects: number;
+  bannerIdx: number
+  totalObjects: number
 }
 
 /**
@@ -326,37 +360,40 @@ interface StickyInfo {
  * scrolled above the viewport.
  */
 const stickyInfo = computed((): StickyInfo | null => {
-  const positions = bannerPositions.value;
-  if (positions.length < 2) return null;
+  const positions = bannerPositions.value
+  if (positions.length < 2) return null
 
   // Account for BODY_PAD_TOP: when we scroll to `vRow * ROW_HEIGHT - 2`,
   // the banner is visually at the top but scrollTop puts us just below the
   // previous row boundary. Adding the padding tolerance ensures we consider
   // that banner as "reached".
-  const firstVisibleVRow = Math.floor((scrollTop.value + BODY_PAD_TOP) / ROW_HEIGHT);
+  const firstVisibleVRow = Math.floor(
+    (scrollTop.value + BODY_PAD_TOP) / ROW_HEIGHT,
+  )
 
   // Find the last banner at or above the top of the viewport
-  let currentIdx = -1;
+  let currentIdx = -1
   for (let i = 0; i < positions.length; i++) {
     if (positions[i].virtualRow <= firstVisibleVRow) {
-      currentIdx = i;
+      currentIdx = i
     } else {
-      break;
+      break
     }
   }
 
   // Show label only when the banner has scrolled ABOVE the viewport
-  let label = '';
+  let label = ''
   if (currentIdx >= 0 && positions[currentIdx].virtualRow < firstVisibleVRow) {
     // Verify this object's data is still visible (next banner hasn't also scrolled past)
-    const nextBannerVRow = currentIdx + 1 < positions.length
-      ? positions[currentIdx + 1].virtualRow
-      : totalVirtualRows.value;
+    const nextBannerVRow =
+      currentIdx + 1 < positions.length
+        ? positions[currentIdx + 1].virtualRow
+        : totalVirtualRows.value
 
     if (nextBannerVRow > firstVisibleVRow) {
-      const pos = positions[currentIdx];
-      const ann = objectAnnotations.value[pos.objectIdx];
-      label = ann ? formatBannerLabel(ann) : `obj ${pos.objectIdx}`;
+      const pos = positions[currentIdx]
+      const ann = objectAnnotations.value[pos.objectIdx]
+      label = ann ? formatBannerLabel(ann) : `obj ${pos.objectIdx}`
     }
   }
 
@@ -364,8 +401,8 @@ const stickyInfo = computed((): StickyInfo | null => {
     label,
     bannerIdx: currentIdx,
     totalObjects: positions.length,
-  };
-});
+  }
+})
 
 /**
  * Scroll so the target object's inline banner is at the top of the scroll
@@ -373,19 +410,22 @@ const stickyInfo = computed((): StickyInfo | null => {
  * Subtracts the body's top padding (2px) so the banner has the same visual
  * gap as the first object at the top of the list.
  */
-const BODY_PAD_TOP = 2; // must match .hex-body padding-top
+const BODY_PAD_TOP = 2 // must match .hex-body padding-top
 
 function scrollToObject(bannerIdx: number) {
-  const positions = bannerPositions.value;
-  if (bannerIdx < 0 || bannerIdx >= positions.length) return;
-  const el = scrollContainer.value;
-  if (!el) return;
-  el.scrollTop = Math.max(0, positions[bannerIdx].virtualRow * ROW_HEIGHT - BODY_PAD_TOP);
+  const positions = bannerPositions.value
+  if (bannerIdx < 0 || bannerIdx >= positions.length) return
+  const el = scrollContainer.value
+  if (!el) return
+  el.scrollTop = Math.max(
+    0,
+    positions[bannerIdx].virtualRow * ROW_HEIGHT - BODY_PAD_TOP,
+  )
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
 function formatOffset(n: number): string {
-  return n.toString(16).padStart(8, '0');
+  return n.toString(16).padStart(8, '0')
 }
 
 function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
@@ -394,12 +434,12 @@ function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
     'hex-proto': kind === 'header' || kind === 'framing',
     'hex-obj-even': kind === 'even',
     'hex-obj-odd': kind === 'odd',
-  };
+  }
 }
 
 function entryKey(entry: VisibleEntry, _idx: number): string {
-  if (entry.type === 'banner') return `b${entry.objectIdx}`;
-  return `d${entry.offset}`;
+  if (entry.type === 'banner') return `b${entry.objectIdx}`
+  return `d${entry.offset}`
 }
 </script>
 
@@ -408,7 +448,13 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
     <div class="hex-header-row">
       <span class="hex-offset">Offset</span>
       <span class="hex-bytes">
-        <span v-for="i in 16" :key="i" class="hex-byte" :class="{ 'hex-gap': i - 1 === 7 }">{{ (i - 1).toString(16).padStart(2, '0').toUpperCase() }}</span>
+        <span
+          v-for="i in 16"
+          :key="i"
+          class="hex-byte"
+          :class="{ 'hex-gap': i - 1 === 7 }"
+          >{{ (i - 1).toString(16).padStart(2, '0').toUpperCase() }}</span
+        >
       </span>
       <span class="hex-ascii">ASCII</span>
     </div>
@@ -418,20 +464,37 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
           <button
             class="sticky-nav-btn"
             :disabled="stickyInfo.bannerIdx < 0"
-            @click="scrollToObject(stickyInfo.bannerIdx <= 0 ? 0 : stickyInfo.bannerIdx - 1)"
-          >&lsaquo;</button>
-          <span class="sticky-nav-pos">{{ stickyInfo.bannerIdx >= 0 ? stickyInfo.bannerIdx + 1 : '\u2013' }}/{{ stickyInfo.totalObjects }}</span>
+            @click="
+              scrollToObject(
+                stickyInfo.bannerIdx <= 0 ? 0 : stickyInfo.bannerIdx - 1,
+              )
+            "
+          >
+            &lsaquo;
+          </button>
+          <span class="sticky-nav-pos"
+            >{{ stickyInfo.bannerIdx >= 0 ? stickyInfo.bannerIdx + 1 : '–' }}/{{
+              stickyInfo.totalObjects
+            }}</span
+          >
           <button
             class="sticky-nav-btn"
             :disabled="stickyInfo.bannerIdx >= stickyInfo.totalObjects - 1"
             @click="scrollToObject(stickyInfo.bannerIdx + 1)"
-          >&rsaquo;</button>
+          >
+            &rsaquo;
+          </button>
         </span>
-        <span v-if="stickyInfo.label" class="banner-text">{{ stickyInfo.label }}</span>
+        <span v-if="stickyInfo.label" class="banner-text">{{
+          stickyInfo.label
+        }}</span>
       </div>
       <div ref="scrollContainer" class="hex-body" @scroll="onScroll">
         <div :style="{ height: topSpacer + 'px' }" />
-        <template v-for="(entry, idx) in visibleEntries" :key="entryKey(entry, idx)">
+        <template
+          v-for="(entry, idx) in visibleEntries"
+          :key="entryKey(entry, idx)"
+        >
           <div v-if="entry.type === 'banner'" class="hex-banner">
             <span class="banner-content">{{ entry.content }}</span>
             <span class="banner-indicator">
@@ -439,8 +502,12 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
                 v-for="col in 16"
                 :key="col"
                 class="hex-byte"
-                :class="{ 'hex-gap': col - 1 === 7, 'indicator-visible': col - 1 === entry.byteColumn }"
-              >{{ col - 1 === entry.byteColumn ? '\u25be' : '' }}</span>
+                :class="{
+                  'hex-gap': col - 1 === 7,
+                  'indicator-visible': col - 1 === entry.byteColumn,
+                }"
+                >{{ col - 1 === entry.byteColumn ? '▾' : '' }}</span
+              >
             </span>
           </div>
           <div v-else class="hex-row">
@@ -451,7 +518,8 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
                 :key="j"
                 class="hex-byte"
                 :class="byteClass(entry.kinds[j], j)"
-              >{{ b }}</span>
+                >{{ b }}</span
+              >
             </span>
             <span class="hex-ascii">{{ entry.ascii }}</span>
           </div>
@@ -460,7 +528,13 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
       </div>
     </div>
     <div class="hex-footer">
-      {{ data.length }} bytes<template v-if="headerSize > 0"> ({{ headerSize }}B header<template v-if="objects && objects.length > 0">, {{ objects.length }} obj{{ objects.length !== 1 ? 's' : '' }}</template>)</template>
+      {{ data.length }} bytes<template v-if="headerSize > 0">
+        ({{ headerSize }}B header<template v-if="objects && objects.length > 0"
+          >, {{ objects.length }} obj{{
+            objects.length !== 1 ? 's' : ''
+          }}</template
+        >)</template
+      >
     </div>
   </div>
 </template>
@@ -470,7 +544,9 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   display: flex;
   flex-direction: column;
   height: 100%;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace;
+  font-family:
+    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
+    monospace;
   font-size: 11px;
   overflow-x: auto;
 }

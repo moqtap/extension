@@ -1,1 +1,1 @@
-export * from './draft-detect';
+export * from './draft-detect'

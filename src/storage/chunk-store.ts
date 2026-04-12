@@ -25,100 +25,115 @@
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const DB_NAME = 'moqtap-streams';
-const DB_VERSION = 1;
-const STORE_NAME = 'pages';
+const DB_NAME = 'moqtap-streams'
+const DB_VERSION = 1
+const STORE_NAME = 'pages'
 
 /**
  * Page size: 1 MB. At 12 Mbps (4K video), that's ~0.7 pages/second.
  * At 100 Mbps, ~12 pages/second — still very manageable for IDB.
  */
-const PAGE_SIZE = 1024 * 1024;
+const PAGE_SIZE = 1024 * 1024
 
 /** Evict backed pages from memory after this idle duration. */
-const EVICT_IDLE_MS = 60_000; // 60 seconds
+const EVICT_IDLE_MS = 60_000 // 60 seconds
 
 /** How often to run the eviction sweep. */
-const EVICT_INTERVAL_MS = 15_000; // 15 seconds
+const EVICT_INTERVAL_MS = 15_000 // 15 seconds
 
 // ── IDB ────────────────────────────────────────────────────────────
 
-let dbPromise: Promise<IDBDatabase> | null = null;
+let dbPromise: Promise<IDBDatabase> | null = null
 
 // Delete legacy DB from old per-chunk scheme (one-time migration)
-try { indexedDB.deleteDatabase('moqtap-chunks'); } catch { /* ignore */ }
-
-function openDb(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    try {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME);
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => {
-        console.error('[moqtap store] IDB open failed:', req.error);
-        dbPromise = null;
-        reject(req.error);
-      };
-    } catch (err) {
-      console.error('[moqtap store] indexedDB.open threw:', err);
-      dbPromise = null;
-      reject(err);
-    }
-  });
-  return dbPromise;
+try {
+  indexedDB.deleteDatabase('moqtap-chunks')
+} catch {
+  /* ignore */
 }
 
-function idbKey(sessionId: string, streamId: number, pageIndex: number): string {
-  return `${sessionId}:${streamId}:p${pageIndex}`;
+function openDb(): Promise<IDBDatabase> {
+  if (dbPromise) return dbPromise
+  dbPromise = new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION)
+      req.onupgradeneeded = () => {
+        const db = req.result
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME)
+        }
+      }
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => {
+        console.error('[moqtap store] IDB open failed:', req.error)
+        dbPromise = null
+        reject(req.error)
+      }
+    } catch (err) {
+      console.error('[moqtap store] indexedDB.open threw:', err)
+      dbPromise = null
+      reject(err)
+    }
+  })
+  return dbPromise
+}
+
+function idbKey(
+  sessionId: string,
+  streamId: number,
+  pageIndex: number,
+): string {
+  return `${sessionId}:${streamId}:p${pageIndex}`
 }
 
 // ── Page cache ─────────────────────────────────────────────────────
 
 interface CachedPage {
-  data: Uint8Array;
+  data: Uint8Array
   /** True once the page has been written to IDB (can be evicted). */
-  backed: boolean;
+  backed: boolean
   /** Timestamp of last read access (for LRU eviction). */
-  lastAccessed: number;
+  lastAccessed: number
 }
 
 /** Memory cache: idbKey → CachedPage */
-const pageCache = new Map<string, CachedPage>();
+const pageCache = new Map<string, CachedPage>()
 
 // ── Per-stream state ───────────────────────────────────────────────
 
 interface StreamState {
-  sessionId: string;
-  streamId: number;
+  sessionId: string
+  streamId: number
   /** Write buffer: incoming bytes not yet sealed into a page. */
-  writeBuf: Uint8Array[];
-  writeBufBytes: number;
+  writeBuf: Uint8Array[]
+  writeBufBytes: number
   /** Number of sealed pages (both cached and/or in IDB). */
-  pageCount: number;
+  pageCount: number
   /** Total bytes received for this stream. */
-  totalBytes: number;
+  totalBytes: number
 }
 
-const streams = new Map<string, StreamState>();
+const streams = new Map<string, StreamState>()
 
 function streamKey(sessionId: string, streamId: number): string {
-  return `${sessionId}:${streamId}`;
+  return `${sessionId}:${streamId}`
 }
 
 function getOrCreateStream(sessionId: string, streamId: number): StreamState {
-  const key = streamKey(sessionId, streamId);
-  let st = streams.get(key);
+  const key = streamKey(sessionId, streamId)
+  let st = streams.get(key)
   if (!st) {
-    st = { sessionId, streamId, writeBuf: [], writeBufBytes: 0, pageCount: 0, totalBytes: 0 };
-    streams.set(key, st);
+    st = {
+      sessionId,
+      streamId,
+      writeBuf: [],
+      writeBufBytes: 0,
+      pageCount: 0,
+      totalBytes: 0,
+    }
+    streams.set(key, st)
   }
-  return st;
+  return st
 }
 
 // ── Write path ─────────────────────────────────────────────────────
@@ -132,14 +147,14 @@ export function appendStreamData(
   streamId: number,
   data: Uint8Array,
 ): void {
-  const st = getOrCreateStream(sessionId, streamId);
-  st.writeBuf.push(data);
-  st.writeBufBytes += data.length;
-  st.totalBytes += data.length;
+  const st = getOrCreateStream(sessionId, streamId)
+  st.writeBuf.push(data)
+  st.writeBufBytes += data.length
+  st.totalBytes += data.length
 
   // Seal full pages
   while (st.writeBufBytes >= PAGE_SIZE) {
-    sealPage(st);
+    sealPage(st)
   }
 }
 
@@ -149,66 +164,66 @@ export function appendStreamData(
  * The stream state and cached pages remain in memory for reads.
  */
 export function flushStream(sessionId: string, streamId: number): void {
-  const st = streams.get(streamKey(sessionId, streamId));
-  if (!st || st.writeBufBytes === 0) return;
+  const st = streams.get(streamKey(sessionId, streamId))
+  if (!st || st.writeBufBytes === 0) return
 
-  const page = drainWriteBuf(st, st.writeBufBytes);
-  const pi = st.pageCount++;
-  const key = idbKey(sessionId, streamId, pi);
+  const page = drainWriteBuf(st, st.writeBufBytes)
+  const pi = st.pageCount++
+  const key = idbKey(sessionId, streamId, pi)
 
   // Cache in memory and flush to IDB
-  pageCache.set(key, { data: page, backed: false, lastAccessed: Date.now() });
-  writePageToIdb(key, page);
+  pageCache.set(key, { data: page, backed: false, lastAccessed: Date.now() })
+  writePageToIdb(key, page)
 }
 
 /** Drain `count` bytes from the write buffer into a sealed page. */
 function sealPage(st: StreamState): void {
-  const page = drainWriteBuf(st, PAGE_SIZE);
-  const pi = st.pageCount++;
-  const key = idbKey(st.sessionId, st.streamId, pi);
+  const page = drainWriteBuf(st, PAGE_SIZE)
+  const pi = st.pageCount++
+  const key = idbKey(st.sessionId, st.streamId, pi)
 
   // Keep in memory cache + write to IDB
-  pageCache.set(key, { data: page, backed: false, lastAccessed: Date.now() });
-  writePageToIdb(key, page);
+  pageCache.set(key, { data: page, backed: false, lastAccessed: Date.now() })
+  writePageToIdb(key, page)
 }
 
 function drainWriteBuf(st: StreamState, count: number): Uint8Array {
-  const out = new Uint8Array(count);
-  let offset = 0;
+  const out = new Uint8Array(count)
+  let offset = 0
   while (offset < count && st.writeBuf.length > 0) {
-    const chunk = st.writeBuf[0];
-    const need = count - offset;
+    const chunk = st.writeBuf[0]
+    const need = count - offset
     if (chunk.length <= need) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-      st.writeBuf.shift();
+      out.set(chunk, offset)
+      offset += chunk.length
+      st.writeBuf.shift()
     } else {
-      out.set(chunk.subarray(0, need), offset);
-      st.writeBuf[0] = chunk.subarray(need);
-      offset += need;
+      out.set(chunk.subarray(0, need), offset)
+      st.writeBuf[0] = chunk.subarray(need)
+      offset += need
     }
   }
-  st.writeBufBytes -= count;
-  return out;
+  st.writeBufBytes -= count
+  return out
 }
 
 /** Fire-and-forget write to IDB. Marks the cached page as backed on success. */
 function writePageToIdb(key: string, data: Uint8Array): void {
   openDb()
     .then((db) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(data, key);
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.objectStore(STORE_NAME).put(data, key)
       tx.oncomplete = () => {
-        const cached = pageCache.get(key);
-        if (cached) cached.backed = true;
-      };
+        const cached = pageCache.get(key)
+        if (cached) cached.backed = true
+      }
       tx.onerror = () => {
-        console.error('[moqtap store] page write failed:', key, tx.error);
-      };
+        console.error('[moqtap store] page write failed:', key, tx.error)
+      }
     })
     .catch((err) => {
-      console.error('[moqtap store] page write failed (no db):', err);
-    });
+      console.error('[moqtap store] page write failed (no db):', err)
+    })
 }
 
 // ── Read path ──────────────────────────────────────────────────────
@@ -225,37 +240,37 @@ export async function loadStreamData(
   sessionId: string,
   streamId: number,
 ): Promise<Uint8Array> {
-  const st = streams.get(streamKey(sessionId, streamId));
-  if (!st) return new Uint8Array(0);
+  const st = streams.get(streamKey(sessionId, streamId))
+  if (!st) return new Uint8Array(0)
 
-  const parts: Uint8Array[] = [];
-  let totalLen = 0;
+  const parts: Uint8Array[] = []
+  let totalLen = 0
 
   // 1. Sealed pages (memory cache or IDB)
   for (let i = 0; i < st.pageCount; i++) {
-    const page = await getPage(sessionId, streamId, i);
+    const page = await getPage(sessionId, streamId, i)
     if (page) {
-      parts.push(page);
-      totalLen += page.length;
+      parts.push(page)
+      totalLen += page.length
     }
   }
 
   // 2. Write buffer (unflushed tail — always in memory)
   for (const chunk of st.writeBuf) {
-    parts.push(chunk);
-    totalLen += chunk.length;
+    parts.push(chunk)
+    totalLen += chunk.length
   }
 
   // Merge
-  if (parts.length === 0) return new Uint8Array(0);
-  if (parts.length === 1) return parts[0];
-  const merged = new Uint8Array(totalLen);
-  let offset = 0;
+  if (parts.length === 0) return new Uint8Array(0)
+  if (parts.length === 1) return parts[0]
+  const merged = new Uint8Array(totalLen)
+  let offset = 0
   for (const part of parts) {
-    merged.set(part, offset);
-    offset += part.length;
+    merged.set(part, offset)
+    offset += part.length
   }
-  return merged;
+  return merged
 }
 
 /** Get a sealed page — from memory cache, or reload from IDB. */
@@ -264,41 +279,44 @@ async function getPage(
   streamId: number,
   pageIndex: number,
 ): Promise<Uint8Array | null> {
-  const key = idbKey(sessionId, streamId, pageIndex);
+  const key = idbKey(sessionId, streamId, pageIndex)
 
   // Check memory cache
-  const cached = pageCache.get(key);
+  const cached = pageCache.get(key)
   if (cached) {
-    cached.lastAccessed = Date.now();
-    return cached.data;
+    cached.lastAccessed = Date.now()
+    return cached.data
   }
 
   // Load from IDB and re-cache
   try {
-    const db = await openDb();
-    const data = await readPageFromIdb(db, key);
+    const db = await openDb()
+    const data = await readPageFromIdb(db, key)
     if (data) {
-      pageCache.set(key, { data, backed: true, lastAccessed: Date.now() });
+      pageCache.set(key, { data, backed: true, lastAccessed: Date.now() })
     }
-    return data;
+    return data
   } catch {
-    return null;
+    return null
   }
 }
 
-function readPageFromIdb(db: IDBDatabase, key: string): Promise<Uint8Array | null> {
+function readPageFromIdb(
+  db: IDBDatabase,
+  key: string,
+): Promise<Uint8Array | null> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const req = tx.objectStore(STORE_NAME).get(key);
+    const tx = db.transaction(STORE_NAME, 'readonly')
+    const req = tx.objectStore(STORE_NAME).get(key)
     req.onsuccess = () => {
-      const result = req.result;
-      if (result == null) resolve(null);
-      else if (result instanceof Uint8Array) resolve(result);
-      else if (result instanceof ArrayBuffer) resolve(new Uint8Array(result));
-      else resolve(null);
-    };
-    req.onerror = () => reject(req.error);
-  });
+      const result = req.result
+      if (result == null) resolve(null)
+      else if (result instanceof Uint8Array) resolve(result)
+      else if (result instanceof ArrayBuffer) resolve(new Uint8Array(result))
+      else resolve(null)
+    }
+    req.onerror = () => reject(req.error)
+  })
 }
 
 // ── Memory eviction ────────────────────────────────────────────────
@@ -308,36 +326,36 @@ function readPageFromIdb(db: IDBDatabase, key: string): Promise<Uint8Array | nul
  * The write buffer and un-backed pages are never evicted.
  */
 function evictStalePages(): void {
-  const cutoff = Date.now() - EVICT_IDLE_MS;
+  const cutoff = Date.now() - EVICT_IDLE_MS
   for (const [key, page] of pageCache) {
     if (page.backed && page.lastAccessed < cutoff) {
-      pageCache.delete(key);
+      pageCache.delete(key)
     }
   }
 }
 
 // Run eviction sweep periodically
-let evictTimer: ReturnType<typeof setInterval> | null = null;
+let evictTimer: ReturnType<typeof setInterval> | null = null
 
 /** Optional callback run alongside stream page eviction (e.g., datagram pages). */
-let additionalEvictionFn: (() => void) | null = null;
+let additionalEvictionFn: (() => void) | null = null
 
 export function setAdditionalEvictionFn(fn: () => void): void {
-  additionalEvictionFn = fn;
+  additionalEvictionFn = fn
 }
 
 export function startEvictionTimer(): void {
-  if (evictTimer) return;
+  if (evictTimer) return
   evictTimer = setInterval(() => {
-    evictStalePages();
-    additionalEvictionFn?.();
-  }, EVICT_INTERVAL_MS);
+    evictStalePages()
+    additionalEvictionFn?.()
+  }, EVICT_INTERVAL_MS)
 }
 
 export function stopEvictionTimer(): void {
   if (evictTimer) {
-    clearInterval(evictTimer);
-    evictTimer = null;
+    clearInterval(evictTimer)
+    evictTimer = null
   }
 }
 
@@ -348,42 +366,46 @@ export function stopEvictionTimer(): void {
 // rather than relying on in-memory tabStates (which is empty after
 // restart and can race with panel reconnection).
 
-const TAB_KEY_PREFIX = 'meta:tab:';
+const TAB_KEY_PREFIX = 'meta:tab:'
 
 /** Fire-and-forget: persist the owning tabId for a session. */
 export function saveSessionTab(sessionId: string, tabId: number): void {
   openDb()
     .then((db) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(tabId, `${TAB_KEY_PREFIX}${sessionId}`);
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.objectStore(STORE_NAME).put(tabId, `${TAB_KEY_PREFIX}${sessionId}`)
     })
-    .catch(() => {});
+    .catch(() => {})
 }
 
 /** Read all persisted session→tabId mappings from IDB. */
 export async function getSessionTabMap(): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
+  const map = new Map<string, number>()
   try {
-    const db = await openDb();
+    const db = await openDb()
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const range = IDBKeyRange.bound(TAB_KEY_PREFIX, `${TAB_KEY_PREFIX}\uffff`);
-      const req = tx.objectStore(STORE_NAME).openCursor(range);
+      const tx = db.transaction(STORE_NAME, 'readonly')
+      const range = IDBKeyRange.bound(TAB_KEY_PREFIX, `${TAB_KEY_PREFIX}\uffff`)
+      const req = tx.objectStore(STORE_NAME).openCursor(range)
       req.onsuccess = () => {
-        const cursor = req.result;
+        const cursor = req.result
         if (cursor) {
-          const sessionId = (cursor.key as string).substring(TAB_KEY_PREFIX.length);
+          const sessionId = (cursor.key as string).substring(
+            TAB_KEY_PREFIX.length,
+          )
           if (typeof cursor.value === 'number') {
-            map.set(sessionId, cursor.value);
+            map.set(sessionId, cursor.value)
           }
-          cursor.continue();
+          cursor.continue()
         }
-      };
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch { /* IDB not available */ }
-  return map;
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch {
+    /* IDB not available */
+  }
+  return map
 }
 
 // ── Introspection ─────────────────────────────────────────────────
@@ -393,30 +415,30 @@ export async function getSessionTabMap(): Promise<Map<string, number>> {
  * Used on startup to detect orphaned sessions whose tabs no longer exist.
  */
 export async function getKnownSessionIds(): Promise<Set<string>> {
-  const ids = new Set<string>();
+  const ids = new Set<string>()
   // In-memory streams (still alive from current SW lifetime)
   for (const key of streams.keys()) {
-    ids.add(key.split(':')[0]);
+    ids.add(key.split(':')[0])
   }
   // IDB pages (survived SW restart)
   try {
-    const db = await openDb();
+    const db = await openDb()
     const keys = await new Promise<string[]>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const req = tx.objectStore(STORE_NAME).getAllKeys();
-      req.onsuccess = () => resolve(req.result as string[]);
-      req.onerror = () => reject(req.error);
-    });
+      const tx = db.transaction(STORE_NAME, 'readonly')
+      const req = tx.objectStore(STORE_NAME).getAllKeys()
+      req.onsuccess = () => resolve(req.result as string[])
+      req.onerror = () => reject(req.error)
+    })
     for (const key of keys) {
-      if (typeof key !== 'string' || key.startsWith('meta:')) continue;
+      if (typeof key !== 'string' || key.startsWith('meta:')) continue
       // Key format: sessionId:streamId:pN
-      const sep = key.indexOf(':');
-      if (sep > 0) ids.add(key.substring(0, sep));
+      const sep = key.indexOf(':')
+      if (sep > 0) ids.add(key.substring(0, sep))
     }
   } catch {
     // IDB not available — return what we have from memory
   }
-  return ids;
+  return ids
 }
 
 // ── Cleanup ────────────────────────────────────────────────────────
@@ -427,41 +449,41 @@ export async function getKnownSessionIds(): Promise<Set<string>> {
  * Clears both memory (stream state + cached pages) and IDB pages.
  */
 export async function clearSessionData(sessionId: string): Promise<void> {
-  const prefix = `${sessionId}:`;
+  const prefix = `${sessionId}:`
 
   // Clear stream state
   for (const key of streams.keys()) {
-    if (key.startsWith(prefix)) streams.delete(key);
+    if (key.startsWith(prefix)) streams.delete(key)
   }
 
   // Clear memory cache
   for (const key of pageCache.keys()) {
-    if (key.startsWith(prefix)) pageCache.delete(key);
+    if (key.startsWith(prefix)) pageCache.delete(key)
   }
 
   // Clear IDB pages + tab mapping entry
   try {
-    const db = await openDb();
+    const db = await openDb()
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      const store = tx.objectStore(STORE_NAME)
 
       // Delete the session→tab mapping
-      store.delete(`${TAB_KEY_PREFIX}${sessionId}`);
+      store.delete(`${TAB_KEY_PREFIX}${sessionId}`)
 
       // Delete all data pages for this session
-      const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
-      const req = store.openCursor(range);
+      const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`)
+      const req = store.openCursor(range)
       req.onsuccess = () => {
-        const cursor = req.result;
+        const cursor = req.result
         if (cursor) {
-          cursor.delete();
-          cursor.continue();
+          cursor.delete()
+          cursor.continue()
         }
-      };
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
   } catch {
     // IDB not available — memory already cleared
   }
@@ -473,16 +495,16 @@ export async function clearSessionData(sessionId: string): Promise<void> {
  *  - Startup (reclaim storage from previous DevTools session)
  */
 export async function clearAllData(): Promise<void> {
-  streams.clear();
-  pageCache.clear();
+  streams.clear()
+  pageCache.clear()
   try {
-    const db = await openDb();
+    const db = await openDb()
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).clear();
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.objectStore(STORE_NAME).clear()
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
   } catch {
     // IDB not available — memory already cleared
   }

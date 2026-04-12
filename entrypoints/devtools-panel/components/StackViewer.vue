@@ -1,18 +1,18 @@
 <script lang="ts" setup>
-import { computed } from 'vue';
-import { parseStack, shortUrl, type StackFrame } from '../stack-parse';
+import { computed } from 'vue'
+import { parseStack, shortUrl, type StackFrame } from '../stack-parse'
 
 const props = defineProps<{
-  stack: string;
-}>();
+  stack: string
+}>()
 
-const groups = computed(() => parseStack(props.stack));
+const groups = computed(() => parseStack(props.stack))
 
 function openSource(frame: StackFrame) {
-  if (!frame.url || frame.isNative) return;
+  if (!frame.url || frame.isNative) return
   // chrome.devtools.panels.openResource uses 0-based line/column numbers
-  const col = frame.column > 0 ? frame.column - 1 : 0;
-  chrome.devtools.panels.openResource(frame.url, frame.line - 1, col, () => {});
+  const col = frame.column > 0 ? frame.column - 1 : 0
+  chrome.devtools.panels.openResource(frame.url, frame.line - 1, col, () => {})
 }
 </script>
 
@@ -41,7 +41,8 @@ function openSource(frame: StackFrame) {
               :class="{ clickable: !frame.isNative }"
               :title="frame.url + ':' + frame.line + ':' + frame.column"
               @click.prevent="openSource(frame)"
-            >{{ shortUrl(frame.url) }}:{{ frame.line }}</a>
+              >{{ shortUrl(frame.url) }}:{{ frame.line }}</a
+            >
           </template>
         </template>
       </div>
@@ -51,7 +52,9 @@ function openSource(frame: StackFrame) {
 
 <style scoped>
 .stack-viewer {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace;
+  font-family:
+    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
+    monospace;
   font-size: 11px;
   line-height: 1.8;
   padding: 4px 0;

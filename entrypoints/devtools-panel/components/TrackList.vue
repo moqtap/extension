@@ -1,8 +1,8 @@
 <script lang="ts" setup>
-import { ref, computed, watch, onMounted } from 'vue';
-import type { TrackEntry } from '../use-inspector';
-import { loadPrefs, savePref, getCachedPref } from '../prefs';
-import type { DirectionFilter } from '../prefs';
+import { computed, onMounted, ref, watch } from 'vue'
+import type { DirectionFilter } from '../prefs'
+import { getCachedPref, loadPrefs, savePref } from '../prefs'
+import type { TrackEntry } from '../use-inspector'
 
 /** 8 distinct colors for track color-coding */
 const TRACK_COLORS = [
@@ -14,125 +14,137 @@ const TRACK_COLORS = [
   '#56b6c2', // cyan
   '#e5c07b', // yellow
   '#be5046', // dark red
-];
+]
 
 const props = defineProps<{
-  tracks: TrackEntry[];
-  activeFilter: string | null;
-}>();
+  tracks: TrackEntry[]
+  activeFilter: string | null
+}>()
 
 const emit = defineEmits<{
-  filter: [subscribeId: string | null];
-}>();
+  filter: [subscribeId: string | null]
+}>()
 
 // ── Filter state (persisted) ──────────────────────────────────────
-const activeOnly = ref(false);
-const groupByNs = ref(false);
-const directionFilter = ref<DirectionFilter>('all');
+const activeOnly = ref(false)
+const groupByNs = ref(false)
+const directionFilter = ref<DirectionFilter>('all')
 
 onMounted(async () => {
-  await loadPrefs();
-  activeOnly.value = getCachedPref('trackActiveOnly');
-  groupByNs.value = getCachedPref('trackGroupByNs');
-  directionFilter.value = getCachedPref('trackDirectionFilter');
-});
+  await loadPrefs()
+  activeOnly.value = getCachedPref('trackActiveOnly')
+  groupByNs.value = getCachedPref('trackGroupByNs')
+  directionFilter.value = getCachedPref('trackDirectionFilter')
+})
 
-watch(activeOnly, (v) => savePref('trackActiveOnly', v));
-watch(groupByNs, (v) => savePref('trackGroupByNs', v));
-watch(directionFilter, (v) => savePref('trackDirectionFilter', v));
+watch(activeOnly, (v) => savePref('trackActiveOnly', v))
+watch(groupByNs, (v) => savePref('trackGroupByNs', v))
+watch(directionFilter, (v) => savePref('trackDirectionFilter', v))
 
 // ── Collapsed namespace groups ────────────────────────────────────
-const collapsedGroups = ref(new Set<string>());
+const collapsedGroups = ref(new Set<string>())
 
 function toggleGroup(ns: string) {
-  const s = new Set(collapsedGroups.value);
-  if (s.has(ns)) s.delete(ns); else s.add(ns);
-  collapsedGroups.value = s;
+  const s = new Set(collapsedGroups.value)
+  if (s.has(ns)) s.delete(ns)
+  else s.add(ns)
+  collapsedGroups.value = s
 }
 
 // ── Filtering ─────────────────────────────────────────────────────
 const filteredTracks = computed(() => {
-  let list = props.tracks;
+  let list = props.tracks
   if (activeOnly.value) {
-    list = list.filter((t) => t.status === 'active' || t.status === 'pending');
+    list = list.filter((t) => t.status === 'active' || t.status === 'pending')
   }
   if (directionFilter.value !== 'all') {
-    list = list.filter((t) => t.direction === directionFilter.value);
+    list = list.filter((t) => t.direction === directionFilter.value)
   }
-  return list;
-});
+  return list
+})
 
 // Clear track filter if the filtered-out track is no longer visible
 watch(filteredTracks, (visible) => {
-  if (props.activeFilter && !visible.some((t) => t.subscribeId === props.activeFilter)) {
-    emit('filter', null);
+  if (
+    props.activeFilter &&
+    !visible.some((t) => t.subscribeId === props.activeFilter)
+  ) {
+    emit('filter', null)
   }
-});
+})
 
 // ── Grouping ──────────────────────────────────────────────────────
 interface NsGroup {
-  ns: string;
-  tracks: TrackEntry[];
-  active: number;
-  pending: number;
-  error: number;
-  done: number;
+  ns: string
+  tracks: TrackEntry[]
+  active: number
+  pending: number
+  error: number
+  done: number
 }
 
 const groups = computed((): NsGroup[] => {
-  const map = new Map<string, NsGroup>();
+  const map = new Map<string, NsGroup>()
   for (const t of filteredTracks.value) {
-    const ns = t.trackNamespace.length > 0 ? t.trackNamespace.join('/') : '(no namespace)';
-    let g = map.get(ns);
+    const ns =
+      t.trackNamespace.length > 0
+        ? t.trackNamespace.join('/')
+        : '(no namespace)'
+    let g = map.get(ns)
     if (!g) {
-      g = { ns, tracks: [], active: 0, pending: 0, error: 0, done: 0 };
-      map.set(ns, g);
+      g = { ns, tracks: [], active: 0, pending: 0, error: 0, done: 0 }
+      map.set(ns, g)
     }
-    g.tracks.push(t);
-    g[t.status]++;
+    g.tracks.push(t)
+    g[t.status]++
   }
-  return Array.from(map.values());
-});
+  return Array.from(map.values())
+})
 
 function groupSummary(g: NsGroup): string {
-  const parts: string[] = [];
-  if (g.active > 0) parts.push(`${g.active} active`);
-  if (g.pending > 0) parts.push(`${g.pending} pending`);
-  if (g.error > 0) parts.push(`${g.error} error`);
-  if (g.done > 0) parts.push(`${g.done} done`);
+  const parts: string[] = []
+  if (g.active > 0) parts.push(`${g.active} active`)
+  if (g.pending > 0) parts.push(`${g.pending} pending`)
+  if (g.error > 0) parts.push(`${g.error} error`)
+  if (g.done > 0) parts.push(`${g.done} done`)
   // If all tracks share the same status, the total is enough context
-  if (parts.length === 1) return `${g.tracks.length} ${parts[0].split(' ')[1]}`;
-  return parts.join(', ');
+  if (parts.length === 1) return `${g.tracks.length} ${parts[0].split(' ')[1]}`
+  return parts.join(', ')
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
 function trackColor(track: TrackEntry): string {
-  return TRACK_COLORS[track.colorIndex % TRACK_COLORS.length];
+  return TRACK_COLORS[track.colorIndex % TRACK_COLORS.length]
 }
 
 const statusIcon = computed(() => (status: string) => {
   switch (status) {
-    case 'pending': return '\u23F3'; // hourglass
-    case 'active': return '\u25CF';  // filled circle
-    case 'error': return '\u2716';   // heavy x
-    case 'done': return '\u25CB';    // open circle
-    default: return '\u2022';
+    case 'pending':
+      return '⏳'
+    case 'active':
+      return '●'
+    case 'error':
+      return '✖'
+    case 'done':
+      return '○'
+    default:
+      return '•'
   }
-});
+})
 
 function toggleFilter(subscribeId: string) {
-  emit('filter', props.activeFilter === subscribeId ? null : subscribeId);
+  emit('filter', props.activeFilter === subscribeId ? null : subscribeId)
 }
 
 function toggleDirection(dir: 'tx' | 'rx') {
-  directionFilter.value = directionFilter.value === dir ? 'all' : dir;
+  directionFilter.value = directionFilter.value === dir ? 'all' : dir
 }
 
 const headerCount = computed(() => {
-  const shown = filteredTracks.value.length;
-  const total = props.tracks.length;
-  return shown < total ? `${shown}/${total}` : `${total}`;
-});
+  const shown = filteredTracks.value.length
+  const total = props.tracks.length
+  return shown < total ? `${shown}/${total}` : `${total}`
+})
 </script>
 
 <template>
@@ -175,14 +187,20 @@ const headerCount = computed(() => {
     </div>
 
     <div v-if="filteredTracks.length === 0" class="empty-hint">
-      {{ tracks.length === 0 ? 'No subscriptions yet' : 'No tracks match current filters' }}
+      {{
+        tracks.length === 0
+          ? 'No subscriptions yet'
+          : 'No tracks match current filters'
+      }}
     </div>
 
     <!-- Grouped view -->
     <template v-if="groupByNs && filteredTracks.length > 0">
       <div v-for="g in groups" :key="g.ns" class="ns-group">
         <div class="ns-group-header" @click="toggleGroup(g.ns)">
-          <span class="ns-chevron">{{ collapsedGroups.has(g.ns) ? '\u25B6' : '\u25BC' }}</span>
+          <span class="ns-chevron">{{
+            collapsedGroups.has(g.ns) ? '▶' : '▼'
+          }}</span>
           <span class="ns-name mono">{{ g.ns }}</span>
           <span class="ns-count">({{ g.tracks.length }})</span>
           <span class="ns-summary">&mdash; {{ groupSummary(g) }}</span>
@@ -194,21 +212,34 @@ const headerCount = computed(() => {
             class="track-row track-row-grouped"
             :class="{
               'track-active-filter': activeFilter === track.subscribeId,
-              'track-dimmed': activeFilter !== null && activeFilter !== track.subscribeId,
+              'track-dimmed':
+                activeFilter !== null && activeFilter !== track.subscribeId,
             }"
             @click="toggleFilter(track.subscribeId)"
           >
-            <span class="track-color-dot" :style="{ background: trackColor(track) }" />
+            <span
+              class="track-color-dot"
+              :style="{ background: trackColor(track) }"
+            />
             <span class="track-status" :class="`status-${track.status}`">
               {{ statusIcon(track.status) }}
             </span>
-            <span class="track-dir" :class="track.direction === 'tx' ? 'direction-tx' : 'direction-rx'">
-              {{ track.direction === 'tx' ? '\u2191' : '\u2193' }}
+            <span
+              class="track-dir"
+              :class="
+                track.direction === 'tx' ? 'direction-tx' : 'direction-rx'
+              "
+            >
+              {{ track.direction === 'tx' ? '↑' : '↓' }}
             </span>
             <span class="track-name mono" :title="track.fullName">
               {{ track.trackName }}
             </span>
-            <span v-if="track.errorReason" class="track-error" :title="track.errorReason">
+            <span
+              v-if="track.errorReason"
+              class="track-error"
+              :title="track.errorReason"
+            >
               {{ track.errorReason }}
             </span>
           </div>
@@ -224,21 +255,34 @@ const headerCount = computed(() => {
         class="track-row"
         :class="{
           'track-active-filter': activeFilter === track.subscribeId,
-          'track-dimmed': activeFilter !== null && activeFilter !== track.subscribeId,
+          'track-dimmed':
+            activeFilter !== null && activeFilter !== track.subscribeId,
         }"
         @click="toggleFilter(track.subscribeId)"
       >
-        <span class="track-color-dot" :style="{ background: trackColor(track) }" />
+        <span
+          class="track-color-dot"
+          :style="{ background: trackColor(track) }"
+        />
         <span class="track-status" :class="`status-${track.status}`">
           {{ statusIcon(track.status) }}
         </span>
-        <span class="track-dir" :class="track.direction === 'tx' ? 'direction-tx' : 'direction-rx'">
-          {{ track.direction === 'tx' ? '\u2191' : '\u2193' }}
+        <span
+          class="track-dir"
+          :class="track.direction === 'tx' ? 'direction-tx' : 'direction-rx'"
+        >
+          {{ track.direction === 'tx' ? '↑' : '↓' }}
         </span>
         <span class="track-name mono" :title="track.fullName">
-          <span v-if="track.trackNamespace.length > 0" class="track-ns">{{ track.trackNamespace.join('/') }}/</span>{{ track.trackName }}
+          <span v-if="track.trackNamespace.length > 0" class="track-ns"
+            >{{ track.trackNamespace.join('/') }}/</span
+          >{{ track.trackName }}
         </span>
-        <span v-if="track.errorReason" class="track-error" :title="track.errorReason">
+        <span
+          v-if="track.errorReason"
+          class="track-error"
+          :title="track.errorReason"
+        >
           {{ track.errorReason }}
         </span>
       </div>
@@ -406,10 +450,18 @@ const headerCount = computed(() => {
   width: 14px;
   text-align: center;
 }
-.status-active { color: var(--text-success); }
-.status-pending { color: var(--text-secondary); }
-.status-error { color: var(--text-error); }
-.status-done { color: var(--text-secondary); }
+.status-active {
+  color: var(--text-success);
+}
+.status-pending {
+  color: var(--text-secondary);
+}
+.status-error {
+  color: var(--text-error);
+}
+.status-done {
+  color: var(--text-secondary);
+}
 
 .track-dir {
   font-size: 11px;

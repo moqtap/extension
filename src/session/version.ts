@@ -5,7 +5,7 @@
  * This module provides only the display-oriented mappings.
  */
 
-import type { SupportedDraft } from '../types/common';
+import type { SupportedDraft } from '../types/common'
 
 /** Known draft version wire numbers for UI display */
 export const DRAFT_VERSION_NUMBERS: Record<string, number> = {
@@ -20,7 +20,7 @@ export const DRAFT_VERSION_NUMBERS: Record<string, number> = {
   'draft-15': 0xff00000f,
   'draft-16': 0xff000010,
   'draft-17': 0xff000011,
-};
+}
 
 /** Map a version wire number to its human-readable draft name */
 export const VERSION_DISPLAY_NAMES: Record<number, string> = {
@@ -35,7 +35,7 @@ export const VERSION_DISPLAY_NAMES: Record<number, string> = {
   0xff00000f: 'draft-15',
   0xff000010: 'draft-16',
   0xff000011: 'draft-17',
-};
+}
 
 /** Map a SupportedDraft to the version wire number */
 export const DRAFT_TO_VERSION: Record<SupportedDraft, number> = {
@@ -50,4 +50,4 @@ export const DRAFT_TO_VERSION: Record<SupportedDraft, number> = {
   '15': 0xff00000f,
   '16': 0xff000010,
   '17': 0xff000011,
-};
+}

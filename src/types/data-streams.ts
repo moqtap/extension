@@ -4,16 +4,16 @@
  */
 
 export type {
-  SubgroupStream,
-  SubgroupStreamHeader,
-  FetchStream,
-  FetchStreamHeader,
   DatagramObject,
   DataStreamEvent,
   DataStreamHeader,
   Draft14DataStream,
+  FetchStream,
+  FetchStreamHeader,
   ObjectPayload,
-} from '@moqtap/codec/draft14';
+  SubgroupStream,
+  SubgroupStreamHeader,
+} from '@moqtap/codec/draft14'
 
 // ─── Display-only constants for DevTools UI ─────────────────────────
 

@@ -6,8 +6,4 @@
  */
 
 // WXT generates the correct path for the panel HTML
-chrome.devtools.panels.create(
-  'WebTransport',
-  '',
-  'devtools-panel.html',
-);
+chrome.devtools.panels.create('WebTransport', '', 'devtools-panel.html')

@@ -1,19 +1,19 @@
 <script lang="ts" setup>
-import { ref } from 'vue';
-import type { MessageEntry } from '../use-inspector';
-import PayloadViewer from './PayloadViewer.vue';
-import { useAutoScroll } from '../use-auto-scroll';
+import { ref } from 'vue'
+import { useAutoScroll } from '../use-auto-scroll'
+import type { MessageEntry } from '../use-inspector'
+import PayloadViewer from './PayloadViewer.vue'
 
 defineProps<{
-  messages: MessageEntry[];
-}>();
+  messages: MessageEntry[]
+}>()
 
-const expandedIndex = ref<number | null>(null);
-const logContainer = ref<HTMLElement | null>(null);
-useAutoScroll(logContainer);
+const expandedIndex = ref<number | null>(null)
+const logContainer = ref<HTMLElement | null>(null)
+useAutoScroll(logContainer)
 
 function toggle(index: number) {
-  expandedIndex.value = expandedIndex.value === index ? null : index;
+  expandedIndex.value = expandedIndex.value === index ? null : index
 }
 
 function formatTime(ts: number): string {
@@ -22,7 +22,7 @@ function formatTime(ts: number): string {
     minute: '2-digit',
     second: '2-digit',
     fractionalSecondDigits: 3,
-  } as Intl.DateTimeFormatOptions);
+  } as Intl.DateTimeFormatOptions)
 }
 </script>
 
@@ -38,13 +38,13 @@ function formatTime(ts: number): string {
       :class="{ expanded: expandedIndex === i }"
     >
       <div class="message-summary" @click="toggle(i)">
-        <span class="msg-expand">{{ expandedIndex === i ? '\u25BC' : '\u25B6' }}</span>
+        <span class="msg-expand">{{ expandedIndex === i ? '▼' : '▶' }}</span>
         <span class="msg-time mono">{{ formatTime(msg.timestamp) }}</span>
         <span
           class="msg-direction"
           :class="msg.direction === 'tx' ? 'direction-tx' : 'direction-rx'"
         >
-          {{ msg.direction === 'tx' ? '\u2191' : '\u2193' }}
+          {{ msg.direction === 'tx' ? '↑' : '↓' }}
         </span>
         <span class="msg-type mono">{{ msg.messageType }}</span>
         <span class="msg-size mono">{{ msg.raw.length }}B</span>

@@ -4,52 +4,53 @@
  * Resumes when the user scrolls back to the bottom.
  */
 
-import { ref, onMounted, onUnmounted, type Ref } from 'vue';
+import { onMounted, onUnmounted, ref, type Ref } from 'vue'
 
-const SCROLL_THRESHOLD = 30; // px from bottom to consider "at bottom"
+const SCROLL_THRESHOLD = 30 // px from bottom to consider "at bottom"
 
 export function useAutoScroll(containerRef: Ref<HTMLElement | null>) {
-  const isAtBottom = ref(true);
+  const isAtBottom = ref(true)
 
   function onScroll() {
-    const el = containerRef.value;
-    if (!el) return;
-    isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
+    const el = containerRef.value
+    if (!el) return
+    isAtBottom.value =
+      el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD
   }
 
   function scrollToBottom() {
-    const el = containerRef.value;
-    if (!el || !isAtBottom.value) return;
-    el.scrollTop = el.scrollHeight;
+    const el = containerRef.value
+    if (!el || !isAtBottom.value) return
+    el.scrollTop = el.scrollHeight
   }
 
-  let observer: MutationObserver | null = null;
-  let scrollRafPending = false;
+  let observer: MutationObserver | null = null
+  let scrollRafPending = false
 
   onMounted(() => {
-    const el = containerRef.value;
-    if (!el) return;
-    el.addEventListener('scroll', onScroll, { passive: true });
+    const el = containerRef.value
+    if (!el) return
+    el.addEventListener('scroll', onScroll, { passive: true })
 
     // Auto-scroll when new content is added.
     // Coalesce multiple mutations into a single rAF to avoid layout
     // thrashing when many messages arrive in the same frame.
     observer = new MutationObserver(() => {
-      if (!isAtBottom.value || scrollRafPending) return;
-      scrollRafPending = true;
+      if (!isAtBottom.value || scrollRafPending) return
+      scrollRafPending = true
       requestAnimationFrame(() => {
-        scrollRafPending = false;
-        scrollToBottom();
-      });
-    });
-    observer.observe(el, { childList: true, subtree: true });
-  });
+        scrollRafPending = false
+        scrollToBottom()
+      })
+    })
+    observer.observe(el, { childList: true, subtree: true })
+  })
 
   onUnmounted(() => {
-    const el = containerRef.value;
-    if (el) el.removeEventListener('scroll', onScroll);
-    observer?.disconnect();
-  });
+    const el = containerRef.value
+    if (el) el.removeEventListener('scroll', onScroll)
+    observer?.disconnect()
+  })
 
-  return { isAtBottom, scrollToBottom };
+  return { isAtBottom, scrollToBottom }
 }

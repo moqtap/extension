@@ -5,25 +5,25 @@
  * background service worker which owns the page buffers + IDB).
  */
 
-import type { Trace, TraceEvent, TraceHeader } from '@/src/trace/index';
-import type { SessionEntry } from './use-inspector';
-import { parseStreamFraming, parseDatagramGroupFraming } from './stream-framing';
-import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14';
+import type { Trace, TraceEvent, TraceHeader } from '@/src/trace/index'
+import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14'
+import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
+import type { SessionEntry } from './use-inspector'
 
 /** Resolve a message type name (e.g. "subscribe") to its wire ID number. */
 function resolveMessageTypeId(name: string): number {
-  const id = MESSAGE_ID_MAP.get(name);
-  return id != null ? Number(id) : 0;
+  const id = MESSAGE_ID_MAP.get(name)
+  return id != null ? Number(id) : 0
 }
 
 /** Convert an absolute epoch-ms timestamp to a relative microsecond offset. */
 function toRelativeUs(timestampMs: number, startTimeMs: number): number {
-  return Math.round((timestampMs - startTimeMs) * 1000);
+  return Math.round((timestampMs - startTimeMs) * 1000)
 }
 
 /** Unwrap a potential Vue reactive proxy back to a plain Uint8Array. */
 function toBytes(data: Uint8Array): Uint8Array {
-  return new Uint8Array(data);
+  return new Uint8Array(data)
 }
 
 /**
@@ -31,11 +31,17 @@ function toBytes(data: Uint8Array): Uint8Array {
  */
 export async function buildTrace(
   session: SessionEntry,
-  getStreamData: (sessionId: string, streamId: number) => Promise<Uint8Array | null>,
-  getDatagramGroupData?: (sessionId: string, groupKey: string) => Promise<Uint8Array | null>,
+  getStreamData: (
+    sessionId: string,
+    streamId: number,
+  ) => Promise<Uint8Array | null>,
+  getDatagramGroupData?: (
+    sessionId: string,
+    groupKey: string,
+  ) => Promise<Uint8Array | null>,
 ): Promise<Trace> {
-  const draft = session.draft ?? 'unknown';
-  const startTime = session.createdAt;
+  const draft = session.draft ?? 'unknown'
+  const startTime = session.createdAt
 
   const header: TraceHeader = {
     protocol: `moq-transport-${draft}`,
@@ -45,10 +51,10 @@ export async function buildTrace(
     endTime: Date.now(),
     source: 'moqtap-extension/0.1.0',
     endpoint: session.url,
-  };
+  }
 
-  const events: TraceEvent[] = [];
-  let seq = 0;
+  const events: TraceEvent[] = []
+  let seq = 0
 
   // Control messages
   for (const msg of session.messages) {
@@ -60,12 +66,12 @@ export async function buildTrace(
       messageType: resolveMessageTypeId(msg.messageType),
       message: (msg.decoded ?? {}) as Record<string, unknown>,
       raw: msg.raw.length > 0 ? toBytes(msg.raw) : undefined,
-    });
+    })
   }
 
   // Streams — open events, payload data, close events
   for (const stream of session.streams.values()) {
-    const ts = toRelativeUs(startTime, startTime); // 0 — we don't have per-stream timestamps
+    const ts = toRelativeUs(startTime, startTime) // 0 — we don't have per-stream timestamps
 
     events.push({
       type: 'stream-opened',
@@ -74,20 +80,23 @@ export async function buildTrace(
       streamId: BigInt(stream.streamId),
       direction: stream.direction === 'tx' ? 0 : 1,
       streamType: 0, // bidi=0, we don't distinguish
-    });
+    })
 
     // Load stream data via callback (background serves from memory + IDB)
     if (stream.byteCount > 0) {
       try {
-        const data = await getStreamData(session.sessionId, stream.streamId);
+        const data = await getStreamData(session.sessionId, stream.streamId)
         if (data) {
           // Try to parse MoQT framing to extract individual objects
-          const framing = parseStreamFraming(data);
+          const framing = parseStreamFraming(data)
           if (framing && framing.objects.length > 0) {
-            const hf = framing.headerFields;
+            const hf = framing.headerFields
             for (const obj of framing.objects) {
-              const end = Math.min(obj.payloadOffset + obj.payloadLength, data.length);
-              const payload = data.slice(obj.payloadOffset, end);
+              const end = Math.min(
+                obj.payloadOffset + obj.payloadLength,
+                data.length,
+              )
+              const payload = data.slice(obj.payloadOffset, end)
 
               events.push({
                 type: 'object-header',
@@ -98,7 +107,7 @@ export async function buildTrace(
                 objectId: BigInt(obj.objectId),
                 publisherPriority: hf.publisherPriority ?? 0,
                 objectStatus: 0,
-              });
+              })
 
               events.push({
                 type: 'object-payload',
@@ -109,7 +118,7 @@ export async function buildTrace(
                 objectId: BigInt(obj.objectId),
                 size: payload.length,
                 payload: toBytes(payload),
-              });
+              })
             }
           } else {
             // No MoQT framing — store raw as a single object-payload
@@ -122,7 +131,7 @@ export async function buildTrace(
               objectId: 0n,
               size: data.length,
               payload: toBytes(data),
-            });
+            })
           }
         }
       } catch {
@@ -137,23 +146,26 @@ export async function buildTrace(
         timestamp: ts,
         streamId: BigInt(stream.streamId),
         errorCode: 0,
-      });
+      })
     }
   }
 
   // Datagram groups — export as object-header + object-payload events
   if (getDatagramGroupData) {
     for (const dg of session.datagramGroups.values()) {
-      const ts = toRelativeUs(dg.firstDataAt ?? startTime, startTime);
+      const ts = toRelativeUs(dg.firstDataAt ?? startTime, startTime)
 
       try {
-        const data = await getDatagramGroupData(session.sessionId, dg.groupKey);
+        const data = await getDatagramGroupData(session.sessionId, dg.groupKey)
         if (data) {
-          const framing = parseDatagramGroupFraming(data, session.draft);
+          const framing = parseDatagramGroupFraming(data, session.draft)
           if (framing && framing.objects.length > 0) {
             for (const obj of framing.objects) {
-              const end = Math.min(obj.payloadOffset + obj.payloadLength, data.length);
-              const payload = data.slice(obj.payloadOffset, end);
+              const end = Math.min(
+                obj.payloadOffset + obj.payloadLength,
+                data.length,
+              )
+              const payload = data.slice(obj.payloadOffset, end)
 
               events.push({
                 type: 'object-header',
@@ -164,7 +176,7 @@ export async function buildTrace(
                 objectId: BigInt(obj.objectId),
                 publisherPriority: framing.headerFields.publisherPriority ?? 0,
                 objectStatus: 0,
-              });
+              })
 
               events.push({
                 type: 'object-payload',
@@ -175,7 +187,7 @@ export async function buildTrace(
                 objectId: BigInt(obj.objectId),
                 size: payload.length,
                 payload: toBytes(payload),
-              });
+              })
             }
           }
         }
@@ -185,5 +197,5 @@ export async function buildTrace(
     }
   }
 
-  return { header, events };
+  return { header, events }
 }

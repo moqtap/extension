@@ -17,11 +17,11 @@
  * message channels.
  */
 
-import type { ContentToBackgroundMsg } from '@/src/messaging/types';
-import { bytesToBase64 } from '@/src/messaging/types';
+import type { ContentToBackgroundMsg } from '@/src/messaging/types'
+import { bytesToBase64 } from '@/src/messaging/types'
 
 /** Storage key for the global worker origin exclusion list */
-const EXCLUSIONS_KEY = 'moqtap-worker-exclusions';
+const EXCLUSIONS_KEY = 'moqtap-worker-exclusions'
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -30,49 +30,57 @@ export default defineContentScript({
   runAt: 'document_start',
 
   main() {
-
     // ── Relay exclusion list to MAIN world ───────────────────────────
     // Read from browser.storage.local and post to MAIN world so it can
     // skip worker wrapping for known-bad origins. This is async, but the
     // MAIN world Proxy safety net handles Workers created before it arrives.
     try {
-      browser.storage.local.get(EXCLUSIONS_KEY).then((result) => {
-        const exclusions = result[EXCLUSIONS_KEY] as Record<string, unknown> | undefined;
-        if (exclusions) {
-          const origins = Object.keys(exclusions);
-          if (origins.length > 0) {
-            window.postMessage({ source: 'moqtap-exclusions', origins }, '*');
+      browser.storage.local
+        .get(EXCLUSIONS_KEY)
+        .then((result) => {
+          const exclusions = result[EXCLUSIONS_KEY] as
+            | Record<string, unknown>
+            | undefined
+          if (exclusions) {
+            const origins = Object.keys(exclusions)
+            if (origins.length > 0) {
+              window.postMessage({ source: 'moqtap-exclusions', origins }, '*')
+            }
           }
-        }
-      }).catch(() => { /* storage not available */ });
-    } catch { /* extension context invalidated */ }
+        })
+        .catch(() => {
+          /* storage not available */
+        })
+    } catch {
+      /* extension context invalidated */
+    }
 
     // ── Persistent port to background ────────────────────────────────
-    let port: ReturnType<typeof browser.runtime.connect> | null = null;
+    let port: ReturnType<typeof browser.runtime.connect> | null = null
 
     function connect() {
       try {
-        port = browser.runtime.connect({ name: 'moqtap-bridge' });
+        port = browser.runtime.connect({ name: 'moqtap-bridge' })
       } catch {
         // Extension context invalidated
-        port = null;
-        return;
+        port = null
+        return
       }
 
       // Activation signals from background arrive on the same port
       port.onMessage.addListener((message: { type?: string }) => {
         if (message?.type === 'activate-tab') {
-          window.postMessage({ source: 'moqtap-activate' }, '*');
+          window.postMessage({ source: 'moqtap-activate' }, '*')
         }
-      });
+      })
 
       port.onDisconnect.addListener(() => {
-        port = null;
+        port = null
         // Extension context invalidated — don't reconnect
-      });
+      })
     }
 
-    connect();
+    connect()
 
     // ── Disconnect on bfcache to avoid "message channel is closed" errors ──
     window.addEventListener('pagehide', (event) => {
@@ -80,41 +88,47 @@ export default defineContentScript({
         // Page is entering back/forward cache — close the port cleanly
         // to avoid "The page keeping the extension port is moved into
         // back/forward cache, so the message channel is closed" errors.
-        port.disconnect();
-        port = null;
+        port.disconnect()
+        port = null
       }
-    });
+    })
 
     window.addEventListener('pageshow', (event) => {
       if (event.persisted && !port) {
         // Page restored from bfcache — reconnect
-        connect();
+        connect()
       }
-    });
+    })
 
     // ── Forward intercepted events: MAIN world → background ──────────
     window.addEventListener('message', (event) => {
-      if (event.source !== window) return;
-      if (event.data?.source !== 'moqtap-content') return;
+      if (event.source !== window) return
+      if (event.data?.source !== 'moqtap-content') return
 
-      if (!port) return;
+      if (!port) return
 
-      const msg = event.data.payload as ContentToBackgroundMsg;
+      const msg = event.data.payload as ContentToBackgroundMsg
 
       // ArrayBuffer doesn't survive Chrome extension structured clone
       // reliably (port.postMessage has the same issue as sendMessage).
       // Encode stream data as base64 here in the ISOLATED world — the
       // MAIN world still gets zero-copy via Transferable.
       try {
-        if ((msg.type === 'stream:data' || msg.type === 'datagram:data') && msg.data instanceof ArrayBuffer) {
-          port.postMessage({ ...msg, data: bytesToBase64(new Uint8Array(msg.data)) });
+        if (
+          (msg.type === 'stream:data' || msg.type === 'datagram:data') &&
+          msg.data instanceof ArrayBuffer
+        ) {
+          port.postMessage({
+            ...msg,
+            data: bytesToBase64(new Uint8Array(msg.data)),
+          })
         } else {
-          port.postMessage(msg);
+          port.postMessage(msg)
         }
       } catch {
         // Port disconnected
-        port = null;
+        port = null
       }
-    });
+    })
   },
-});
+})

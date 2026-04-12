@@ -6,28 +6,33 @@
  * for export as .moqtrace files.
  */
 
-import { createRecorder } from '@moqtap/trace';
-import type { SupportedDraft } from '../types/common';
+import { createRecorder } from '@moqtap/trace'
+import type { SupportedDraft } from '../types/common'
 
 // Re-export trace utilities
-export { writeMoqtrace, readMoqtrace, readMoqtraceHeader, traceToJSON } from '@moqtap/trace';
-export { createMoqtraceWriter } from '@moqtap/trace';
+export {
+  createMoqtraceWriter,
+  readMoqtrace,
+  readMoqtraceHeader,
+  traceToJSON,
+  writeMoqtrace,
+} from '@moqtap/trace'
 export type {
-  Trace,
-  TraceHeader,
-  TraceEvent,
+  AnnotationEvent,
   ControlMessageEvent,
-  StreamOpenedEvent,
-  StreamClosedEvent,
+  DetailLevel,
   ObjectHeaderEvent,
   ObjectPayloadEvent,
-  StateChangeEvent,
-  AnnotationEvent,
-  DetailLevel,
   Perspective,
   RecorderOptions,
+  StateChangeEvent,
+  StreamClosedEvent,
+  StreamOpenedEvent,
+  Trace,
+  TraceEvent,
+  TraceHeader,
   TraceRecorder,
-} from '@moqtap/trace';
+} from '@moqtap/trace'
 
 /**
  * Create a trace recorder configured for the extension's observer role.
@@ -35,12 +40,15 @@ export type {
  * @param draft - The detected MoQT draft version
  * @param endpoint - Optional remote peer URI for trace metadata
  */
-export function createExtensionRecorder(draft: SupportedDraft, endpoint?: string) {
+export function createExtensionRecorder(
+  draft: SupportedDraft,
+  endpoint?: string,
+) {
   return createRecorder({
     protocol: `moq-transport-${draft}`,
     perspective: 'observer',
     detail: 'headers',
     source: 'moqtap-extension/0.1.0',
     endpoint,
-  });
+  })
 }
