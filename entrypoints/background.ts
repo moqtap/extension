@@ -10,11 +10,11 @@
 
 import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing'
 import { decodeControlMessage, getCodec } from '@/src/codec/control-message'
+import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
   detectContentType,
   detectPayloadMedia,
   detectStreamMedia,
-  type PayloadMediaInfo,
   type StreamContentType,
 } from '@/src/detect/content-detect'
 import {
@@ -49,10 +49,10 @@ import {
   getDatagramGroups,
   loadDatagramGroupData,
 } from '@/src/storage/datagram-store'
-import type { TraceRecorder } from '@/src/trace/index'
 import { createExtensionRecorder } from '@/src/trace/index'
 import type { SupportedDraft } from '@/src/types/common'
-import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14'
+import { getMessageIdMap } from '@/src/codec/message-ids'
+import type { TraceRecorder } from '@moqtap/trace'
 
 interface TabState {
   sessions: Map<string, SessionRecord>
@@ -311,7 +311,8 @@ function tryDecodeBuffered(
 
         // Record in trace
         if (session.recorder) {
-          const wireId = MESSAGE_ID_MAP.get(msgType)
+          const idMap = getMessageIdMap(session.detectedDraft!)
+          const wireId = idMap.get(msgType)
           session.recorder.record({
             type: 'control',
             seq: session.controlMessages.length - 1,
@@ -390,7 +391,8 @@ function decodeControlChunk(
         if (trackUpdate) trackUpdates.push(trackUpdate)
 
         if (session.recorder) {
-          const wireId = MESSAGE_ID_MAP.get(msgType)
+          const idMap = getMessageIdMap(session.detectedDraft!)
+          const wireId = idMap.get(msgType)
           session.recorder.record({
             type: 'control',
             seq: session.controlMessages.length - 1,
@@ -502,15 +504,25 @@ function extractTrackInfo(
   }
 }
 
-/** Safely JSON-stringify a decoded message, handling bigint and Uint8Array */
+/**
+ * Safely JSON-stringify a decoded message, handling bigint and Uint8Array.
+ *
+ * Values that lose their type through JSON round-tripping are wrapped in
+ * tagged objects so the panel can recover the original type:
+ *   bigint       → { __t: "n", v: "<decimal>" }
+ *   Uint8Array   → { __t: "b", v: "<hex>" }
+ */
 function jsonSafe(obj: unknown): string | null {
   try {
     return JSON.stringify(obj, (_key, value) => {
-      if (typeof value === 'bigint') return value.toString()
+      if (typeof value === 'bigint') return { __t: 'n', v: value.toString() }
       if (value instanceof Uint8Array) {
-        return Array.from(value)
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join('')
+        return {
+          __t: 'b',
+          v: Array.from(value)
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join(''),
+        }
       }
       return value
     })

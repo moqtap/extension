@@ -1,6 +1,7 @@
 <script lang="ts" setup>
-import { detectMediaInfo } from '@/src/detect/bmff-boxes'
+import { detectMediaInfo, type PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import { decodeCbor } from '@/src/detect/cbor-decode'
+import type { StreamContentType } from '@/src/detect/content-detect'
 import { decodeMsgpack } from '@/src/detect/msgpack-decode'
 import { computed, ref, watch } from 'vue'
 import { getCachedPref, savePref } from '../prefs'
@@ -10,11 +11,7 @@ import {
   parseDatagramGroupFraming,
   parseStreamFraming,
 } from '../stream-framing'
-import type {
-  PayloadMediaInfo,
-  StreamContentType,
-  TrackEntry,
-} from '../use-inspector'
+import type { TrackEntry } from '../use-inspector'
 import HexViewer from './HexViewer.vue'
 import JsonTree from './JsonTree.vue'
 

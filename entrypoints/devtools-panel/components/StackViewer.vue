@@ -10,9 +10,9 @@ const groups = computed(() => parseStack(props.stack))
 
 function openSource(frame: StackFrame) {
   if (!frame.url || frame.isNative) return
-  // chrome.devtools.panels.openResource uses 0-based line/column numbers
+  // browser.devtools.panels.openResource uses 0-based line/column numbers
   const col = frame.column > 0 ? frame.column - 1 : 0
-  chrome.devtools.panels.openResource(frame.url, frame.line - 1, col, () => {})
+  browser.devtools.panels.openResource(frame.url, frame.line - 1, col, () => {})
 }
 </script>
 

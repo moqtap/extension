@@ -5,14 +5,15 @@
  * background service worker which owns the page buffers + IDB).
  */
 
-import type { Trace, TraceEvent, TraceHeader } from '@/src/trace/index'
-import { MESSAGE_ID_MAP } from '@moqtap/codec/draft14'
+import { getMessageIdMap } from '@/src/codec/message-ids'
+import type { SupportedDraft } from '@/src/types/common'
+import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
 import type { SessionEntry } from './use-inspector'
 
 /** Resolve a message type name (e.g. "subscribe") to its wire ID number. */
-function resolveMessageTypeId(name: string): number {
-  const id = MESSAGE_ID_MAP.get(name)
+function resolveMessageTypeId(name: string, draft: SupportedDraft): number {
+  const id = getMessageIdMap(draft).get(name)
   return id != null ? Number(id) : 0
 }
 
@@ -63,7 +64,7 @@ export async function buildTrace(
       seq: seq++,
       timestamp: toRelativeUs(msg.timestamp, startTime),
       direction: msg.direction === 'tx' ? 0 : 1,
-      messageType: resolveMessageTypeId(msg.messageType),
+      messageType: resolveMessageTypeId(msg.messageType, session.draft as SupportedDraft),
       message: (msg.decoded ?? {}) as Record<string, unknown>,
       raw: msg.raw.length > 0 ? toBytes(msg.raw) : undefined,
     })

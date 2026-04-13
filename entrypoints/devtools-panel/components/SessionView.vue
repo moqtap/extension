@@ -1,6 +1,7 @@
 <script lang="ts" setup>
+import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, ref, watch } from 'vue'
-import type { SessionEntry, StreamContentType } from '../use-inspector'
+import type { SessionEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
 import StreamDataViewer from './StreamDataViewer.vue'
 import StreamList from './StreamList.vue'

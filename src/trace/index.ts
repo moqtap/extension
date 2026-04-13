@@ -9,31 +9,6 @@
 import { createRecorder } from '@moqtap/trace'
 import type { SupportedDraft } from '../types/common'
 
-// Re-export trace utilities
-export {
-  createMoqtraceWriter,
-  readMoqtrace,
-  readMoqtraceHeader,
-  traceToJSON,
-  writeMoqtrace,
-} from '@moqtap/trace'
-export type {
-  AnnotationEvent,
-  ControlMessageEvent,
-  DetailLevel,
-  ObjectHeaderEvent,
-  ObjectPayloadEvent,
-  Perspective,
-  RecorderOptions,
-  StateChangeEvent,
-  StreamClosedEvent,
-  StreamOpenedEvent,
-  Trace,
-  TraceEvent,
-  TraceHeader,
-  TraceRecorder,
-} from '@moqtap/trace'
-
 /**
  * Create a trace recorder configured for the extension's observer role.
  *

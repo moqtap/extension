@@ -33,7 +33,7 @@ let cached: Prefs | null = null
 export async function loadPrefs(): Promise<Prefs> {
   if (cached) return cached
   try {
-    const result = await chrome.storage.local.get(STORAGE_KEY)
+    const result = await browser.storage.local.get(STORAGE_KEY)
     cached = { ...defaults, ...(result[STORAGE_KEY] ?? {}) } as Prefs
   } catch {
     cached = { ...defaults }
@@ -48,7 +48,7 @@ export async function savePref<K extends keyof Prefs>(
   if (!cached) await loadPrefs()
   cached![key] = value
   try {
-    await chrome.storage.local.set({ [STORAGE_KEY]: cached })
+    await browser.storage.local.set({ [STORAGE_KEY]: cached })
   } catch {
     // Storage not available
   }

@@ -1,10 +1,7 @@
 <script lang="ts" setup>
+import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type {
-  PayloadMediaInfo,
-  StreamEntry,
-  TrackEntry,
-} from '../use-inspector'
+import type { StreamEntry, TrackEntry } from '../use-inspector'
 
 const ROW_HEIGHT = 24 // px — must match CSS .stream-row height
 const OVERSCAN = 10 // extra rows rendered above/below viewport

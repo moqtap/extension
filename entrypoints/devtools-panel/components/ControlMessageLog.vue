@@ -50,7 +50,7 @@ function formatTime(ts: number): string {
         <span class="msg-size mono">{{ msg.raw.length }}B</span>
       </div>
       <div v-if="expandedIndex === i" class="message-detail">
-        <PayloadViewer :data="msg.decoded" :raw="msg.raw" :stack="msg.stack" />
+        <PayloadViewer :data="msg.decodedPretty" :raw="msg.raw" :stack="msg.stack" />
       </div>
     </div>
   </div>

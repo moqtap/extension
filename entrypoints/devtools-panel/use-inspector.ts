@@ -8,22 +8,23 @@
 
 import type { BackgroundToPanelMsg } from '@/src/messaging/types'
 import { base64ToBytes } from '@/src/messaging/types'
+import { versionToDraft } from '@/src/detect/draft-detect'
 import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
 // Panel no longer accesses IDB directly — data requests go through background
-import { detectMediaInfo } from '@/src/detect/bmff-boxes'
-import type { PayloadMediaInfo } from '@/src/detect/content-detect'
+import { detectMediaInfo, type PayloadMediaInfo } from '@/src/detect/bmff-boxes'
+import {
+  detectContentType,
+  type StreamContentType,
+} from '@/src/detect/content-detect'
 import type {
   ControlMessageEvent,
   ObjectPayloadEvent,
   StreamClosedEvent,
   StreamOpenedEvent,
   Trace,
-} from '@/src/trace/index'
-import { readMoqtrace, writeMoqtrace } from '@/src/trace/index'
+} from '@moqtap/trace'
+import { readMoqtrace, writeMoqtrace } from '@moqtap/trace'
 import { buildTrace } from './build-trace'
-import type { StreamContentType } from './content-detect'
-import { detectContentType } from './content-detect'
-export type { PayloadMediaInfo, StreamContentType }
 
 export interface SessionEntry {
   sessionId: string
@@ -110,10 +111,174 @@ export interface MessageEntry {
   timestamp: number
   direction: 'tx' | 'rx'
   messageType: string
+  /** Raw decoded values for programmatic use (filtering, trace export). */
   decoded: unknown | null
+  /** Display-optimised decoded values with PrettifiedValue wrappers. */
+  decodedPretty: unknown | null
   raw: Uint8Array
   /** Stack trace from the call site (tx messages only, ephemeral) */
   stack?: string
+}
+
+// ---------------------------------------------------------------------------
+// Prettified value helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * A value wrapper that tells JsonTree how to display a decoded field
+ * whose wire representation differs from its display form.
+ */
+export interface PrettifiedValue {
+  __pretty: true
+  /** Text to display */
+  display: string
+  /** Original wire representation (shown in tooltip) */
+  original: string
+  /** Whether to wrap `display` in quotes */
+  quoted: boolean
+  /** CSS class applied to the value span */
+  cssClass: string
+}
+
+export function isPrettifiedValue(v: unknown): v is PrettifiedValue {
+  return v != null && typeof v === 'object' && (v as any).__pretty === true
+}
+
+function makePretty(
+  display: string,
+  original: string,
+  quoted: boolean,
+  cssClass: string,
+): PrettifiedValue {
+  return { __pretty: true, display, original, quoted, cssClass }
+}
+
+// --- Tagged-value detection (produced by background jsonSafe) ---
+
+function isTaggedBigInt(v: unknown): v is { __t: 'n'; v: string } {
+  return v != null && typeof v === 'object' && (v as any).__t === 'n'
+}
+
+function isTaggedBytes(v: unknown): v is { __t: 'b'; v: string } {
+  return v != null && typeof v === 'object' && (v as any).__t === 'b'
+}
+
+/**
+ * Try to decode a hex string as printable ASCII (0x20–0x7E).
+ * Leading NUL (0x00) bytes are stripped — common in protocol-prefixed
+ * tokens that carry a type/version byte before the human-readable payload.
+ * Returns the decoded string on success, `null` if any non-NUL byte falls
+ * outside the printable range or the input is malformed.
+ */
+function hexToAscii(hex: string): string | null {
+  if (hex.length === 0 || hex.length % 2 !== 0) return null
+  // Skip leading 0x00 bytes (protocol prefix / padding)
+  let start = 0
+  while (start < hex.length - 1 && hex[start] === '0' && hex[start + 1] === '0') {
+    start += 2
+  }
+  if (start >= hex.length) return null // all NULs
+  const chars: string[] = []
+  for (let i = start; i < hex.length; i += 2) {
+    const byte = parseInt(hex.substring(i, i + 2), 16)
+    if (byte < 0x20 || byte > 0x7e) return null
+    chars.push(String.fromCharCode(byte))
+  }
+  return chars.length > 0 ? chars.join('') : null
+}
+
+
+/** Strip type tags, restoring simple JS values for programmatic use. */
+function untagDecoded(obj: unknown): unknown {
+  if (isTaggedBigInt(obj)) {
+    const n = Number(obj.v)
+    return Number.isSafeInteger(n) ? n : obj.v
+  }
+  if (isTaggedBytes(obj)) return obj.v
+  if (Array.isArray(obj)) return obj.map(untagDecoded)
+  if (obj != null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(obj)) result[k] = untagDecoded(v)
+    return result
+  }
+  return obj
+}
+
+/**
+ * Prettify a hex string (either from a tagged Uint8Array or from a codec
+ * that returns bytesToHex() directly).
+ */
+function prettifyHex(hex: string): PrettifiedValue {
+  const ascii = hexToAscii(hex)
+  if (ascii) {
+    // Printable ASCII: show as a quoted string, tooltip has hex.
+    return makePretty(ascii, hex, true, 'json-string')
+  }
+  // Binary: show hex without quotes, styled distinctly.
+  return makePretty(hex, hex, false, 'json-bytes')
+}
+
+/** Convert tagged values to PrettifiedValue wrappers for display. */
+function prettifyValues(obj: unknown): unknown {
+  if (isTaggedBigInt(obj)) {
+    const n = Number(obj.v)
+    // Safe integers can be represented as native numbers — no wrapper needed.
+    if (Number.isSafeInteger(n)) return n
+    // Unsafe BigInt: show the full decimal, styled as a number, no quotes.
+    return makePretty(obj.v, obj.v, false, 'json-number')
+  }
+  if (isTaggedBytes(obj)) {
+    return prettifyHex(obj.v)
+  }
+
+  if (Array.isArray(obj)) return obj.map(prettifyValues)
+  if (obj != null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(obj)) result[k] = prettifyValues(v)
+    return result
+  }
+  return obj
+}
+
+/**
+ * Prettify version numbers in CLIENT_SETUP / SERVER_SETUP decoded payloads.
+ * Returns PrettifiedValue wrappers so the UI shows a human-readable label
+ * with the original hex value available as a tooltip.
+ */
+function prettifySetupVersions(
+  messageType: string,
+  decoded: Record<string, unknown>,
+): Record<string, unknown> {
+  const formatVersion = (v: unknown): unknown => {
+    if (typeof v !== 'number') return v
+    if (!Number.isFinite(v) || v < 0xff000000) return v
+    const draft = versionToDraft(v)
+    const hex = '0x' + v.toString(16).padStart(8, '0')
+    return makePretty(
+      draft ? `draft-${draft}` : hex,
+      hex,
+      false,
+      'json-pretty',
+    )
+  }
+
+  if (
+    messageType === 'client_setup' &&
+    Array.isArray(decoded.supported_versions)
+  ) {
+    return {
+      ...decoded,
+      supported_versions: decoded.supported_versions.map(formatVersion),
+    }
+  }
+  if (messageType === 'server_setup' && decoded.selected_version != null) {
+    return { ...decoded, selected_version: formatVersion(decoded.selected_version) }
+  }
+  // draft-17+: unified SETUP message may contain selected_version
+  if (messageType === 'setup' && decoded.selected_version != null) {
+    return { ...decoded, selected_version: formatVersion(decoded.selected_version) }
+  }
+  return decoded
 }
 
 export function useInspector() {
@@ -131,7 +296,7 @@ export function useInspector() {
   /** Unistream creation stacks (ephemeral, keyed by "sessionId:streamId") */
   const streamCreationStacks = ref<Map<string, string>>(new Map())
 
-  let port: chrome.runtime.Port | null = null
+  let port: Browser.runtime.Port | null = null
   let nextColorIndex = 0
   let nextRequestId = 1
   const pendingDataRequests = new Map<
@@ -194,11 +359,19 @@ export function useInspector() {
       case 'panel:control-message': {
         const session = sessions.value.get(msg.sessionId)
         if (session) {
+          const tagged = msg.decoded ? JSON.parse(msg.decoded) : null
+          const pretty = tagged
+            ? prettifySetupVersions(
+                msg.messageType,
+                prettifyValues(tagged) as Record<string, unknown>,
+              )
+            : null
           session.messages.push({
             timestamp: msg.timestamp,
             direction: msg.direction,
             messageType: msg.messageType,
-            decoded: msg.decoded ? JSON.parse(msg.decoded) : null,
+            decoded: tagged ? untagDecoded(tagged) : null,
+            decodedPretty: pretty,
             raw: base64ToBytes(msg.raw),
             stack: msg.stack,
           })
@@ -498,8 +671,8 @@ export function useInspector() {
   }
 
   function connect() {
-    const tabId = chrome.devtools.inspectedWindow.tabId
-    port = chrome.runtime.connect({ name: 'moqtap-panel' })
+    const tabId = browser.devtools.inspectedWindow.tabId
+    port = browser.runtime.connect({ name: 'moqtap-panel' })
     connected.value = true
 
     port.onMessage.addListener(enqueueMessage)
@@ -526,20 +699,20 @@ export function useInspector() {
     importedStreamData.clear()
     // Tell background to clear IDB and reset stream counters
     if (port) {
-      const tabId = chrome.devtools.inspectedWindow.tabId
+      const tabId = browser.devtools.inspectedWindow.tabId
       port.postMessage({ type: 'panel:clear', tabId })
     }
   }
 
   function addWorkerExclusion(origin: string) {
     if (!port) return
-    const tabId = chrome.devtools.inspectedWindow.tabId
+    const tabId = browser.devtools.inspectedWindow.tabId
     port.postMessage({ type: 'panel:add-exclusion', tabId, origin })
   }
 
   function removeWorkerExclusion(origin: string) {
     if (!port) return
-    const tabId = chrome.devtools.inspectedWindow.tabId
+    const tabId = browser.devtools.inspectedWindow.tabId
     port.postMessage({ type: 'panel:remove-exclusion', tabId, origin })
   }
 
@@ -561,7 +734,7 @@ export function useInspector() {
     if (!port) return null
 
     const requestId = nextRequestId++
-    const tabId = chrome.devtools.inspectedWindow.tabId
+    const tabId = browser.devtools.inspectedWindow.tabId
     return new Promise<Uint8Array | null>((resolve) => {
       const timeout = setTimeout(() => {
         pendingDataRequests.delete(requestId)
@@ -602,7 +775,7 @@ export function useInspector() {
     if (!port) return null
 
     const requestId = nextRequestId++
-    const tabId = chrome.devtools.inspectedWindow.tabId
+    const tabId = browser.devtools.inspectedWindow.tabId
     return new Promise<Uint8Array | null>((resolve) => {
       const timeout = setTimeout(() => {
         pendingDataRequests.delete(requestId)
@@ -633,7 +806,7 @@ export function useInspector() {
       triggerRef(sessions)
     }
     if (!port) return
-    const tabId = chrome.devtools.inspectedWindow.tabId
+    const tabId = browser.devtools.inspectedWindow.tabId
     port.postMessage({
       type: 'panel:set-stream-recording',
       tabId,
@@ -654,7 +827,7 @@ export function useInspector() {
       triggerRef(sessions)
     }
     if (!port) return
-    const tabId = chrome.devtools.inspectedWindow.tabId
+    const tabId = browser.devtools.inspectedWindow.tabId
     port.postMessage({ type: 'panel:clear-streams', tabId, sessionId })
   }
 
@@ -754,6 +927,10 @@ export function useInspector() {
             direction: ce.direction === 0 ? 'tx' : 'rx',
             messageType: msgType,
             decoded: msg,
+            decodedPretty: prettifySetupVersions(
+              msgType,
+              msg as Record<string, unknown>,
+            ),
             raw: ce.raw ?? new Uint8Array(0),
           })
 

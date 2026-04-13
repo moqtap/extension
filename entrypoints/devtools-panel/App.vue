@@ -107,7 +107,7 @@ function handleImportClick() {
 const sessionList = computed(() => Array.from(sessions.value.values()))
 
 function reloadPage() {
-  chrome.devtools.inspectedWindow.reload({})
+  browser.devtools.inspectedWindow.reload({})
 }
 const selectedSession = computed(() =>
   selectedSessionId.value

@@ -549,6 +549,7 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
     monospace;
   font-size: 11px;
   overflow-x: auto;
+  min-width: max-content;
 }
 
 .hex-header-row {

@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { computed, ref } from 'vue'
+import { isPrettifiedValue, type PrettifiedValue } from '../use-inspector'
 
 const props = defineProps<{
   data: unknown
@@ -11,7 +12,12 @@ const props = defineProps<{
 const depth = computed(() => props.depth ?? 0)
 const expanded = ref(props.initialExpanded ?? depth.value < 2)
 
+const prettyValue = computed((): PrettifiedValue | null =>
+  isPrettifiedValue(props.data) ? props.data : null,
+)
+
 const dataType = computed(() => {
+  if (prettyValue.value) return 'pretty'
   if (props.data === null) return 'null'
   if (Array.isArray(props.data)) return 'array'
   return typeof props.data
@@ -50,6 +56,7 @@ const preview = computed(() => {
 })
 
 const valueClass = computed(() => {
+  if (prettyValue.value) return prettyValue.value.cssClass
   switch (dataType.value) {
     case 'string':
       return 'json-string'
@@ -65,10 +72,19 @@ const valueClass = computed(() => {
 })
 
 const formattedValue = computed(() => {
+  if (prettyValue.value) {
+    const p = prettyValue.value
+    return p.quoted ? `"${p.display}"` : p.display
+  }
   if (dataType.value === 'string') return `"${props.data}"`
   if (dataType.value === 'null') return 'null'
   return String(props.data)
 })
+
+/** Whether the prettified display differs from the original (show hint). */
+const showPrettyHint = computed(
+  () => prettyValue.value != null && prettyValue.value.display !== prettyValue.value.original,
+)
 
 function toggle() {
   if (isExpandable.value) expanded.value = !expanded.value
@@ -86,7 +102,16 @@ function toggle() {
         >{{ label }}<span class="json-colon">: </span></span
       >
       <template v-if="!isExpandable">
-        <span :class="valueClass">{{ formattedValue }}</span>
+        <span
+          :class="valueClass"
+          :title="prettyValue?.original"
+          :style="showPrettyHint ? 'text-decoration: underline dotted; text-underline-offset: 3px' : undefined"
+        >{{ formattedValue }}</span>
+        <span
+          v-if="showPrettyHint"
+          class="json-pretty-hint"
+          :title="prettyValue!.original"
+        >*</span>
       </template>
       <template v-else-if="!expanded">
         <span class="json-preview">{{ preview }}</span>
@@ -167,5 +192,21 @@ function toggle() {
 }
 .json-bracket {
   color: var(--text-secondary);
+}
+
+/* Prettified-value styles */
+.json-pretty {
+  color: var(--text-accent);
+}
+.json-bytes {
+  color: var(--text-warning);
+  word-break: break-all;
+}
+.json-pretty-hint {
+  color: var(--text-secondary);
+  font-size: 9px;
+  vertical-align: super;
+  cursor: help;
+  margin-left: 1px;
 }
 </style>
