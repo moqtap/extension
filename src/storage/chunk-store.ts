@@ -240,8 +240,16 @@ export async function loadStreamData(
   sessionId: string,
   streamId: number,
 ): Promise<Uint8Array> {
-  const st = streams.get(streamKey(sessionId, streamId))
-  if (!st) return new Uint8Array(0)
+  let st = streams.get(streamKey(sessionId, streamId))
+
+  // SW restart recovery: in-memory state was wiped but IDB pages survive.
+  // Rebuild minimal stream state by scanning IDB for this stream's pages.
+  if (!st) {
+    const pageCount = await countStreamPagesInIdb(sessionId, streamId)
+    if (pageCount === 0) return new Uint8Array(0)
+    st = getOrCreateStream(sessionId, streamId)
+    st.pageCount = pageCount
+  }
 
   const parts: Uint8Array[] = []
   let totalLen = 0
@@ -298,6 +306,31 @@ async function getPage(
     return data
   } catch {
     return null
+  }
+}
+
+/**
+ * Count contiguous pages for a stream in IDB.
+ * Used to rebuild stream state after SW restart wiped the in-memory index.
+ * Pages are written under deterministic keys `${sessionId}:${streamId}:p${i}`,
+ * so we scan the prefix and count matches.
+ */
+async function countStreamPagesInIdb(
+  sessionId: string,
+  streamId: number,
+): Promise<number> {
+  const prefix = `${sessionId}:${streamId}:p`
+  try {
+    const db = await openDb()
+    return await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly')
+      const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`)
+      const req = tx.objectStore(STORE_NAME).count(range)
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+    })
+  } catch {
+    return 0
   }
 }
 

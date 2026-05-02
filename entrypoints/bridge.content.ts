@@ -57,15 +57,33 @@ export default defineContentScript({
 
     // ── Persistent port to background ────────────────────────────────
     let port: ReturnType<typeof browser.runtime.connect> | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reconnectAttempt = 0
+    let teardown = false
+
+    function scheduleReconnect() {
+      if (teardown || reconnectTimer || port) return
+      // 250ms, 500ms, 1s, 2s, 4s, capped at 8s. Most SW-restart cases
+      // resolve on the first retry; backoff handles genuine context loss.
+      const delay = Math.min(250 * 2 ** reconnectAttempt, 8000)
+      reconnectAttempt++
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connect()
+      }, delay)
+    }
 
     function connect() {
+      if (teardown) return
       try {
         port = browser.runtime.connect({ name: 'moqtap-bridge' })
       } catch {
-        // Extension context invalidated
+        // Extension context invalidated (extension disabled/uninstalled/updated)
         port = null
+        teardown = true
         return
       }
+      reconnectAttempt = 0
 
       // Activation signals from background arrive on the same port
       port.onMessage.addListener((message: { type?: string }) => {
@@ -76,7 +94,10 @@ export default defineContentScript({
 
       port.onDisconnect.addListener(() => {
         port = null
-        // Extension context invalidated — don't reconnect
+        // SW was idle-terminated (or extension context invalidated). Try to
+        // reconnect so we keep receiving activate-tab signals; runtime.connect
+        // itself respawns the SW.
+        scheduleReconnect()
       })
     }
 
@@ -88,6 +109,12 @@ export default defineContentScript({
         // Page is entering back/forward cache — close the port cleanly
         // to avoid "The page keeping the extension port is moved into
         // back/forward cache, so the message channel is closed" errors.
+        // Suppress reconnect while bfcached; pageshow will re-trigger it.
+        teardown = true
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
         port.disconnect()
         port = null
       }
@@ -96,6 +123,8 @@ export default defineContentScript({
     window.addEventListener('pageshow', (event) => {
       if (event.persisted && !port) {
         // Page restored from bfcache — reconnect
+        teardown = false
+        reconnectAttempt = 0
         connect()
       }
     })

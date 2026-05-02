@@ -10,6 +10,7 @@
 
 import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing'
 import { decodeControlMessage, getCodec } from '@/src/codec/control-message'
+import { getMessageIdMap } from '@/src/codec/message-ids'
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
   detectContentType,
@@ -51,7 +52,6 @@ import {
 } from '@/src/storage/datagram-store'
 import { createExtensionRecorder } from '@/src/trace/index'
 import type { SupportedDraft } from '@/src/types/common'
-import { getMessageIdMap } from '@/src/codec/message-ids'
 import type { TraceRecorder } from '@moqtap/trace'
 
 interface TabState {
@@ -668,7 +668,7 @@ function handleBridgeReady(tabId: number, frameId: number) {
               if (session.recorder) {
                 session.recorder.recordStreamClosed(BigInt(stream.streamId))
               }
-              sendToPanel(tabId, {
+              queueForPanel(tabId, {
                 type: 'panel:stream:closed',
                 sessionId: session.sessionId,
                 streamId: stream.streamId,
@@ -976,7 +976,10 @@ function handleContentMessage(
         }
       }
 
-      sendToPanel(tabId, {
+      // Batch alongside stream:data so the panel sees the matching data
+      // event first (data is queued, closed must follow the same path or
+      // it can outrun a not-yet-flushed batch).
+      queueForPanel(tabId, {
         type: 'panel:stream:closed',
         sessionId: message.sessionId,
         streamId: message.streamId,
@@ -999,7 +1002,7 @@ function handleContentMessage(
         }
       }
 
-      sendToPanel(tabId, {
+      queueForPanel(tabId, {
         type: 'panel:stream:closed',
         sessionId: message.sessionId,
         streamId: message.streamId,
@@ -1289,7 +1292,7 @@ export default defineBackground(() => {
                 if (session.recorder) {
                   session.recorder.recordStreamClosed(BigInt(stream.streamId))
                 }
-                sendToPanel(tabId, {
+                queueForPanel(tabId, {
                   type: 'panel:stream:closed',
                   sessionId: session.sessionId,
                   streamId: stream.streamId,

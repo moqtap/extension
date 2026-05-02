@@ -13,6 +13,8 @@ import { detectMediaInfo, scanAndDetectMedia } from './bmff-boxes'
 import { looksLikeCbor } from './cbor-decode'
 import { looksLikeMsgpack } from './msgpack-decode'
 
+export type { PayloadMediaInfo }
+
 /** Detected content type for a stream's payload data */
 export type StreamContentType = 'json' | 'fmp4' | 'cbor' | 'msgpack' | 'binary'
 

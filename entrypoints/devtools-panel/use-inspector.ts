@@ -6,9 +6,9 @@
  * sessions without OOM. Only metadata stays in memory.
  */
 
+import { versionToDraft } from '@/src/detect/draft-detect'
 import type { BackgroundToPanelMsg } from '@/src/messaging/types'
 import { base64ToBytes } from '@/src/messaging/types'
-import { versionToDraft } from '@/src/detect/draft-detect'
 import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
 // Panel no longer accesses IDB directly — data requests go through background
 import { detectMediaInfo, type PayloadMediaInfo } from '@/src/detect/bmff-boxes'
@@ -670,16 +670,45 @@ export function useInspector() {
     }
   }
 
+  // Reconnect bookkeeping: when the SW idle-terminates the panel's port
+  // disconnects. Without auto-reconnect, the panel goes silent until DevTools
+  // is closed and reopened — and a subsequent page reload won't be picked up
+  // because background.handleBridgeReady gates activate-tab on panelPorts.has.
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let reconnectAttempt = 0
+  let unmounted = false
+
+  function scheduleReconnect() {
+    if (unmounted || reconnectTimer) return
+    // 500ms, 1s, 2s, 4s, capped at 8s. The SW will be respawned by the
+    // runtime.connect() call itself, so a short first delay is fine.
+    const delay = Math.min(500 * 2 ** reconnectAttempt, 8000)
+    reconnectAttempt++
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      try {
+        connect()
+      } catch {
+        // Extension context invalidated (extension disabled/uninstalled/updated).
+        // Stop trying — DevTools will need to be reopened against a fresh extension.
+      }
+    }, delay)
+  }
+
   function connect() {
     const tabId = browser.devtools.inspectedWindow.tabId
     port = browser.runtime.connect({ name: 'moqtap-panel' })
     connected.value = true
+    reconnectAttempt = 0
 
     port.onMessage.addListener(enqueueMessage)
 
     port.onDisconnect.addListener(() => {
       connected.value = false
       port = null
+      // SW was idle-terminated (or extension context invalidated). Try to
+      // reconnect — runtime.connect itself will respawn the SW.
+      scheduleReconnect()
     })
 
     // Tell background which tab we're inspecting
@@ -1150,6 +1179,11 @@ export function useInspector() {
   })
 
   onUnmounted(() => {
+    unmounted = true
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     if (port) {
       port.disconnect()
       port = null

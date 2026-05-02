@@ -69,6 +69,14 @@ function idbKey(sessionId: string, pageIndex: number): string {
   return `${sessionId}:dg:p${pageIndex}`
 }
 
+/**
+ * Sidecar metadata key — one per page, written on seal/flush.
+ * Allows the heap to be reconstructed after a SW restart.
+ */
+function idbMetaKey(sessionId: string, pageIndex: number): string {
+  return `${sessionId}:dg:m${pageIndex}`
+}
+
 // ── Per-datagram metadata ──────────────────────────────────────────
 
 export interface DatagramMeta {
@@ -290,6 +298,7 @@ function sealPage(heap: HeapState): void {
     lastAccessed: Date.now(),
   })
   writePageToIdb(key, page)
+  writeMetaSidecar(heap, pi)
 }
 
 function drainWriteBuf(heap: HeapState, count: number): Uint8Array {
@@ -328,6 +337,53 @@ export function flushDatagramHeap(sessionId: string): void {
     lastAccessed: Date.now(),
   })
   writePageToIdb(key, page)
+  writeMetaSidecar(heap, pi)
+}
+
+/**
+ * Persist per-page datagram metadata so the heap can be reconstructed
+ * after a SW restart. Stores DatagramMeta entries whose pageIndex matches.
+ *
+ * The group's `closed` flag is recorded too so endOfGroup state is preserved;
+ * we attach it to the last sidecar that touches each group.
+ */
+function writeMetaSidecar(heap: HeapState, pageIndex: number): void {
+  const metas: DatagramMeta[] = []
+  // Walk from the end backwards: per-page metas are contiguous and the
+  // most recent batch will be at the tail.
+  for (let i = heap.datagrams.length - 1; i >= 0; i--) {
+    const m = heap.datagrams[i]
+    if (m.pageIndex !== pageIndex) {
+      if (metas.length > 0) break // we've moved past this page's run
+      continue
+    }
+    metas.unshift(m)
+  }
+  if (metas.length === 0) return
+
+  // Snapshot the closed flag for any group that has datagrams on this page,
+  // so reconstruction can recover endOfGroup state.
+  const groupClosed: Record<string, boolean> = {}
+  const seen = new Set<string>()
+  for (const m of metas) {
+    const gk = datagramGroupKey(m.trackAlias, m.groupId)
+    if (seen.has(gk)) continue
+    seen.add(gk)
+    const g = heap.groups.get(gk)
+    if (g?.closed) groupClosed[gk] = true
+  }
+
+  const sidecar = { metas, groupClosed }
+  const key = idbMetaKey(heap.sessionId, pageIndex)
+  openDb()
+    .then((db) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.objectStore(STORE_NAME).put(sidecar, key)
+      tx.onerror = () => {
+        console.error('[moqtap dg-store] meta write failed:', key, tx.error)
+      }
+    })
+    .catch(() => {})
 }
 
 /** Fire-and-forget write to IDB. */
@@ -362,8 +418,13 @@ export async function loadDatagramGroupData(
   sessionId: string,
   groupKey: string,
 ): Promise<Uint8Array> {
-  const heap = heaps.get(sessionId)
-  if (!heap) return new Uint8Array(0)
+  let heap: HeapState | undefined = heaps.get(sessionId)
+
+  // SW restart recovery: rebuild heap from per-page metadata sidecars in IDB.
+  if (!heap) {
+    heap = (await reconstructHeapFromIdb(sessionId)) ?? undefined
+    if (!heap) return new Uint8Array(0)
+  }
 
   const group = heap.groups.get(groupKey)
   if (!group || group.count === 0) return new Uint8Array(0)
@@ -428,6 +489,120 @@ export function getDatagramGroups(
 ): Map<string, DatagramGroupState> {
   const heap = heaps.get(sessionId)
   return heap ? heap.groups : new Map()
+}
+
+/**
+ * Rebuild a session's heap state from sidecar metadata in IDB.
+ * Called when in-memory state was wiped (SW restart) but pages survive.
+ *
+ * Reconstructs heap.datagrams, heap.groups, and heap.pageCount.
+ * The write buffer stays empty — anything that wasn't sealed before the
+ * restart is unrecoverable. totalHeapBytes is approximated from sealed pages.
+ */
+async function reconstructHeapFromIdb(
+  sessionId: string,
+): Promise<HeapState | null> {
+  const prefix = `${sessionId}:dg:m`
+  let cursor: { pageIndex: number; sidecar: SidecarV1 }[] = []
+  try {
+    const db = await openDb()
+    cursor = await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly')
+      const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`)
+      const req = tx.objectStore(STORE_NAME).openCursor(range)
+      const out: { pageIndex: number; sidecar: SidecarV1 }[] = []
+      req.onsuccess = () => {
+        const c = req.result
+        if (c) {
+          const k = c.key as string
+          const pi = Number(k.substring(prefix.length))
+          if (Number.isFinite(pi) && c.value && typeof c.value === 'object') {
+            out.push({ pageIndex: pi, sidecar: c.value as SidecarV1 })
+          }
+          c.continue()
+        } else {
+          resolve(out)
+        }
+      }
+      req.onerror = () => reject(req.error)
+    })
+  } catch {
+    return null
+  }
+
+  if (cursor.length === 0) return null
+
+  cursor.sort((a, b) => a.pageIndex - b.pageIndex)
+
+  const heap: HeapState = {
+    sessionId,
+    writeBuf: [],
+    writeBufBytes: 0,
+    pageCount: cursor[cursor.length - 1].pageIndex + 1,
+    totalHeapBytes: 0,
+    datagrams: [],
+    groups: new Map(),
+  }
+
+  for (const { sidecar } of cursor) {
+    if (!Array.isArray(sidecar.metas)) continue
+    for (const m of sidecar.metas) {
+      const meta: DatagramMeta = {
+        index: heap.datagrams.length,
+        trackAlias: m.trackAlias,
+        groupId: m.groupId,
+        objectId: m.objectId,
+        publisherPriority: m.publisherPriority,
+        direction: m.direction,
+        timestamp: m.timestamp,
+        pageIndex: m.pageIndex,
+        offset: m.offset,
+        rawLength: m.rawLength,
+      }
+      heap.datagrams.push(meta)
+      heap.totalHeapBytes += HEADER_SIZE + meta.rawLength
+
+      const gk = datagramGroupKey(meta.trackAlias, meta.groupId)
+      let group = heap.groups.get(gk)
+      if (!group) {
+        group = {
+          trackAlias: meta.trackAlias,
+          groupId: meta.groupId,
+          datagramIndices: [],
+          totalPayloadBytes: 0,
+          count: 0,
+          firstTimestamp: meta.timestamp,
+          lastTimestamp: meta.timestamp,
+          direction: meta.direction,
+          closed: false,
+        }
+        heap.groups.set(gk, group)
+      }
+      group.datagramIndices.push(meta.index)
+      group.totalPayloadBytes += meta.rawLength
+      group.count++
+      if (meta.timestamp < group.firstTimestamp) {
+        group.firstTimestamp = meta.timestamp
+      }
+      if (meta.timestamp > group.lastTimestamp) {
+        group.lastTimestamp = meta.timestamp
+      }
+    }
+    if (sidecar.groupClosed) {
+      for (const gk of Object.keys(sidecar.groupClosed)) {
+        const g = heap.groups.get(gk)
+        if (g) g.closed = true
+      }
+    }
+  }
+
+  heaps.set(sessionId, heap)
+  return heap
+}
+
+interface SidecarV1 {
+  metas: DatagramMeta[]
+  groupClosed?: Record<string, boolean>
 }
 
 /** Get a page with ref counting — from memory cache, or reload from IDB. */
