@@ -42,6 +42,14 @@ export interface StreamDataMsg {
   data: ArrayBuffer | string
   /** Stack trace captured at write site (tx bidirectional stream only) */
   stack?: string
+  /**
+   * Wall-clock time (ms, Date.now) captured at the page-side intercept site,
+   * as close to the actual WebTransport read/write as possible. Used by the
+   * panel to compute bitrate from a sliding window of network-time samples,
+   * so floods of buffered postMessages on tab refocus / SW restart don't
+   * spike the displayed rate.
+   */
+  capturedAt: number
 }
 
 export interface StreamCreatedMsg {
@@ -108,6 +116,8 @@ export interface DatagramDataMsg {
   direction: 'tx' | 'rx'
   /** Raw datagram bytes (full MoQT datagram including header). */
   data: ArrayBuffer | string
+  /** See StreamDataMsg.capturedAt — same semantics. */
+  capturedAt: number
 }
 
 /** Messages sent from content script / bridge to background */
@@ -192,6 +202,13 @@ export interface PanelStreamDataMsg {
   mediaInfo?: PayloadMediaInfo
   /** True when this stream is the MoQT bidirectional control stream */
   isControl?: boolean
+  /**
+   * Page-side wall-clock time (ms, Date.now) at the WebTransport intercept,
+   * forwarded unchanged from the content script. The panel uses this — not
+   * receive time — to keep bitrate honest when buffered messages flush in
+   * a burst (tab refocus, SW restart).
+   */
+  capturedAt: number
 }
 
 /**
@@ -295,6 +312,8 @@ export interface PanelDatagramDataMsg {
   mediaInfo?: PayloadMediaInfo
   /** True when endOfGroup flag was set. */
   endOfGroup?: boolean
+  /** See PanelStreamDataMsg.capturedAt — same semantics. */
+  capturedAt: number
 }
 
 /**

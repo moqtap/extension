@@ -927,6 +927,7 @@ function handleContentMessage(
           streamId: message.streamId,
           direction: message.direction,
           byteLength: bytes.length,
+          capturedAt: message.capturedAt,
           ...(isFirstChunk || detectionUpdated
             ? {
                 contentType: stream.contentType,
@@ -1104,6 +1105,7 @@ function handleContentMessage(
         objectId: decoded.objectId,
         byteLength: bytes.length,
         isNewGroup: appendResult.isNewGroup,
+        capturedAt: message.capturedAt,
         ...(appendResult.isNewGroup
           ? {
               contentType: appendResult.group.contentType,

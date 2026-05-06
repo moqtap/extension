@@ -127,6 +127,7 @@ function bootstrap() {
           direction,
           data: copy,
           stack,
+          capturedAt: Date.now(),
         })
       },
       onClose(sessionId, streamId) {
@@ -148,7 +149,13 @@ function bootstrap() {
           data.byteOffset,
           data.byteOffset + data.byteLength,
         ) as ArrayBuffer
-        send({ type: 'datagram:data', sessionId, direction, data: copy })
+        send({
+          type: 'datagram:data',
+          sessionId,
+          direction,
+          data: copy,
+          capturedAt: Date.now(),
+        })
       },
     },
     (sessionId, reason) => {
@@ -626,7 +633,7 @@ function __moqtapWrapReadable(rs, sessionId, sid, dir) {
         if (result.done) {
           __moqtapSend({ type: "stream:closed", sessionId: sessionId, streamId: sid });
         } else if (result.value instanceof Uint8Array) {
-          __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(result.value) });
+          __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(result.value), capturedAt: Date.now() });
         }
         return result;
       }, function(err) {
@@ -647,7 +654,7 @@ function __moqtapWrapWritable(ws, sessionId, sid, dir, captureStack) {
     writer.write = function(chunk) {
       if (chunk instanceof Uint8Array) {
         var stack = captureStack ? (new Error().stack || "") : undefined;
-        __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(chunk), stack: stack });
+        __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(chunk), stack: stack, capturedAt: Date.now() });
       }
       return origWrite(chunk);
     };
@@ -695,7 +702,7 @@ function __moqtapInterceptDatagrams(dg, sessionId) {
       reader.read = function() {
         return origRead().then(function(result) {
           if (!result.done && result.value instanceof Uint8Array) {
-            __moqtapSend({ type: "datagram:data", sessionId: sessionId, direction: "rx", data: __moqtapCopyBuf(result.value) });
+            __moqtapSend({ type: "datagram:data", sessionId: sessionId, direction: "rx", data: __moqtapCopyBuf(result.value), capturedAt: Date.now() });
           }
           return result;
         });
@@ -710,7 +717,7 @@ function __moqtapInterceptDatagrams(dg, sessionId) {
       var origWrite = writer.write.bind(writer);
       writer.write = function(chunk) {
         if (chunk instanceof Uint8Array) {
-          __moqtapSend({ type: "datagram:data", sessionId: sessionId, direction: "tx", data: __moqtapCopyBuf(chunk) });
+          __moqtapSend({ type: "datagram:data", sessionId: sessionId, direction: "tx", data: __moqtapCopyBuf(chunk), capturedAt: Date.now() });
         }
         return origWrite(chunk);
       };

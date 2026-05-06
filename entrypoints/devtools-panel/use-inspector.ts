@@ -45,6 +45,49 @@ export interface SessionEntry {
   imported?: boolean
   /** Whether stream data recording is active (default true) */
   streamRecording?: boolean
+  /**
+   * Sliding-window samples of bytes received, timestamped at the page-side
+   * intercept (capturedAt). Used for bitrate display. Older samples are
+   * pruned by computeRecentBitrate() — keeping page-time (not panel-receipt
+   * time) ensures floods of buffered postMessages on tab refocus or SW
+   * restart fall outside the window and don't spike the displayed rate.
+   *
+   * Plain array, not Vue-reactive: bitrate consumers depend on bitrateTick
+   * for re-eval, so mutations here don't need to trigger renders.
+   */
+  bitrateSamples: BitrateSample[]
+}
+
+export interface BitrateSample {
+  /** capturedAt from the page-side intercept (ms, Date.now). */
+  at: number
+  bytes: number
+}
+
+/** Window over which bitrate is averaged. Samples older than this are dropped. */
+export const BITRATE_WINDOW_MS = 5_000
+
+/**
+ * Compute average bitrate (bps) over the last BITRATE_WINDOW_MS using only
+ * samples whose page-side `capturedAt` falls inside the window. Prunes the
+ * sample array as a side effect. Returns null when no samples remain in the
+ * window — including the case where dozens or hundreds of buffered samples
+ * just flushed in but all of them carry stale page-time timestamps.
+ */
+export function computeRecentBitrate(
+  session: SessionEntry,
+  now: number = Date.now(),
+): number | null {
+  const samples = session.bitrateSamples
+  if (samples.length === 0) return null
+  const cutoff = now - BITRATE_WINDOW_MS
+  let firstIdx = 0
+  while (firstIdx < samples.length && samples[firstIdx].at < cutoff) firstIdx++
+  if (firstIdx > 0) samples.splice(0, firstIdx)
+  if (samples.length === 0) return null
+  let totalBytes = 0
+  for (const s of samples) totalBytes += s.bytes
+  return (totalBytes * 8000) / BITRATE_WINDOW_MS
 }
 
 export interface TrackEntry {
@@ -320,6 +363,7 @@ export function useInspector() {
         messages: [],
         tracks: new Map(),
         datagramGroups: new Map(),
+        bitrateSamples: [],
       }
       sessions.value.set(sessionId, session)
     }
@@ -416,6 +460,10 @@ export function useInspector() {
           stream.lastDataAt = now
           stream.byteCount += msg.byteLength
           stream.chunkCount++
+          session.bitrateSamples.push({
+            at: msg.capturedAt,
+            bytes: msg.byteLength,
+          })
         }
         return true
       }
@@ -575,6 +623,10 @@ export function useInspector() {
           group.datagramCount++
           group.lastDataAt = now
           if (msg.endOfGroup) group.closed = true
+          session.bitrateSamples.push({
+            at: msg.capturedAt,
+            bytes: msg.byteLength,
+          })
         }
         return true
       }
@@ -932,6 +984,7 @@ export function useInspector() {
       messages: [],
       tracks: new Map(),
       datagramGroups: new Map(),
+      bitrateSamples: [],
       imported: true,
     }
 

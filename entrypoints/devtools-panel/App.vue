@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ConnectionList from './components/ConnectionList.vue'
 import SessionView from './components/SessionView.vue'
 import { getCachedPref, savePref } from './prefs'
-import type { SessionEntry } from './use-inspector'
+import { computeRecentBitrate, type SessionEntry } from './use-inspector'
 import { useInspector } from './use-inspector'
 
 const {
@@ -126,27 +126,11 @@ function compactHost(url: string): string {
   }
 }
 
-const COMPACT_DECAY_MS = 5_000
-
 function compactBitrate(s: SessionEntry): string | null {
   void bitrateTick.value // reactive dependency — forces re-eval during decay
   if (s.closed || s.imported) return null
-  let total = 0
-  let earliest = Infinity
-  let latest = 0
-  for (const stream of s.streams.values()) {
-    total += stream.byteCount
-    if (stream.firstDataAt && stream.firstDataAt < earliest)
-      earliest = stream.firstDataAt
-    if (stream.lastDataAt && stream.lastDataAt > latest)
-      latest = stream.lastDataAt
-  }
-  if (total === 0 || !isFinite(earliest) || latest === 0) return null
-  const activeSec = Math.max((latest - earliest) / 1000, 1)
-  const activeBps = (total * 8) / activeSec
-  const decay = Math.max(0, 1 - (Date.now() - latest) / COMPACT_DECAY_MS)
-  if (decay === 0) return null
-  const bps = activeBps * decay
+  const bps = computeRecentBitrate(s)
+  if (bps == null) return null
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)}M`
   if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)}k`
   if (bps >= 1) return `${Math.round(bps)}`

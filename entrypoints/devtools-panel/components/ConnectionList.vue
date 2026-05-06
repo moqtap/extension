@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
-import type { SessionEntry } from '../use-inspector'
+import { computeRecentBitrate, type SessionEntry } from '../use-inspector'
 
 /* Reactive tick that drives the bitrate decay animation.
    Gated behind rAF so it pauses when the panel is backgrounded. */
@@ -65,8 +65,6 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
-const DECAY_WINDOW_MS = 5_000
-
 interface SessionStats {
   totalBytes: number
   bitrate: string | null
@@ -78,31 +76,15 @@ interface SessionStats {
 const sessionStats = computed(() => {
   void bitrateTick.value // reactive dependency — forces re-eval during decay
   const map = new Map<string, SessionStats>()
+  const now = Date.now()
   for (const session of props.sessions) {
     let bytes = 0
-    let earliest = Infinity
-    let latest = 0
-    for (const stream of session.streams.values()) {
-      bytes += stream.byteCount
-      if (stream.firstDataAt && stream.firstDataAt < earliest)
-        earliest = stream.firstDataAt
-      if (stream.lastDataAt && stream.lastDataAt > latest)
-        latest = stream.lastDataAt
-    }
+    for (const stream of session.streams.values()) bytes += stream.byteCount
 
     let bitrate: string | null = null
-    if (
-      !session.closed &&
-      !session.imported &&
-      bytes > 0 &&
-      isFinite(earliest) &&
-      latest > 0
-    ) {
-      const activeSec = Math.max((latest - earliest) / 1000, 1)
-      const activeBps = (bytes * 8) / activeSec
-      const decay = Math.max(0, 1 - (Date.now() - latest) / DECAY_WINDOW_MS)
-      if (decay > 0) {
-        const bps = activeBps * decay
+    if (!session.closed && !session.imported) {
+      const bps = computeRecentBitrate(session, now)
+      if (bps != null) {
         if (bps >= 1_000_000) bitrate = `${(bps / 1_000_000).toFixed(1)} Mbps`
         else if (bps >= 1_000) bitrate = `${(bps / 1_000).toFixed(0)} kbps`
         else if (bps >= 1) bitrate = `${Math.round(bps)} bps`
@@ -233,7 +215,7 @@ const sessionStats = computed(() => {
      to completion before the path begins to shrink. A very small but non-zero
      value avoids a Chromium quirk where shrink:1 + overflow:hidden + ellipsis
      triggers a phantom ellipsis even when the content fits. */
-  flex: 0 0.1 auto;
+  flex: 1 0.1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
