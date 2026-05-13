@@ -317,7 +317,7 @@ function prettifySetupVersions(
   if (messageType === 'server_setup' && decoded.selected_version != null) {
     return { ...decoded, selected_version: formatVersion(decoded.selected_version) }
   }
-  // draft-17+: unified SETUP message may contain selected_version
+  // draft-17/18: unified SETUP message may contain selected_version
   if (messageType === 'setup' && decoded.selected_version != null) {
     return { ...decoded, selected_version: formatVersion(decoded.selected_version) }
   }

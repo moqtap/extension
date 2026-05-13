@@ -10,3 +10,4 @@ export type SupportedDraft =
   | '15'
   | '16'
   | '17'
+  | '18'

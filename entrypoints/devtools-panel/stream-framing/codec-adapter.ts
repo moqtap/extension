@@ -74,7 +74,7 @@ interface FetchObjectResult extends ObjectResult {
 
 /**
  * Create a DraftParser that delegates to the codec's per-draft decoders.
- * Works for all drafts (07-17).
+ * Works for all drafts (07-18).
  */
 export function createCodecDraftParser(draft: SupportedDraft): DraftParser {
   const codec = createCodec({ draft }) as unknown as DataStreamCodec

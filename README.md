@@ -32,27 +32,29 @@ Load the built extension from `.output/chrome-mv3/` in `chrome://extensions` (de
 
 ## Adding a New MoQT Draft
 
-When a new MoQT draft is published (e.g. draft-18), follow these steps:
+When a new MoQT draft is published (e.g. draft-19), follow these steps:
 
 ### 1. Update `@moqtap/codec`
 
-The codec package must support the new draft first. The extension delegates all message encoding/decoding to `@moqtap/codec`. Once the codec is published with draft-18 support, bump the dependency version in `package.json`.
+The codec package must support the new draft first. The extension delegates all message encoding/decoding to `@moqtap/codec`. Once the codec is published with draft-19 support, bump the dependency version in `package.json`.
 
 ### 2. Register the draft (3 files)
 
 **`src/types/common.ts`** — Add to the `SupportedDraft` union type.
 
-**`src/detect/draft-detect.ts`** — Add the wire version to `VERSION_TO_DRAFT`.
+**`src/detect/draft-detect.ts`** — Add the wire version to `VERSION_TO_DRAFT`. For ALPN-era drafts (17+), also bump `LATEST_ALPN_DRAFT` / `LATEST_ALPN_DRAFT_VERSION` so detection defaults to the newest known draft when only the `0x2F00` SETUP message is visible.
 
 If the new draft changes the CLIENT_SETUP message type ID (unlikely between minor drafts), also update `detectFromControlStream()`.
 
-**`src/session/version.ts`** — Add display constants.
+**`src/codec/message-ids.ts`** — Import `MESSAGE_ID_MAP` from the new draft subpath and register it in the `maps` record.
+
+**`entrypoints/devtools-panel/stream-framing/index.ts`** — Register a parser via `registerDraftParser('NN', createCodecDraftParser('NN'))`.
 
 ### 3. Handle wire format changes (if any)
 
 If the new draft changes field names in control messages, update `entrypoints/background.ts` `extractTrackInfo()` which reads fields like `subscribeId`, `trackNamespace`, `trackName` from decoded messages.
 
-If data stream framing changes (header fields, object layout), update `entrypoints/devtools-panel/stream-framing.ts`.
+If data stream framing changes (header fields, object layout), the codec adapter in `entrypoints/devtools-panel/stream-framing/codec-adapter.ts` may need new fields surfaced as header tags.
 
 ### 4. Update tests
 
@@ -64,6 +66,8 @@ Add the new wire version to `src/detect/draft-detect.test.ts` to verify detectio
 npm run test         # All tests pass
 npm run build        # Bundle includes new draft support
 ```
+
+Currently supported drafts: **07 through 18**.
 
 ## Architecture
 

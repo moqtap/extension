@@ -2,7 +2,7 @@
  * Control message decode/encode facade — multi-draft aware.
  *
  * Delegates to @moqtap/codec, lazily caching one codec instance per draft.
- * The codec supports all drafts 07-17 natively.
+ * The codec supports all drafts 07-18 natively.
  */
 
 import { createCodec, type BaseCodec, type DecodeResult } from '@moqtap/codec'

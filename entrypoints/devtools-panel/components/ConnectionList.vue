@@ -220,6 +220,7 @@ const sessionStats = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: calc(100% - 3ch);
 }
 
 .connection-meta {
