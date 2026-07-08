@@ -9,7 +9,7 @@
  *    - 0x2F00 → SETUP for draft-17+ (ALPN-based version negotiation)
  * 3. For CLIENT_SETUP: parse supported_versions to identify draft
  * 4. For SETUP (0x2F00): defaults to latest known draft (version via ALPN,
- *    not in wire — drafts 17 and 18 are wire-indistinguishable on the
+ *    not in wire — drafts 17, 18 and 19 are wire-indistinguishable on the
  *    first message)
  * 5. After SERVER_SETUP (drafts ≤ 16), map selected_version to known draft
  * 6. If nothing matches → unknown protocol (pass through gracefully)
@@ -24,8 +24,8 @@ const CLIENT_SETUP_DRAFT11 = 0x20 // drafts 11-16
 const SETUP_DRAFT17_PLUS = 0x2f00 // draft-17+ (unidirectional control streams)
 
 /** Latest draft assumed when only the ALPN-era SETUP message type is visible. */
-const LATEST_ALPN_DRAFT: SupportedDraft = '18'
-const LATEST_ALPN_DRAFT_VERSION = 0xff000012
+const LATEST_ALPN_DRAFT: SupportedDraft = '19'
+const LATEST_ALPN_DRAFT_VERSION = 0xff000013
 
 /** Known version wire values → supported draft */
 const VERSION_TO_DRAFT: ReadonlyMap<number, SupportedDraft> = new Map([
@@ -41,6 +41,7 @@ const VERSION_TO_DRAFT: ReadonlyMap<number, SupportedDraft> = new Map([
   [0xff000010, '16'],
   [0xff000011, '17'],
   [0xff000012, '18'],
+  [0xff000013, '19'],
 ])
 
 export type DetectionResult =
@@ -67,8 +68,8 @@ export function detectFromControlStream(bytes: Uint8Array): DetectionResult {
     const [msgType, msgTypeLen] = decodeVarint(bytes, 0)
 
     // Draft-17+: SETUP (0x2F00) on unidirectional control stream.
-    // Version is negotiated via ALPN, not present in wire bytes — drafts 17
-    // and 18 are indistinguishable here, so we default to the newest.
+    // Version is negotiated via ALPN, not present in wire bytes — drafts 17,
+    // 18 and 19 are indistinguishable here, so we default to the newest.
     if (msgType === SETUP_DRAFT17_PLUS) {
       return {
         protocol: 'moqt',

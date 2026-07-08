@@ -67,7 +67,7 @@ npm run test         # All tests pass
 npm run build        # Bundle includes new draft support
 ```
 
-Currently supported drafts: **07 through 18**.
+Currently supported drafts: **07 through 19**.
 
 ## Architecture
 

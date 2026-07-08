@@ -112,6 +112,19 @@ describe('detectFromControlStream', () => {
     const result = detectFromControlStream(bytes)
     expect(result.protocol).toBe('unknown')
   })
+
+  it('defaults to latest ALPN draft-19 for SETUP (type 0x2F00)', () => {
+    // Draft-17+ SETUP carries no version on the wire (negotiated via ALPN),
+    // so detection defaults to the newest known ALPN-era draft.
+    const bytes = encodeVarint(0x2f00)
+    const result = detectFromControlStream(bytes)
+
+    expect(result.protocol).toBe('moqt')
+    if (result.protocol === 'moqt') {
+      expect(result.draft).toBe('19')
+      expect(result.versions).toEqual([0xff000013])
+    }
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -178,6 +191,10 @@ describe('versionToDraft', () => {
 
   it('returns "07" for 0xff000007', () => {
     expect(versionToDraft(0xff000007)).toBe('07')
+  })
+
+  it('returns "19" for 0xff000013', () => {
+    expect(versionToDraft(0xff000013)).toBe('19')
   })
 
   it('returns undefined for unknown version', () => {
