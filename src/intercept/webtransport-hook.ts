@@ -13,10 +13,54 @@
  * - Close/error events
  */
 
+import type { WebTransportOptionsInfo } from '../messaging/types'
+
 export interface InterceptedSession {
   id: string
   url: string
   createdAt: number
+  options?: WebTransportOptionsInfo
+}
+
+/**
+ * Pull the parseable fields out of the caller's WebTransportOptions.
+ *
+ * Every read here touches a page-controlled object, so the whole thing is
+ * wrapped: a throwing getter must not propagate out of the patched
+ * constructor and break the page's connection. Only primitives and string
+ * arrays are copied out, keeping the result structured-cloneable.
+ */
+export function extractSessionOptions(
+  options: unknown,
+): WebTransportOptionsInfo | undefined {
+  try {
+    if (!options || typeof options !== 'object') return undefined
+    const o = options as Record<string, unknown>
+    const info: WebTransportOptionsInfo = {}
+
+    if (Array.isArray(o.protocols)) {
+      const protocols = o.protocols.filter(
+        (p): p is string => typeof p === 'string',
+      )
+      if (protocols.length > 0) info.protocols = protocols
+    }
+    if (typeof o.congestionControl === 'string') {
+      info.congestionControl = o.congestionControl
+    }
+    if (typeof o.allowPooling === 'boolean') {
+      info.allowPooling = o.allowPooling
+    }
+    if (typeof o.requireUnreliable === 'boolean') {
+      info.requireUnreliable = o.requireUnreliable
+    }
+    if (Array.isArray(o.serverCertificateHashes)) {
+      info.serverCertificateHashes = o.serverCertificateHashes.length
+    }
+
+    return Object.keys(info).length > 0 ? info : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export interface SessionLifecycleCallbacks {
@@ -92,6 +136,7 @@ export function installWebTransportHook(
       id: generateSessionId(),
       url: String(url),
       createdAt: Date.now(),
+      options: extractSessionOptions(options),
     }
     const sessionId = session.id
     onSession(session)

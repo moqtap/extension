@@ -125,6 +125,7 @@ function bootstrap() {
         sessionId: session.id,
         url: session.url,
         createdAt: session.createdAt,
+        options: session.options,
       })
     },
     {
@@ -627,6 +628,25 @@ function __moqtapCopyBuf(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
+// Whitelist the parseable WebTransportOptions fields. Wrapped because every
+// read touches a page-controlled object — a throwing getter here would break
+// the page's own connection.
+function __moqtapOptions(o) {
+  try {
+    if (!o || typeof o !== "object") return undefined;
+    var info = {};
+    if (Array.isArray(o.protocols)) {
+      var ps = o.protocols.filter(function(p) { return typeof p === "string"; });
+      if (ps.length > 0) info.protocols = ps;
+    }
+    if (typeof o.congestionControl === "string") info.congestionControl = o.congestionControl;
+    if (typeof o.allowPooling === "boolean") info.allowPooling = o.allowPooling;
+    if (typeof o.requireUnreliable === "boolean") info.requireUnreliable = o.requireUnreliable;
+    if (Array.isArray(o.serverCertificateHashes)) info.serverCertificateHashes = o.serverCertificateHashes.length;
+    return Object.keys(info).length > 0 ? info : undefined;
+  } catch(e) { return undefined; }
+}
+
 var __moqtapCloneWarned = {};
 function __moqtapSend(msg) {
   try {
@@ -753,9 +773,9 @@ if (OrigWT) {
   var PatchedWT = function(url, options) {
     var inst = new OrigWT(url, options);
     // String(url): callers may pass a URL object, which is not structured-cloneable
-    var session = { id: __moqtapGenId(), url: String(url), createdAt: Date.now() };
+    var session = { id: __moqtapGenId(), url: String(url), createdAt: Date.now(), options: __moqtapOptions(options) };
     var sessionId = session.id;
-    __moqtapSend({ type: "session:opened", sessionId: sessionId, url: session.url, createdAt: session.createdAt });
+    __moqtapSend({ type: "session:opened", sessionId: sessionId, url: session.url, createdAt: session.createdAt, options: session.options });
     var origBidi = inst.createBidirectionalStream;
     if (typeof origBidi === "function") {
       inst.createBidirectionalStream = function() {

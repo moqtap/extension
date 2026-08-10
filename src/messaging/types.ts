@@ -20,12 +20,33 @@ import type { DetectionResult } from '../detect/draft-detect'
 
 // ─── Content -> Background messages ─────────────────────────────────
 
+/**
+ * The subset of WebTransportOptions we know how to parse and display.
+ *
+ * Deliberately a whitelist of primitives rather than the raw options object:
+ * the page controls that object, and anything not structured-cloneable in it
+ * would take the whole session:opened message down with it.
+ *
+ * `protocols` is the interesting one for MoQ — it carries the application
+ * protocol offer (e.g. ["moq-lite", "moq-transport"]), naming the dialect the
+ * client speaks before a single wire byte is exchanged.
+ */
+export interface WebTransportOptionsInfo {
+  protocols?: string[]
+  congestionControl?: string
+  allowPooling?: boolean
+  requireUnreliable?: boolean
+  /** Count only — the hashes themselves aren't useful in the UI */
+  serverCertificateHashes?: number
+}
+
 export interface SessionOpenedMsg {
   type: 'session:opened'
   tabId?: number // filled in by background from sender
   sessionId: string
   url: string
   createdAt: number
+  options?: WebTransportOptionsInfo
 }
 
 export interface StreamDataMsg {
@@ -142,6 +163,7 @@ export interface PanelSessionOpenedMsg {
   createdAt: number
   /** Non-zero when session originates from an iframe */
   frameId?: number
+  options?: WebTransportOptionsInfo
 }
 
 export interface PanelDetectionMsg {
