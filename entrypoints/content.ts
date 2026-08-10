@@ -29,14 +29,17 @@ import type { ContentToBackgroundMsg } from '@/src/messaging/types'
  *   1. Lifecycle — session:opened and friends. Losing session:opened makes the
  *      background drop every later event for that session, so the panel shows
  *      nothing at all.
- *   2. Control plane — stream:data on bidirectional streams. Every MoQ dialect
- *      puts SETUP, ANNOUNCE, SUBSCRIBE and the rest here; it is what lets the
- *      panel name a draft and reconstruct track state. Keeping only the first
- *      few events would recover the SETUP exchange but not the track mapping,
- *      so this is budgeted by bytes: a whole session's control plane is a few
- *      kilobytes (~150 B of SETUP, ~100 B per track), so the budget below is
- *      generous by orders of magnitude while still holding less memory than
- *      the bulk buffer.
+ *   2. Control plane — stream:data on bidirectional streams. Every MoQT draft
+ *      from 07 to 19 states "Objects are sent on unidirectional streams",
+ *      which leaves the bidirectional ones carrying SETUP, subscribes and the
+ *      rest: what lets the panel name a draft and reconstruct track state.
+ *      Keeping only the first few events would recover the SETUP exchange but
+ *      not the track mapping, so this is budgeted by bytes instead. A whole
+ *      session's control plane is a few kilobytes (~150 B of SETUP, ~100 B per
+ *      track), so the budget below is generous by orders of magnitude while
+ *      still holding less memory than the bulk buffer. From draft-17 the
+ *      control plane is spread over many bidirectional streams (one per
+ *      request), which a per-stream rule would have missed.
  *   3. Bulk — media on unidirectional streams and datagrams. Genuinely
  *      unbounded, and the least valuable per byte, so it stays a small FIFO.
  *

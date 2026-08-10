@@ -819,13 +819,27 @@ function handleContentMessage(
 
       if (!stream.firstDataAt) stream.firstDataAt = Date.now()
 
+      /**
+       * True when this very message is what identified the control stream.
+       *
+       * The isControl marker rides first-chunk metadata, but detection rarely
+       * lands on the first chunk: libraries commonly write a control message's
+       * stream type, message type/length and body as separate writes, and
+       * detection needs several bytes before it can decide. Without this the
+       * marker is computed after detection has already stopped looking, and
+       * the panel never learns which stream is the control stream — it shows
+       * the raw stream id where it should say "MoQT Control".
+       */
+      let controlJustIdentified = false
+
       // Buffer stream data for detection. Only bidirectional streams are
-      // candidates — every MoQ dialect puts its control plane there — so a
-      // known-unidirectional stream is skipped outright. That keeps media out
-      // of the buffer entirely and removes the chance of a video stream
-      // false-positiving as the control stream. `bidi === undefined` means a
-      // page-side hook that predates the flag, which still gets the old
-      // buffer-everything treatment.
+      // candidates: every MoQT draft from 07 to 19 states "Objects are sent on
+      // unidirectional streams", so a known-unidirectional stream cannot be
+      // the control stream. Skipping it keeps media out of the buffer entirely
+      // and removes the chance of a video stream false-positiving as the
+      // control stream. `bidi === undefined` means a page-side hook that
+      // predates the flag, which still gets the old buffer-everything
+      // treatment.
       if (!session.detectionAttempted && message.bidi !== false) {
         let chunks = session.streamBuffers.get(message.streamId)
         if (!chunks) {
@@ -860,6 +874,7 @@ function handleContentMessage(
           for (const track of trackUpdates) {
             sendTrackUpdate(tabId, message.sessionId, track)
           }
+          controlJustIdentified = session.controlStreamId === message.streamId
           // Detection consumed these; controlRemainder owns its own copy of
           // the leftover bytes, so nothing here is needed again.
           session.streamBuffers.clear()
@@ -990,7 +1005,7 @@ function handleContentMessage(
           direction: message.direction,
           byteLength: bytes.length,
           capturedAt: message.capturedAt,
-          ...(isFirstChunk || detectionUpdated
+          ...(isFirstChunk || detectionUpdated || controlJustIdentified
             ? {
                 contentType: stream.contentType,
                 trackAlias: stream.trackAlias,
