@@ -18,8 +18,17 @@
 import { installWebTransportHook } from '@/src/intercept/webtransport-hook'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 
-/** Max buffered events before oldest are dropped (prevents memory leaks on pages that never open DevTools) */
-const MAX_BUFFER = 500
+/**
+ * Max buffered events before oldest are dropped (prevents memory leaks on
+ * pages that never open DevTools).
+ *
+ * Data and lifecycle events are capped separately: a high-bitrate session can
+ * produce hundreds of stream:data events per second, and a single shared FIFO
+ * would evict session:opened within seconds. Without that record the background
+ * drops every subsequent event for the session, so the panel shows nothing.
+ */
+const MAX_DATA_BUFFER = 500
+const MAX_LIFECYCLE_BUFFER = 500
 
 /**
  * Origins where worker wrapping is known to fail (CSP, etc.).
@@ -57,7 +66,16 @@ try {
 }
 
 let activated = false
-let buffer: ContentToBackgroundMsg[] = []
+
+/** A buffered event plus its arrival order, so the two buffers can be
+ *  re-merged into the original sequence when they are flushed. */
+interface BufferedMsg {
+  seq: number
+  msg: ContentToBackgroundMsg
+}
+let bufferSeq = 0
+let dataBuffer: BufferedMsg[] = []
+let lifecycleBuffer: BufferedMsg[] = []
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -84,11 +102,7 @@ export default defineContentScript({
       if (event.data?.source !== 'moqtap-activate') return
       if (activated) return
       activated = true
-      // Flush buffer
-      for (const msg of buffer) {
-        forward(msg)
-      }
-      buffer = []
+      flushBuffers()
     })
 
     // Install hooks immediately — before any page JS can run
@@ -394,8 +408,7 @@ function patchWorkerConstructor(hookSource: string) {
 
   // Patch Worker
   const OriginalWorker = glob.Worker as
-    | (new (url: string | URL, options?: WorkerOptions) => Worker)
-    | undefined
+    (new (url: string | URL, options?: WorkerOptions) => Worker) | undefined
   if (OriginalWorker) {
     const PatchedWorker = function (
       this: unknown,
@@ -614,12 +627,20 @@ function __moqtapCopyBuf(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
+var __moqtapCloneWarned = {};
 function __moqtapSend(msg) {
   try {
     var transfers = [];
     if (msg.data instanceof ArrayBuffer) transfers.push(msg.data);
     self.postMessage({ source: "moqtap-worker", payload: msg }, transfers);
-  } catch(e) {}
+  } catch(e) {
+    // Surface unserializable payloads — silently dropping them hides the
+    // event from the panel with no trace (see forward() on the main thread).
+    if (e && e.name === "DataCloneError" && !__moqtapCloneWarned[msg.type]) {
+      __moqtapCloneWarned[msg.type] = true;
+      try { console.warn('[moqtap] dropped "' + msg.type + '" event from worker — payload is not structured-cloneable:', e.message); } catch(_) {}
+    }
+  }
 }
 
 function __moqtapWrapReadable(rs, sessionId, sid, dir) {
@@ -731,9 +752,10 @@ var OrigWT = self.WebTransport;
 if (OrigWT) {
   var PatchedWT = function(url, options) {
     var inst = new OrigWT(url, options);
-    var session = { id: __moqtapGenId(), url: url, createdAt: Date.now() };
+    // String(url): callers may pass a URL object, which is not structured-cloneable
+    var session = { id: __moqtapGenId(), url: String(url), createdAt: Date.now() };
     var sessionId = session.id;
-    __moqtapSend({ type: "session:opened", sessionId: sessionId, url: url, createdAt: session.createdAt });
+    __moqtapSend({ type: "session:opened", sessionId: sessionId, url: session.url, createdAt: session.createdAt });
     var origBidi = inst.createBidirectionalStream;
     if (typeof origBidi === "function") {
       inst.createBidirectionalStream = function() {
@@ -794,14 +816,39 @@ if (OrigWT) {
 function send(msg: ContentToBackgroundMsg) {
   if (activated) {
     forward(msg)
+    return
+  }
+  const entry: BufferedMsg = { seq: bufferSeq++, msg }
+  // Cap each buffer to prevent memory leaks on pages that never open DevTools
+  if (msg.type === 'stream:data' || msg.type === 'datagram:data') {
+    dataBuffer.push(entry)
+    if (dataBuffer.length > MAX_DATA_BUFFER) dataBuffer.shift()
   } else {
-    buffer.push(msg)
-    // Cap buffer to prevent memory leaks on pages that never open DevTools
-    if (buffer.length > MAX_BUFFER) {
-      buffer.shift()
-    }
+    lifecycleBuffer.push(entry)
+    if (lifecycleBuffer.length > MAX_LIFECYCLE_BUFFER) lifecycleBuffer.shift()
   }
 }
+
+/** Flush both buffers in their original arrival order */
+function flushBuffers() {
+  let i = 0
+  let j = 0
+  while (i < lifecycleBuffer.length && j < dataBuffer.length) {
+    if (lifecycleBuffer[i].seq <= dataBuffer[j].seq)
+      forward(lifecycleBuffer[i++].msg)
+    else forward(dataBuffer[j++].msg)
+  }
+  while (i < lifecycleBuffer.length) forward(lifecycleBuffer[i++].msg)
+  while (j < dataBuffer.length) forward(dataBuffer[j++].msg)
+  lifecycleBuffer = []
+  dataBuffer = []
+}
+
+/**
+ * Message types already reported as unserializable, so a repeating failure
+ * warns once instead of flooding the page console.
+ */
+const cloneFailuresWarned = new Set<string>()
 
 /** Actually send to bridge via window.postMessage (transfers ArrayBuffer for zero-copy) */
 function forward(msg: ContentToBackgroundMsg) {
@@ -818,7 +865,23 @@ function forward(msg: ContentToBackgroundMsg) {
       '*',
       transfers,
     )
-  } catch {
-    // Extension context invalidated
+  } catch (err) {
+    // A DataCloneError means the payload picked up a value the structured
+    // clone algorithm rejects (e.g. a URL object handed to the WebTransport
+    // constructor). That drops the event, so surface it rather than let the
+    // session silently never appear in the panel.
+    if (
+      err instanceof DOMException &&
+      err.name === 'DataCloneError' &&
+      !cloneFailuresWarned.has(msg.type)
+    ) {
+      cloneFailuresWarned.add(msg.type)
+      console.warn(
+        `[moqtap] dropped "${msg.type}" event — payload is not structured-cloneable:`,
+        err.message,
+      )
+      return
+    }
+    // Otherwise: extension context invalidated (disabled/uninstalled/updated)
   }
 }
