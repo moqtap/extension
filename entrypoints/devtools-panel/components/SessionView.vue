@@ -263,6 +263,7 @@ function closeStreamData() {
           :streams="streamList"
           :selected-id="selectedStreamId"
           :tracks="session.tracks"
+          :messages="session.messages"
           :compact="selectedStreamId != null"
           :recording="session.streamRecording !== false"
           @inspect="showStreamData"

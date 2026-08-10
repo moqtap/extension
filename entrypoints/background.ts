@@ -20,6 +20,10 @@ import {
   type StreamContentType,
 } from '@/src/detect/content-detect'
 import {
+  classifyStreamOpener,
+  hasRequestStreams,
+} from '@/src/detect/control-streams'
+import {
   couldBeControlStream,
   detectFromControlStream,
   type DetectionResult,
@@ -83,10 +87,15 @@ interface SessionRecord {
   detectionRuledOut: Set<number>
   /** Whether we've attempted detection on this session */
   detectionAttempted: boolean
-  /** Stream ID identified as the control stream (once detected) */
-  controlStreamId: number | null
-  /** Reassembly buffer for partial control messages that span chunks */
-  controlRemainder: Uint8Array | null
+  /**
+   * Streams carrying control-plane messages, keyed by stream id.
+   *
+   * A map rather than a single id because the control plane stopped being one
+   * stream in draft-17: the control stream became a pair of unidirectional
+   * streams, and each request (SUBSCRIBE, PUBLISH, FETCH, …) gets its own
+   * bidirectional stream. Through draft-16 this holds exactly one entry.
+   */
+  controlStreams: Map<number, ControlStreamState>
   /** Trace recorder for this session (only if MoQT detected) */
   recorder: TraceRecorder | null
   /** History of decoded control messages for replay */
@@ -97,6 +106,27 @@ interface SessionRecord {
   streamRecording: boolean
   /** Stream IDs whose data should be discarded (cleared while still open) */
   discardedStreamIds: Set<number>
+}
+
+/** A stream carrying control-plane messages, with its own decode state. */
+interface ControlStreamState {
+  /**
+   * 'control' is the session control stream — bidirectional through draft-16,
+   * one unidirectional stream per direction from draft-17. 'request' is a
+   * draft-17+ per-request bidirectional stream carrying one request and its
+   * responses.
+   */
+  role: 'control' | 'request'
+  /**
+   * Leftover bytes of a message that spanned chunks.
+   *
+   * Per stream, not per session: draft-17+ runs many request streams
+   * concurrently, and one shared buffer would splice byte runs from unrelated
+   * streams together and corrupt every decode after the first partial message.
+   */
+  remainder: Uint8Array | null
+  /** Message type of the first decoded message, which names a request stream */
+  firstMessageType?: string
 }
 
 interface TrackRecord {
@@ -129,9 +159,15 @@ interface StreamRecord {
   firstDataAt?: number
   /** Whether a stream-opened event has been written to the trace recorder */
   openedRecorded?: boolean
+  /** Opening bytes held while the stream's leading varint is incomplete */
+  controlLead?: Uint8Array
+  /** Set once the stream's opening bytes proved it is not control-plane */
+  notControlPlane?: boolean
 }
 
 interface ControlMessageRecord {
+  /** Stream the message arrived on — names the request it belongs to in draft-17+ */
+  streamId: number
   direction: 'tx' | 'rx'
   timestamp: number
   decoded: string | null
@@ -252,6 +288,82 @@ function leadingBytes(chunks: { data: Uint8Array }[], max = 8): Uint8Array {
   return out.subarray(0, n)
 }
 
+/**
+ * Bytes of a stream's opening we will hold while its leading varint is still
+ * incomplete. A message type varint is at most 8 bytes, so a stream that has
+ * not resolved within this is not one we can classify.
+ */
+const MAX_OPENER_LEAD = 16
+
+/**
+ * Find or establish the control-plane state for a stream.
+ *
+ * Through draft-16 the control plane is one stream, found by detection, so
+ * this is a map lookup and nothing else runs. From draft-17 new control-plane
+ * streams appear throughout the session — a request stream per SUBSCRIBE,
+ * PUBLISH, FETCH and so on — so an unclassified stream is judged by its
+ * opening bytes.
+ *
+ * Known limitation: a stream whose first chunk arrived before the draft was
+ * known cannot be classified, because the ids to match against are
+ * draft-specific. The spec allows a request stream to arrive before the
+ * control stream, so such a stream is treated as data. In practice SETUP is
+ * the first thing an endpoint writes.
+ */
+function controlStreamFor(
+  session: SessionRecord,
+  stream: StreamRecord,
+  bytes: Uint8Array,
+  isFirstChunk: boolean,
+): ControlStreamState | null {
+  const existing = session.controlStreams.get(stream.streamId)
+  if (existing) return existing
+  if (stream.notControlPlane) return null
+
+  const draft = session.detectedDraft
+  if (!draft || !hasRequestStreams(draft)) return null
+
+  // Only a stream's opening bytes classify it: mid-stream payload could say
+  // anything. `controlLead` is set only while a verdict is pending.
+  const prior = stream.controlLead
+  if (!isFirstChunk && !prior) return null
+
+  const lead = prior ? concatBytes(prior, bytes) : bytes
+  const verdict = classifyStreamOpener(lead, draft)
+
+  if (verdict === 'pending') {
+    if (lead.length >= MAX_OPENER_LEAD) {
+      stream.notControlPlane = true
+      stream.controlLead = undefined
+    } else {
+      stream.controlLead = lead
+    }
+    return null
+  }
+
+  stream.controlLead = undefined
+  if (verdict === 'data') {
+    stream.notControlPlane = true
+    return null
+  }
+
+  // Hand the earlier chunks to the decoder as this stream's reassembly
+  // remainder, so bytes held back while classifying are not lost.
+  const state: ControlStreamState = {
+    role: verdict,
+    remainder: prior ?? null,
+  }
+  session.controlStreams.set(stream.streamId, state)
+  return state
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}
+
 /** Try to detect MoQT draft from accumulated bytes on a given stream.
  *  Returns track updates discovered during initial message decoding. */
 function attemptDetection(
@@ -282,7 +394,8 @@ function attemptDetection(
 
   session.detectionAttempted = true
   session.detection = result
-  session.controlStreamId = streamId
+  const state: ControlStreamState = { role: 'control', remainder: null }
+  session.controlStreams.set(streamId, state)
 
   if (result.protocol === 'moqt') {
     session.detectedDraft = result.draft
@@ -290,117 +403,62 @@ function attemptDetection(
     // Create trace recorder for MoQT sessions
     session.recorder = createExtensionRecorder(result.draft, session.url)
 
-    // Build a byte-offset → direction map so tryDecodeBuffered can
-    // assign the correct direction to each decoded message.
+    // A byte-offset → direction map, so each decoded message gets the
+    // direction of the chunk it came from. Still needed in the draft-17+ era
+    // even though its control streams are one-way: through draft-16 both
+    // directions share one bidirectional stream and interleave here.
     const directionMap: { offset: number; direction: 'tx' | 'rx' }[] = []
     let dirOffset = 0
     for (const chunk of chunks) {
       directionMap.push({ offset: dirOffset, direction: chunk.direction })
       dirOffset += chunk.data.length
     }
+    const directionAt = (offset: number): 'tx' | 'rx' => {
+      for (let i = directionMap.length - 1; i >= 0; i--) {
+        if (directionMap[i].offset <= offset) return directionMap[i].direction
+      }
+      return 'rx'
+    }
 
     // Now try to decode the buffered bytes as control messages
-    return tryDecodeBuffered(session, buf, directionMap)
+    return decodeControlBytes(session, streamId, state, buf, directionAt)
+      .trackUpdates
   }
   return []
 }
 
-/** Attempt to decode buffered control stream bytes as control messages.
- *  Returns track updates discovered during decoding. */
-function tryDecodeBuffered(
+/**
+ * Decode every complete control message in a run of bytes from one
+ * control-plane stream, reassembling messages that span chunks.
+ *
+ * Scoped to a single stream: from draft-17 a session has several control-plane
+ * streams open at once (a unidirectional control stream per direction, plus a
+ * bidirectional stream per request), and each needs its own reassembly buffer.
+ *
+ * @param directionAt maps a byte offset to the direction of the chunk it came
+ *   from. Through draft-16 both directions share one bidirectional control
+ *   stream, so a single stream's bytes are not all one way.
+ */
+function decodeControlBytes(
   session: SessionRecord,
-  buf: Uint8Array,
-  directionMap: { offset: number; direction: 'tx' | 'rx' }[],
-): TrackRecord[] {
-  const trackUpdates: TrackRecord[] = []
-  if (!session.detectedDraft) return trackUpdates
-
-  let offset = 0
-  while (offset < buf.length) {
-    const remaining = buf.subarray(offset)
-    if (remaining.length < 2) break
-
-    try {
-      const result = decodeControlMessage(remaining, session.detectedDraft)
-      if (result.ok) {
-        const msg = result.value
-        const msgType =
-          'type' in msg && typeof msg.type === 'string' ? msg.type : 'unknown'
-        const raw = remaining.subarray(0, result.bytesRead)
-
-        // Look up direction from the chunk that contains this offset
-        let direction: 'tx' | 'rx' = 'rx'
-        for (let i = directionMap.length - 1; i >= 0; i--) {
-          if (directionMap[i].offset <= offset) {
-            direction = directionMap[i].direction
-            break
-          }
-        }
-
-        const record: ControlMessageRecord = {
-          direction,
-          timestamp: Date.now(),
-          decoded: jsonSafe(msg),
-          messageType: msgType,
-          raw: bytesToBase64(raw),
-        }
-        session.controlMessages.push(record)
-
-        // Extract track info
-        const trackUpdate = extractTrackInfo(
-          session,
-          msg as unknown as Record<string, unknown>,
-          direction,
-        )
-        if (trackUpdate) trackUpdates.push(trackUpdate)
-
-        // Record in trace
-        if (session.recorder) {
-          const idMap = getMessageIdMap(session.detectedDraft!)
-          const wireId = idMap.get(msgType)
-          session.recorder.record({
-            type: 'control',
-            seq: session.controlMessages.length - 1,
-            timestamp: Math.round(performance.now() * 1000),
-            direction: direction === 'tx' ? 0 : 1,
-            messageType: wireId != null ? Number(wireId) : 0,
-            message: msg as unknown as Record<string, unknown>,
-          })
-        }
-
-        offset += result.bytesRead
-      } else {
-        break // incomplete or invalid, wait for more data
-      }
-    } catch {
-      break
-    }
-  }
-  // Save leftover bytes for reassembly with the next chunk
-  session.controlRemainder = offset < buf.length ? buf.subarray(offset) : null
-  return trackUpdates
-}
-
-/** Decode all complete control messages from a chunk, with reassembly
- *  for partial messages that span chunks.  Returns decoded records and
- *  track updates so the caller can forward them to the panel. */
-function decodeControlChunk(
-  session: SessionRecord,
+  streamId: number,
+  state: ControlStreamState,
   data: Uint8Array,
-  direction: 'tx' | 'rx',
+  directionAt: (offset: number) => 'tx' | 'rx',
   stack?: string,
 ): { records: ControlMessageRecord[]; trackUpdates: TrackRecord[] } {
   const records: ControlMessageRecord[] = []
   const trackUpdates: TrackRecord[] = []
   if (!session.detectedDraft) return { records, trackUpdates }
 
-  // Prepend any leftover bytes from the previous chunk
+  // Prepend this stream's leftover bytes from the previous chunk
   let buf: Uint8Array
-  if (session.controlRemainder && session.controlRemainder.length > 0) {
-    buf = new Uint8Array(session.controlRemainder.length + data.length)
-    buf.set(session.controlRemainder)
-    buf.set(data, session.controlRemainder.length)
-    session.controlRemainder = null
+  const carried = state.remainder?.length ?? 0
+  if (state.remainder && carried > 0) {
+    buf = new Uint8Array(carried + data.length)
+    buf.set(state.remainder)
+    buf.set(data, carried)
+    state.remainder = null
   } else {
     buf = data
   }
@@ -412,53 +470,56 @@ function decodeControlChunk(
 
     try {
       const result = decodeControlMessage(remaining, session.detectedDraft)
-      if (result.ok) {
-        const msg = result.value
-        const msgType =
-          'type' in msg && typeof msg.type === 'string' ? msg.type : 'unknown'
-        const raw = remaining.subarray(0, result.bytesRead)
-        const record: ControlMessageRecord = {
-          direction,
-          timestamp: Date.now(),
-          decoded: jsonSafe(msg),
-          messageType: msgType,
-          raw: bytesToBase64(raw),
-          stack: direction === 'tx' ? stack : undefined,
-        }
-        session.controlMessages.push(record)
-        records.push(record)
+      if (!result.ok) break // incomplete message, wait for more data
 
-        const trackUpdate = extractTrackInfo(
-          session,
-          msg as unknown as Record<string, unknown>,
-          direction,
-        )
-        if (trackUpdate) trackUpdates.push(trackUpdate)
+      const msg = result.value
+      const msgType =
+        'type' in msg && typeof msg.type === 'string' ? msg.type : 'unknown'
+      const raw = remaining.subarray(0, result.bytesRead)
+      // Offsets shift by the carried bytes, which belong to the previous chunk
+      const direction = directionAt(Math.max(0, offset - carried))
 
-        if (session.recorder) {
-          const idMap = getMessageIdMap(session.detectedDraft!)
-          const wireId = idMap.get(msgType)
-          session.recorder.record({
-            type: 'control',
-            seq: session.controlMessages.length - 1,
-            timestamp: Math.round(performance.now() * 1000),
-            direction: direction === 'tx' ? 0 : 1,
-            messageType: wireId != null ? Number(wireId) : 0,
-            message: msg as unknown as Record<string, unknown>,
-          })
-        }
-
-        offset += result.bytesRead
-      } else {
-        break // incomplete message, wait for more data
+      const record: ControlMessageRecord = {
+        streamId,
+        direction,
+        timestamp: Date.now(),
+        decoded: jsonSafe(msg),
+        messageType: msgType,
+        raw: bytesToBase64(raw),
+        stack: direction === 'tx' ? stack : undefined,
       }
+      session.controlMessages.push(record)
+      records.push(record)
+      state.firstMessageType ??= msgType
+
+      const trackUpdate = extractTrackInfo(
+        session,
+        msg as unknown as Record<string, unknown>,
+        direction,
+      )
+      if (trackUpdate) trackUpdates.push(trackUpdate)
+
+      if (session.recorder) {
+        const idMap = getMessageIdMap(session.detectedDraft)
+        const wireId = idMap.get(msgType)
+        session.recorder.record({
+          type: 'control',
+          seq: session.controlMessages.length - 1,
+          timestamp: Math.round(performance.now() * 1000),
+          direction: direction === 'tx' ? 0 : 1,
+          messageType: wireId != null ? Number(wireId) : 0,
+          message: msg as unknown as Record<string, unknown>,
+        })
+      }
+
+      offset += result.bytesRead
     } catch {
       break
     }
   }
 
-  // Save leftover bytes for reassembly with the next chunk
-  session.controlRemainder = offset < buf.length ? buf.subarray(offset) : null
+  // Save leftover bytes for reassembly with this stream's next chunk
+  state.remainder = offset < buf.length ? buf.subarray(offset) : null
 
   return { records, trackUpdates }
 }
@@ -605,6 +666,7 @@ function replayState(tabId: number) {
       sendToPanel(tabId, {
         type: 'panel:control-message',
         sessionId: session.sessionId,
+        streamId: msg.streamId,
         direction: msg.direction,
         timestamp: msg.timestamp,
         decoded: msg.decoded,
@@ -642,8 +704,11 @@ function replayState(tabId: number) {
           mediaInfo: stream.mediaInfo,
           codecString: stream.codecString,
           bidi: stream.bidi,
-          ...(session.controlStreamId === stream.streamId
-            ? { isControl: true }
+          ...(session.controlStreams.has(stream.streamId)
+            ? {
+                isControl: true,
+                controlRole: session.controlStreams.get(stream.streamId)!.role,
+              }
             : {}),
           firstDataAt: stream.firstDataAt,
           closed: stream.closed,
@@ -787,8 +852,7 @@ function handleContentMessage(
         detectionBytes: 0,
         detectionRuledOut: new Set(),
         detectionAttempted: false,
-        controlStreamId: null,
-        controlRemainder: null,
+        controlStreams: new Map(),
         recorder: null,
         controlMessages: [],
         tracks: new Map(),
@@ -854,7 +918,7 @@ function handleContentMessage(
        * the panel never learns which stream is the control stream — it shows
        * the raw stream id where it should say "MoQT Control".
        */
-      let controlJustIdentified = false
+      let controlRoleLearned = false
 
       // Buffer stream data for detection, dropping each stream as soon as its
       // leading varint proves it is not a control stream — which is every
@@ -895,6 +959,7 @@ function handleContentMessage(
               sendToPanel(tabId, {
                 type: 'panel:control-message',
                 sessionId: message.sessionId,
+                streamId: msg.streamId,
                 direction: msg.direction,
                 timestamp: msg.timestamp,
                 decoded: msg.decoded,
@@ -906,7 +971,7 @@ function handleContentMessage(
             for (const track of trackUpdates) {
               sendTrackUpdate(tabId, message.sessionId, track)
             }
-            controlJustIdentified = session.controlStreamId === message.streamId
+            controlRoleLearned = session.controlStreams.has(message.streamId)
             // Detection consumed these; controlRemainder owns its own copy of
             // the leftover bytes, so nothing here is needed again.
             session.streamBuffers.clear()
@@ -921,38 +986,41 @@ function handleContentMessage(
             session.detectionBytes = 0
           }
         }
-      } else if (
-        session.detectedDraft &&
-        message.streamId === session.controlStreamId
-      ) {
-        const { records, trackUpdates } = decodeControlChunk(
-          session,
-          bytes,
-          message.direction,
-          message.stack,
-        )
-        for (const rec of records) {
-          sendToPanel(tabId, {
-            type: 'panel:control-message',
-            sessionId: message.sessionId,
-            direction: rec.direction,
-            timestamp: rec.timestamp,
-            decoded: rec.decoded,
-            messageType: rec.messageType,
-            raw: rec.raw,
-            stack: rec.stack,
-          })
-        }
-        for (const track of trackUpdates) {
-          sendTrackUpdate(tabId, message.sessionId, track)
+      } else if (session.detectedDraft) {
+        const wasKnown = session.controlStreams.has(message.streamId)
+        const state = controlStreamFor(session, stream, bytes, isFirstChunk)
+        if (state) {
+          const { records, trackUpdates } = decodeControlBytes(
+            session,
+            message.streamId,
+            state,
+            bytes,
+            () => message.direction,
+            message.stack,
+          )
+          if (!wasKnown) controlRoleLearned = true
+          for (const rec of records) {
+            sendToPanel(tabId, {
+              type: 'panel:control-message',
+              sessionId: message.sessionId,
+              streamId: rec.streamId,
+              direction: rec.direction,
+              timestamp: rec.timestamp,
+              decoded: rec.decoded,
+              messageType: rec.messageType,
+              raw: rec.raw,
+              stack: rec.stack,
+            })
+          }
+          for (const track of trackUpdates) {
+            sendTrackUpdate(tabId, message.sessionId, track)
+          }
         }
       }
 
-      // Skip data processing for non-control streams when recording is
+      // Skip data processing for control-plane streams when recording is
       // paused or the stream has been discarded (cleared while still open).
-      const isControlStream =
-        session.controlStreamId != null &&
-        message.streamId === session.controlStreamId
+      const isControlStream = session.controlStreams.has(message.streamId)
       const skipData =
         !isControlStream &&
         (!session.streamRecording ||
@@ -1038,14 +1106,20 @@ function handleContentMessage(
           direction: message.direction,
           byteLength: bytes.length,
           capturedAt: message.capturedAt,
-          ...(isFirstChunk || detectionUpdated || controlJustIdentified
+          ...(isFirstChunk || detectionUpdated || controlRoleLearned
             ? {
                 contentType: stream.contentType,
                 trackAlias: stream.trackAlias,
                 mediaInfo: stream.mediaInfo,
                 codecString: stream.codecString,
                 bidi: stream.bidi,
-                ...(isControlStream ? { isControl: true } : {}),
+                ...(isControlStream
+                  ? {
+                      isControl: true,
+                      controlRole: session.controlStreams.get(message.streamId)
+                        ?.role,
+                    }
+                  : {}),
               }
             : {}),
         }
@@ -1566,14 +1640,14 @@ export default defineBackground(() => {
             for (const stream of session.streams.values()) {
               if (
                 !stream.closed &&
-                stream.streamId !== session.controlStreamId
+                !session.controlStreams.has(stream.streamId)
               ) {
                 session.discardedStreamIds.add(stream.streamId)
               }
             }
             // Remove all stream records (except control stream)
             for (const streamId of [...session.streams.keys()]) {
-              if (streamId !== session.controlStreamId) {
+              if (!session.controlStreams.has(streamId)) {
                 session.streams.delete(streamId)
               }
             }

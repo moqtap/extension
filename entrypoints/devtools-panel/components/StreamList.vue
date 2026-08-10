@@ -2,7 +2,7 @@
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { StreamEntry, TrackEntry } from '../use-inspector'
+import type { MessageEntry, StreamEntry, TrackEntry } from '../use-inspector'
 
 const ROW_HEIGHT = 24 // px — must match CSS .stream-row height
 const OVERSCAN = 10 // extra rows rendered above/below viewport
@@ -16,6 +16,8 @@ const props = defineProps<{
   compact?: boolean
   /** Whether stream data recording is active */
   recording: boolean
+  /** Control messages, used to name draft-17+ request streams by their request */
+  messages?: MessageEntry[]
 }>()
 
 const emit = defineEmits<{
@@ -42,12 +44,39 @@ function resolveTrack(stream: StreamEntry): TrackEntry | null {
   return idx.byAlias.get(alias) ?? idx.bySubId.get(alias) ?? null
 }
 
+// ── Control-plane stream naming ───────────────────────────────────
+
+/**
+ * First control message seen on each stream, which names a draft-17+ request
+ * stream: the spec requires a request stream to open with its request message,
+ * so the first message is the request itself.
+ */
+const firstMessageByStream = computed(() => {
+  const byStream = new Map<number, string>()
+  for (const msg of props.messages ?? []) {
+    if (msg.streamId == null) continue
+    if (!byStream.has(msg.streamId)) byStream.set(msg.streamId, msg.messageType)
+  }
+  return byStream
+})
+
+/** Human label for a control-plane stream, or null if it isn't one */
+function controlLabel(stream: StreamEntry): string | null {
+  if (!stream.isControl) return null
+  if (stream.controlRole === 'request') {
+    const type = firstMessageByStream.value.get(stream.streamId)
+    return type ? type.toUpperCase().replace(/_/g, ' ') : 'Request'
+  }
+  return 'MoQT Control'
+}
+
 // ── Filter ────────────────────────────────────────────────────────
 const filterText = ref('')
 
 /** The display string used for matching — mirrors what the Track column shows */
 function streamLabel(stream: StreamEntry): string {
-  if (stream.isControl) return 'Control'
+  const control = controlLabel(stream)
+  if (control) return control
   const track = resolveTrack(stream)
   const suffix = stream.datagramGroupKey ? ` g:${stream.groupId}` : ''
   if (track) return track.fullName + suffix
@@ -357,14 +386,16 @@ function transferSummary(list: StreamEntry[]): string {
               <span
                 class="col-track"
                 :title="
-                  stream.isControl
-                    ? 'MoQT control stream (bidi)'
+                  controlLabel(stream)
+                    ? stream.controlRole === 'request'
+                      ? 'Request stream — one request and its responses'
+                      : 'MoQT control stream'
                     : resolveTrack(stream)?.fullName
                 "
               >
-                <span v-if="stream.isControl" class="track-control"
-                  >MoQT Control</span
-                >
+                <span v-if="controlLabel(stream)" class="track-control">{{
+                  controlLabel(stream)
+                }}</span>
                 <span v-else-if="resolveTrack(stream)" class="track-tag">
                   {{ resolveTrack(stream)!.fullName }}
                   <span v-if="stream.datagramGroupKey" class="group-tag mono"

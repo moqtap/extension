@@ -188,6 +188,12 @@ export interface PanelDetectionMsg {
 export interface PanelControlMessageMsg {
   type: 'panel:control-message'
   sessionId: string
+  /**
+   * Stream the message arrived on. From draft-17 a request and its responses
+   * share one bidirectional stream, so this groups a request's lifecycle;
+   * through draft-16 every control message shares the one control stream.
+   */
+  streamId?: number
   direction: 'tx' | 'rx'
   timestamp: number
   /** JSON-serialized decoded message (or null if decode failed) */
@@ -239,8 +245,10 @@ export interface PanelStreamDataMsg {
   codecString?: string
   /** Bidirectional stream (first chunk only; undefined if the page-side hook predates the flag) */
   bidi?: boolean
-  /** True when this stream is the MoQT bidirectional control stream */
+  /** True when this stream carries control-plane messages */
   isControl?: boolean
+  /** Which kind of control-plane stream (draft-17+ distinguishes the two) */
+  controlRole?: 'control' | 'request'
   /**
    * Page-side wall-clock time (ms, Date.now) at the WebTransport intercept,
    * forwarded unchanged from the content script. The panel uses this — not
@@ -268,8 +276,10 @@ export interface PanelStreamInfoMsg {
   codecString?: string
   /** Bidirectional stream (undefined if the page-side hook predates the flag) */
   bidi?: boolean
-  /** True when this stream is the MoQT bidirectional control stream */
+  /** True when this stream carries control-plane messages */
   isControl?: boolean
+  /** Which kind of control-plane stream (draft-17+ distinguishes the two) */
+  controlRole?: 'control' | 'request'
   firstDataAt?: number
   closed: boolean
 }
