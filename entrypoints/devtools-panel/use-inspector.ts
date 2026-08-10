@@ -143,8 +143,14 @@ export interface StreamEntry {
    * aren't streams at all.
    */
   bidi?: boolean
-  /** True when this stream is the MoQT bidirectional control stream */
+  /** True when this stream carries control-plane messages */
   isControl?: boolean
+  /**
+   * Which kind of control-plane stream. Draft-17 split the control plane into
+   * a control stream per direction plus a bidirectional stream per request,
+   * so a session can show several at once.
+   */
+  controlRole?: 'control' | 'request'
   /** When set, this entry represents a datagram group (not a real stream) */
   datagramGroupKey?: string
   /** Number of datagrams in the group */
@@ -174,6 +180,12 @@ export interface MessageEntry {
   timestamp: number
   direction: 'tx' | 'rx'
   messageType: string
+  /**
+   * Stream the message arrived on. From draft-17 a request and its responses
+   * share one bidirectional stream, so this identifies the request; through
+   * draft-16 every control message shares the single control stream.
+   */
+  streamId?: number
   /** Raw decoded values for programmatic use (filtering, trace export). */
   decoded: unknown | null
   /** Display-optimised decoded values with PrettifiedValue wrappers. */
@@ -323,14 +335,26 @@ function applySetupImplementation(
   session: SessionEntry,
   messageType: string,
   decoded: unknown,
+  direction?: 'tx' | 'rx',
 ): void {
-  if (messageType !== 'client_setup' && messageType !== 'server_setup') return
+  // Draft-17 collapsed CLIENT_SETUP and SERVER_SETUP into one SETUP message,
+  // so from then on the sender is identified by direction rather than by type.
+  const isSetup =
+    messageType === 'client_setup' ||
+    messageType === 'server_setup' ||
+    messageType === 'setup'
+  if (!isSetup) return
   if (!decoded || typeof decoded !== 'object') return
   const params = (decoded as Record<string, unknown>).parameters
   if (!params || typeof params !== 'object') return
   const impl = (params as Record<string, unknown>).moqt_implementation
   if (typeof impl !== 'string' || impl.length === 0) return
-  if (messageType === 'client_setup') session.clientImplementation = impl
+
+  const fromClient =
+    messageType === 'setup'
+      ? direction === 'tx'
+      : messageType === 'client_setup'
+  if (fromClient) session.clientImplementation = impl
   else session.serverImplementation = impl
 }
 
@@ -462,6 +486,7 @@ export function useInspector() {
             timestamp: msg.timestamp,
             direction: msg.direction,
             messageType: msg.messageType,
+            streamId: msg.streamId,
             decoded: tagged ? untagDecoded(tagged) : null,
             decodedPretty: pretty,
             raw: base64ToBytes(msg.raw),
@@ -471,6 +496,7 @@ export function useInspector() {
             session,
             msg.messageType,
             tagged ? untagDecoded(tagged) : null,
+            msg.direction,
           )
           return true
         }
@@ -503,6 +529,7 @@ export function useInspector() {
               trackAlias: msg.trackAlias,
               bidi: msg.bidi,
               isControl: msg.isControl,
+              controlRole: msg.controlRole,
             }
             session.streams.set(msg.streamId, stream)
           } else if (msg.contentType != null) {
@@ -513,6 +540,7 @@ export function useInspector() {
             stream.trackAlias = msg.trackAlias
             if (msg.bidi !== undefined) stream.bidi = msg.bidi
             if (msg.isControl) stream.isControl = true
+            if (msg.controlRole) stream.controlRole = msg.controlRole
           }
           stream.lastDataAt = now
           stream.byteCount += msg.byteLength
@@ -541,6 +569,7 @@ export function useInspector() {
             trackAlias: msg.trackAlias,
             bidi: msg.bidi,
             isControl: msg.isControl,
+            controlRole: msg.controlRole,
             firstDataAt: msg.firstDataAt,
           })
           return true
@@ -1077,7 +1106,12 @@ export function useInspector() {
             raw: ce.raw ?? new Uint8Array(0),
           })
 
-          applySetupImplementation(session, msgType, msg)
+          applySetupImplementation(
+            session,
+            msgType,
+            msg,
+            ce.direction === 0 ? 'tx' : 'rx',
+          )
 
           // Extract track info from control messages
           extractTrackFromImported(
