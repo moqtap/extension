@@ -13,6 +13,7 @@ import { decodeControlMessage, getCodec } from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
+  detectAnnexB,
   detectContentType,
   detectPayloadMedia,
   detectStreamMedia,
@@ -116,6 +117,8 @@ interface StreamRecord {
   trackAlias?: number
   /** ISO BMFF media info from first object payload */
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string when the payload is a raw elementary stream */
+  codecString?: string
   firstDataAt?: number
 }
 
@@ -598,6 +601,7 @@ function replayState(tabId: number) {
           contentType: stream.contentType ?? 'binary',
           trackAlias: stream.trackAlias,
           mediaInfo: stream.mediaInfo,
+          codecString: stream.codecString,
           ...(session.controlStreamId === stream.streamId
             ? { isControl: true }
             : {}),
@@ -888,6 +892,13 @@ function handleContentMessage(
                   if (media) {
                     stream.contentType = 'fmp4'
                     stream.mediaInfo = media
+                  } else {
+                    // Not a container — the object may be a raw codec frame
+                    const annexb = detectAnnexB(payload)
+                    if (annexb) {
+                      stream.contentType = annexb.codec
+                      stream.codecString = annexb.codecString
+                    }
                   }
                 }
               }
@@ -917,6 +928,9 @@ function handleContentMessage(
             const ct = detectContentType(bytes)
             if (ct !== 'binary') {
               stream.contentType = ct
+              if (ct === 'h264' || ct === 'h265') {
+                stream.codecString = detectAnnexB(bytes)?.codecString
+              }
               detectionUpdated = true
             }
           }
@@ -939,6 +953,7 @@ function handleContentMessage(
                 contentType: stream.contentType,
                 trackAlias: stream.trackAlias,
                 mediaInfo: stream.mediaInfo,
+                codecString: stream.codecString,
                 ...(isControlStream ? { isControl: true } : {}),
               }
             : {}),
@@ -1098,6 +1113,8 @@ function handleContentMessage(
         if (ct === 'fmp4') {
           appendResult.group.mediaInfo =
             detectPayloadMedia(dg.payload) ?? undefined
+        } else if (ct === 'h264' || ct === 'h265') {
+          appendResult.group.codecString = detectAnnexB(dg.payload)?.codecString
         }
       }
 
@@ -1116,6 +1133,7 @@ function handleContentMessage(
           ? {
               contentType: appendResult.group.contentType,
               mediaInfo: appendResult.group.mediaInfo,
+              codecString: appendResult.group.codecString,
             }
           : {}),
         ...(decoded.endOfGroup ? { endOfGroup: true } : {}),

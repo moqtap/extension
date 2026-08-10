@@ -112,6 +112,8 @@ export interface DatagramGroupState {
   contentType?: StreamContentType
   /** ISO BMFF media info (from first datagram payload). */
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string when the payload is a raw elementary stream */
+  codecString?: string
   /** True when endOfGroup was received or session closed. */
   closed: boolean
 }

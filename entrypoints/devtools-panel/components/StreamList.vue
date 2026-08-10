@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
+import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StreamEntry, TrackEntry } from '../use-inspector'
 
@@ -163,6 +164,10 @@ function mediaLabel(info: PayloadMediaInfo): string {
   return `${label}(${info.boxes.length})`
 }
 
+function codecLabel(contentType: StreamContentType): string {
+  return contentType === 'h265' ? 'H.265' : 'H.264'
+}
+
 function transferSummary(list: StreamEntry[]): string {
   const tx = sumBytes(list, 'tx')
   const rx = sumBytes(list, 'rx')
@@ -293,6 +298,16 @@ function transferSummary(list: StreamEntry[]): string {
                   class="content-badge content-fmp4"
                 >
                   fMP4
+                </span>
+                <span
+                  v-else-if="
+                    stream.contentType === 'h264' ||
+                    stream.contentType === 'h265'
+                  "
+                  class="content-badge content-codec"
+                  :title="stream.codecString ?? codecLabel(stream.contentType)"
+                >
+                  {{ codecLabel(stream.contentType) }}
                 </span>
                 <span
                   v-else-if="stream.contentType === 'json'"
@@ -574,6 +589,11 @@ function transferSummary(list: StreamEntry[]): string {
 .content-cbor {
   background: var(--content-cbor-bg);
   color: var(--content-cbor-color);
+}
+.content-codec {
+  background: var(--content-codec-bg);
+  color: var(--content-codec-color);
+  cursor: default;
 }
 .content-msgpack {
   background: var(--content-msgpack-bg);

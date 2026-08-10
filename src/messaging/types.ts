@@ -222,6 +222,8 @@ export interface PanelStreamDataMsg {
   trackAlias?: number
   /** ISO BMFF media info from first object payload (first chunk only, if fMP4) */
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string from the elementary stream (if h264/h265) */
+  codecString?: string
   /** True when this stream is the MoQT bidirectional control stream */
   isControl?: boolean
   /**
@@ -247,6 +249,8 @@ export interface PanelStreamInfoMsg {
   trackAlias?: number
   /** ISO BMFF media info from first object payload (if fMP4) */
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string from the elementary stream (if h264/h265) */
+  codecString?: string
   /** True when this stream is the MoQT bidirectional control stream */
   isControl?: boolean
   firstDataAt?: number
@@ -332,6 +336,8 @@ export interface PanelDatagramDataMsg {
   contentType?: StreamContentType
   /** ISO BMFF media info (first datagram in group only, if fMP4). */
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string (first datagram in group only, if h264/h265). */
+  codecString?: string
   /** True when endOfGroup flag was set. */
   endOfGroup?: boolean
   /** See PanelStreamDataMsg.capturedAt — same semantics. */
@@ -353,6 +359,8 @@ export interface PanelDatagramGroupInfoMsg {
   datagramCount: number
   contentType?: StreamContentType
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string from the elementary stream (if h264/h265) */
+  codecString?: string
   firstDataAt?: number
   closed: boolean
 }
