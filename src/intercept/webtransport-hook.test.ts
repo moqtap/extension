@@ -302,6 +302,108 @@ describe('WebTransport hook — transparency', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
+// Stream class (bidi/uni) tagging
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('WebTransport hook — bidi/uni tagging', () => {
+  /** Read the `bidi` argument out of the first onData call. */
+  function bidiArg(onData: ReturnType<typeof vi.fn>): unknown {
+    expect(onData).toHaveBeenCalled()
+    return onData.mock.calls[0][4]
+  }
+
+  it('tags writes on a locally-opened bidirectional stream as bidi', async () => {
+    const mockGlobal = createMockGlobal()
+    const onData = vi.fn()
+    installWebTransportHook(mockGlobal, vi.fn(), {
+      onData,
+      onClose: vi.fn(),
+      onError: vi.fn(),
+    })
+
+    const wt = new (mockGlobal.WebTransport as any)('https://relay.test/moq')
+    const stream = await wt.createBidirectionalStream()
+    await stream.writable.getWriter().write(new Uint8Array([0x40, 0x40]))
+
+    expect(bidiArg(onData)).toBe(true)
+  })
+
+  it('tags writes on a locally-opened unidirectional stream as uni', async () => {
+    const mockGlobal = createMockGlobal()
+    const onData = vi.fn()
+    installWebTransportHook(mockGlobal, vi.fn(), {
+      onData,
+      onClose: vi.fn(),
+      onError: vi.fn(),
+    })
+
+    const wt = new (mockGlobal.WebTransport as any)('https://relay.test/moq')
+    const writable = await wt.createUnidirectionalStream()
+    await writable.getWriter().write(new Uint8Array([0x04]))
+
+    expect(bidiArg(onData)).toBe(false)
+  })
+
+  it('tags reads from incoming streams by the queue they arrived on', async () => {
+    // Both incoming queues are tapped from the same mock class, so the flag
+    // can only come from which tap wrapped the stream — exactly the property
+    // that makes it trustworthy for classifying buffered data.
+    const chunk = new Uint8Array([0x41])
+
+    /** A ReadableStream-alike that yields `payload` once, then completes. */
+    const onceStream = (payload: unknown) => ({
+      getReader: () => ({
+        read: vi
+          .fn()
+          .mockResolvedValueOnce({ done: false, value: payload })
+          .mockResolvedValue({ done: true, value: undefined }),
+        releaseLock: vi.fn(),
+      }),
+    })
+
+    for (const [queue, expected] of [
+      ['incomingBidirectionalStreams', true],
+      ['incomingUnidirectionalStreams', false],
+    ] as const) {
+      const onData = vi.fn()
+      const inner = onceStream(chunk)
+      // Bidi arrives as {readable, writable}; uni arrives as a bare readable.
+      const arriving = expected ? { readable: inner, writable: null } : inner
+      // Built once, not per getter access — the hook patches getReader in
+      // place, so a fresh object per access would drop the instrumentation.
+      const queues = {
+        incomingBidirectionalStreams: new MockReadableStream(),
+        incomingUnidirectionalStreams: new MockReadableStream(),
+        [queue]: onceStream(arriving),
+      }
+      const mockGlobal = {
+        WebTransport: class extends MockWebTransport {
+          get incomingBidirectionalStreams() {
+            return queues.incomingBidirectionalStreams as MockReadableStream
+          }
+          get incomingUnidirectionalStreams() {
+            return queues.incomingUnidirectionalStreams as MockReadableStream
+          }
+        },
+      } as unknown as typeof globalThis
+
+      installWebTransportHook(mockGlobal, vi.fn(), {
+        onData,
+        onClose: vi.fn(),
+        onError: vi.fn(),
+      })
+
+      const wt = new (mockGlobal as any).WebTransport('https://relay.test/moq')
+      const { value } = await wt[queue].getReader().read()
+      const readable = expected ? (value as any).readable : value
+      await readable.getReader().read()
+
+      expect(bidiArg(onData)).toBe(expected)
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
 // Main-thread only (spec D10)
 // ═══════════════════════════════════════════════════════════════════════
 

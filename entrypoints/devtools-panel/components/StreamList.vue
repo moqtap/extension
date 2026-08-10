@@ -168,6 +168,23 @@ function codecLabel(contentType: StreamContentType): string {
   return contentType === 'h265' ? 'H.265' : 'H.264'
 }
 
+/**
+ * QUIC stream class marker shown beside the stream id.
+ *
+ * Worth the column space because it is the structural split in every MoQ
+ * dialect: control plane on bidirectional streams, media on unidirectional
+ * ones. Absent for imported traces, which carry no stream class.
+ */
+function kindGlyph(stream: StreamEntry): string {
+  return stream.bidi ? '⇄' : '→'
+}
+
+function kindTitle(stream: StreamEntry): string {
+  return stream.bidi
+    ? 'Bidirectional stream — carries the control plane'
+    : 'Unidirectional stream'
+}
+
 function transferSummary(list: StreamEntry[]): string {
   const tx = sumBytes(list, 'tx')
   const rx = sumBytes(list, 'rx')
@@ -274,7 +291,14 @@ function transferSummary(list: StreamEntry[]): string {
                   title="Datagram group"
                   >DG</span
                 >
-                <template v-else>{{ stream.streamId }}</template>
+                <template v-else>
+                  <span
+                    v-if="stream.bidi !== undefined"
+                    class="stream-kind"
+                    :title="kindTitle(stream)"
+                    >{{ kindGlyph(stream) }}</span
+                  >{{ stream.streamId }}
+                </template>
               </span>
               <span
                 v-if="!compact"
@@ -541,7 +565,13 @@ function transferSummary(list: StreamEntry[]): string {
 }
 
 .col-id {
-  width: 30px;
+  width: 44px;
+}
+
+.stream-kind {
+  color: var(--text-secondary);
+  margin-right: 3px;
+  cursor: default;
 }
 .col-dir {
   width: 30px;

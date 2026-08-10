@@ -64,6 +64,19 @@ export interface StreamDataMsg {
   /** Stack trace captured at write site (tx bidirectional stream only) */
   stack?: string
   /**
+   * True when these bytes crossed a bidirectional stream.
+   *
+   * Distinct from `direction`, which is the read/write side. Every MoQ dialect
+   * carries its control plane on bidi streams and its media on uni streams, so
+   * this is a decode-free way to tell signal from bulk — the content script
+   * uses it to budget its pre-activation buffers.
+   *
+   * Optional: a content script injected before an extension update stays
+   * resident until the page reloads, so consumers must treat `undefined` as
+   * "unknown" and fall back to the bulk path.
+   */
+  bidi?: boolean
+  /**
    * Wall-clock time (ms, Date.now) captured at the page-side intercept site,
    * as close to the actual WebTransport read/write as possible. Used by the
    * panel to compute bitrate from a sliding window of network-time samples,
@@ -224,6 +237,8 @@ export interface PanelStreamDataMsg {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string from the elementary stream (if h264/h265) */
   codecString?: string
+  /** Bidirectional stream (first chunk only; undefined if the page-side hook predates the flag) */
+  bidi?: boolean
   /** True when this stream is the MoQT bidirectional control stream */
   isControl?: boolean
   /**
@@ -251,6 +266,8 @@ export interface PanelStreamInfoMsg {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string from the elementary stream (if h264/h265) */
   codecString?: string
+  /** Bidirectional stream (undefined if the page-side hook predates the flag) */
+  bidi?: boolean
   /** True when this stream is the MoQT bidirectional control stream */
   isControl?: boolean
   firstDataAt?: number

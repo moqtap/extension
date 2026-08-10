@@ -69,11 +69,21 @@ export interface SessionLifecycleCallbacks {
 }
 
 export interface StreamInterceptor {
+  /**
+   * @param direction which side of the stream the bytes crossed — 'tx' for a
+   *   write, 'rx' for a read. Not the stream's class.
+   * @param bidi true when the bytes belong to a bidirectional stream. Known
+   *   for free here because each of the four stream sources (create/incoming ×
+   *   bidi/uni) is a separate call site, and worth propagating: every MoQ
+   *   dialect puts its control plane on bidi streams and bulk media on uni
+   *   ones, so this separates signal from volume without decoding a byte.
+   */
   onData(
     sessionId: string,
     streamId: number,
     data: Uint8Array,
     direction: 'tx' | 'rx',
+    bidi: boolean,
     stack?: string,
   ): void
   onClose(sessionId: string, streamId: number): void
@@ -150,12 +160,20 @@ export function installWebTransportHook(
         const streamId = nextStreamId++
         return origCreateBidi.apply(instance, args).then((stream: unknown) => {
           const s = stream as Record<string, unknown>
-          wrapReadableStream(s.readable, sessionId, streamId, 'rx', onStream)
+          wrapReadableStream(
+            s.readable,
+            sessionId,
+            streamId,
+            'rx',
+            true,
+            onStream,
+          )
           wrapWritableStream(
             s.writable,
             sessionId,
             streamId,
             'tx',
+            true,
             onStream,
             true,
           )
@@ -174,7 +192,14 @@ export function installWebTransportHook(
         // Capture synchronously before the async boundary
         const stack = new Error().stack ?? ''
         return origCreateUni.apply(instance, args).then((writable: unknown) => {
-          wrapWritableStream(writable, sessionId, streamId, 'tx', onStream)
+          wrapWritableStream(
+            writable,
+            sessionId,
+            streamId,
+            'tx',
+            false,
+            onStream,
+          )
           onStream.onStreamCreated?.(sessionId, streamId, stack)
           return writable
         })
@@ -280,6 +305,7 @@ function wrapReadableStream(
   sessionId: string,
   streamId: number,
   direction: 'tx' | 'rx',
+  bidi: boolean,
   interceptor: StreamInterceptor,
 ): void {
   if (!readable || typeof readable !== 'object') return
@@ -296,7 +322,13 @@ function wrapReadableStream(
           if (result.done) {
             interceptor.onClose(sessionId, streamId)
           } else if (result.value instanceof Uint8Array) {
-            interceptor.onData(sessionId, streamId, result.value, direction)
+            interceptor.onData(
+              sessionId,
+              streamId,
+              result.value,
+              direction,
+              bidi,
+            )
           }
           return result
         },
@@ -319,6 +351,7 @@ function wrapWritableStream(
   sessionId: string,
   streamId: number,
   direction: 'tx' | 'rx',
+  bidi: boolean,
   interceptor: StreamInterceptor,
   captureStack = false,
 ): void {
@@ -333,7 +366,7 @@ function wrapWritableStream(
     writer.write = (chunk?: unknown) => {
       if (chunk instanceof Uint8Array) {
         const stack = captureStack ? new Error().stack : undefined
-        interceptor.onData(sessionId, streamId, chunk, direction, stack)
+        interceptor.onData(sessionId, streamId, chunk, direction, bidi, stack)
       }
       return origWrite(chunk)
     }
@@ -376,6 +409,7 @@ function tapIncomingStreams(
               sessionId,
               streamId,
               'rx',
+              true,
               interceptor,
             )
             wrapWritableStream(
@@ -383,10 +417,18 @@ function tapIncomingStreams(
               sessionId,
               streamId,
               'tx',
+              true,
               interceptor,
             )
           } else {
-            wrapReadableStream(stream, sessionId, streamId, 'rx', interceptor)
+            wrapReadableStream(
+              stream,
+              sessionId,
+              streamId,
+              'rx',
+              false,
+              interceptor,
+            )
           }
         }
         return result

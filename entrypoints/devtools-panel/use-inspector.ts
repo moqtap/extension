@@ -137,6 +137,12 @@ export interface StreamEntry {
   chunkCount: number
   /** MoQT trackAlias from data stream framing header (if detected) */
   trackAlias?: number
+  /**
+   * QUIC stream class: true = bidirectional, false = unidirectional.
+   * Undefined for imported traces and for datagram-group entries, which
+   * aren't streams at all.
+   */
+  bidi?: boolean
   /** True when this stream is the MoQT bidirectional control stream */
   isControl?: boolean
   /** When set, this entry represents a datagram group (not a real stream) */
@@ -495,6 +501,7 @@ export function useInspector() {
               codecString: msg.codecString,
               firstDataAt: now,
               trackAlias: msg.trackAlias,
+              bidi: msg.bidi,
               isControl: msg.isControl,
             }
             session.streams.set(msg.streamId, stream)
@@ -504,6 +511,7 @@ export function useInspector() {
             stream.mediaInfo = msg.mediaInfo
             stream.codecString = msg.codecString
             stream.trackAlias = msg.trackAlias
+            if (msg.bidi !== undefined) stream.bidi = msg.bidi
             if (msg.isControl) stream.isControl = true
           }
           stream.lastDataAt = now
@@ -531,6 +539,7 @@ export function useInspector() {
             mediaInfo: msg.mediaInfo,
             codecString: msg.codecString,
             trackAlias: msg.trackAlias,
+            bidi: msg.bidi,
             isControl: msg.isControl,
             firstDataAt: msg.firstDataAt,
           })

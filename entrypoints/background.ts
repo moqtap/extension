@@ -113,6 +113,8 @@ interface StreamRecord {
   direction: 'tx' | 'rx'
   closed: boolean
   byteCount: number
+  /** Bidirectional stream, as reported by the page-side hook */
+  bidi?: boolean
   contentType?: StreamContentType
   trackAlias?: number
   /** ISO BMFF media info from first object payload */
@@ -602,6 +604,7 @@ function replayState(tabId: number) {
           trackAlias: stream.trackAlias,
           mediaInfo: stream.mediaInfo,
           codecString: stream.codecString,
+          bidi: stream.bidi,
           ...(session.controlStreamId === stream.streamId
             ? { isControl: true }
             : {}),
@@ -790,8 +793,13 @@ function handleContentMessage(
           direction: message.direction,
           closed: false,
           byteCount: 0,
+          bidi: message.bidi,
         }
         session.streams.set(message.streamId, stream)
+      } else if (stream.bidi === undefined) {
+        // A bidi stream's first chunk can be a read or a write, whichever the
+        // page does first; take the flag from whichever arrives with it.
+        stream.bidi = message.bidi
       }
 
       if (!stream.firstDataAt) stream.firstDataAt = Date.now()
@@ -954,6 +962,7 @@ function handleContentMessage(
                 trackAlias: stream.trackAlias,
                 mediaInfo: stream.mediaInfo,
                 codecString: stream.codecString,
+                bidi: stream.bidi,
                 ...(isControlStream ? { isControl: true } : {}),
               }
             : {}),
@@ -965,7 +974,9 @@ function handleContentMessage(
           session.recorder.recordStreamOpened(
             BigInt(message.streamId),
             message.direction === 'tx' ? 0 : 1,
-            0, // bidi by default, we don't distinguish yet
+            // .moqtrace "st" is the MoQT data stream type (0=subgroup,
+            // 1=datagram, 2=fetch) — not bidi/uni. We don't parse it yet.
+            0,
           )
         }
       }
