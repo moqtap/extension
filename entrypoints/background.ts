@@ -124,6 +124,8 @@ interface StreamRecord {
   /** RFC 6381 codec string when the payload is a raw elementary stream */
   codecString?: string
   firstDataAt?: number
+  /** Whether a stream-opened event has been written to the trace recorder */
+  openedRecorded?: boolean
 }
 
 interface ControlMessageRecord {
@@ -1018,8 +1020,12 @@ function handleContentMessage(
         }
         queueForPanel(tabId, panelMsg)
 
-        // Record stream data in trace
-        if (session.recorder) {
+        // Record the stream in the trace, once. Gated on a per-stream flag
+        // rather than isFirstChunk because the recorder only exists from the
+        // moment MoQT is detected, and streams that were already flowing
+        // before that would otherwise never get an opened event at all.
+        if (session.recorder && !stream.openedRecorded) {
+          stream.openedRecorded = true
           session.recorder.recordStreamOpened(
             BigInt(message.streamId),
             message.direction === 'tx' ? 0 : 1,
