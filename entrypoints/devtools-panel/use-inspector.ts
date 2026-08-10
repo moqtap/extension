@@ -7,7 +7,10 @@
  */
 
 import { versionToDraft } from '@/src/detect/draft-detect'
-import type { BackgroundToPanelMsg } from '@/src/messaging/types'
+import type {
+  BackgroundToPanelMsg,
+  WebTransportOptionsInfo,
+} from '@/src/messaging/types'
 import { base64ToBytes } from '@/src/messaging/types'
 import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
 // Panel no longer accesses IDB directly — data requests go through background
@@ -36,6 +39,8 @@ export interface SessionEntry {
   draft?: string
   /** Non-zero when session originates from an iframe */
   frameId?: number
+  /** Parseable subset of the WebTransport constructor options */
+  options?: WebTransportOptionsInfo
   streams: Map<number, StreamEntry>
   messages: MessageEntry[]
   tracks: Map<string, TrackEntry>
@@ -217,7 +222,11 @@ function hexToAscii(hex: string): string | null {
   if (hex.length === 0 || hex.length % 2 !== 0) return null
   // Skip leading 0x00 bytes (protocol prefix / padding)
   let start = 0
-  while (start < hex.length - 1 && hex[start] === '0' && hex[start + 1] === '0') {
+  while (
+    start < hex.length - 1 &&
+    hex[start] === '0' &&
+    hex[start + 1] === '0'
+  ) {
     start += 2
   }
   if (start >= hex.length) return null // all NULs
@@ -229,7 +238,6 @@ function hexToAscii(hex: string): string | null {
   }
   return chars.length > 0 ? chars.join('') : null
 }
-
 
 /** Strip type tags, restoring simple JS values for programmatic use. */
 function untagDecoded(obj: unknown): unknown {
@@ -297,12 +305,7 @@ function prettifySetupVersions(
     if (!Number.isFinite(v) || v < 0xff000000) return v
     const draft = versionToDraft(v)
     const hex = '0x' + v.toString(16).padStart(8, '0')
-    return makePretty(
-      draft ? `draft-${draft}` : hex,
-      hex,
-      false,
-      'json-pretty',
-    )
+    return makePretty(draft ? `draft-${draft}` : hex, hex, false, 'json-pretty')
   }
 
   if (
@@ -315,11 +318,17 @@ function prettifySetupVersions(
     }
   }
   if (messageType === 'server_setup' && decoded.selected_version != null) {
-    return { ...decoded, selected_version: formatVersion(decoded.selected_version) }
+    return {
+      ...decoded,
+      selected_version: formatVersion(decoded.selected_version),
+    }
   }
   // draft-17/18/19: unified SETUP message may contain selected_version
   if (messageType === 'setup' && decoded.selected_version != null) {
-    return { ...decoded, selected_version: formatVersion(decoded.selected_version) }
+    return {
+      ...decoded,
+      selected_version: formatVersion(decoded.selected_version),
+    }
   }
   return decoded
 }
@@ -380,6 +389,7 @@ export function useInspector() {
         session.createdAt = msg.createdAt
         session.protocol = 'detecting'
         if (msg.frameId) session.frameId = msg.frameId
+        if (msg.options) session.options = msg.options
         // Auto-select first session
         if (!selectedSessionId.value) {
           selectedSessionId.value = msg.sessionId

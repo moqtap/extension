@@ -345,6 +345,28 @@ function closeStreamData() {
               <td class="details-label">Protocol</td>
               <td>{{ protocolLabel(session) }}</td>
             </tr>
+            <tr v-if="session.options?.protocols?.length">
+              <td class="details-label">Offered Protocols</td>
+              <td>{{ session.options.protocols.join(', ') }}</td>
+            </tr>
+            <tr v-if="session.options?.congestionControl">
+              <td class="details-label">Congestion Control</td>
+              <td>{{ session.options.congestionControl }}</td>
+            </tr>
+            <tr v-if="session.options?.allowPooling !== undefined">
+              <td class="details-label">Pooling</td>
+              <td>
+                {{ session.options.allowPooling ? 'Allowed' : 'Disabled' }}
+              </td>
+            </tr>
+            <tr v-if="session.options?.requireUnreliable !== undefined">
+              <td class="details-label">Require Unreliable</td>
+              <td>{{ session.options.requireUnreliable ? 'Yes' : 'No' }}</td>
+            </tr>
+            <tr v-if="session.options?.serverCertificateHashes">
+              <td class="details-label">Pinned Certificates</td>
+              <td>{{ session.options.serverCertificateHashes }}</td>
+            </tr>
             <tr>
               <td class="details-label">Session ID</td>
               <td>{{ session.sessionId }}</td>

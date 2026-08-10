@@ -27,6 +27,7 @@ import type {
   ContentToBackgroundMsg,
   ExclusionEntry,
   PanelToBackgroundMsg,
+  WebTransportOptionsInfo,
 } from '@/src/messaging/types'
 import { base64ToBytes, bytesToBase64 } from '@/src/messaging/types'
 import {
@@ -62,6 +63,8 @@ interface SessionRecord {
   sessionId: string
   url: string
   createdAt: number
+  /** Parseable subset of the WebTransport constructor options */
+  options?: WebTransportOptionsInfo
   /** Frame ID — 0 for main frame, non-zero for iframes */
   frameId: number
   streams: Map<number, StreamRecord>
@@ -542,6 +545,7 @@ function replayState(tabId: number) {
       sessionId: session.sessionId,
       url: session.url,
       createdAt: session.createdAt,
+      ...(session.options ? { options: session.options } : {}),
       ...(session.frameId !== 0 ? { frameId: session.frameId } : {}),
     })
 
@@ -729,6 +733,7 @@ function handleContentMessage(
         sessionId: message.sessionId,
         url: message.url,
         createdAt: message.createdAt,
+        options: message.options,
         frameId,
         streams: new Map(),
         closed: false,
@@ -755,6 +760,7 @@ function handleContentMessage(
         sessionId: message.sessionId,
         url: message.url,
         createdAt: message.createdAt,
+        ...(message.options ? { options: message.options } : {}),
         ...(frameId !== 0 ? { frameId } : {}),
       })
       break
