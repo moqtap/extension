@@ -29,17 +29,18 @@ import type { ContentToBackgroundMsg } from '@/src/messaging/types'
  *   1. Lifecycle — session:opened and friends. Losing session:opened makes the
  *      background drop every later event for that session, so the panel shows
  *      nothing at all.
- *   2. Control plane — stream:data on bidirectional streams. Every MoQT draft
- *      from 07 to 19 states "Objects are sent on unidirectional streams",
- *      which leaves the bidirectional ones carrying SETUP, subscribes and the
- *      rest: what lets the panel name a draft and reconstruct track state.
+ *   2. Control plane — what lets the panel name a draft and reconstruct track
+ *      state. Every MoQT draft from 07 to 19 states "Objects are sent on
+ *      unidirectional streams", so bidirectional streams are always control:
+ *      the control stream through draft-16, and per-request streams from
+ *      draft-17 on. Draft-17 also moved the control stream itself to a pair
+ *      of *unidirectional* streams (§3.4, stream type 0x2F00), so those are
+ *      admitted by their opening bytes rather than their direction.
  *      Keeping only the first few events would recover the SETUP exchange but
  *      not the track mapping, so this is budgeted by bytes instead. A whole
  *      session's control plane is a few kilobytes (~150 B of SETUP, ~100 B per
  *      track), so the budget below is generous by orders of magnitude while
- *      still holding less memory than the bulk buffer. From draft-17 the
- *      control plane is spread over many bidirectional streams (one per
- *      request), which a per-stream rule would have missed.
+ *      still holding less memory than the bulk buffer.
  *   3. Bulk — media on unidirectional streams and datagrams. Genuinely
  *      unbounded, and the least valuable per byte, so it stays a small FIFO.
  *
@@ -864,6 +865,32 @@ function payloadBytes(msg: ContentToBackgroundMsg): number {
   return msg.data instanceof ArrayBuffer ? msg.data.byteLength : msg.data.length
 }
 
+/**
+ * Wire bytes of the draft-17+ unidirectional control stream type (0x2F00 as a
+ * QUIC varint). From draft-17 the control stream is a pair of unidirectional
+ * streams, so `bidi` alone would file SETUP under bulk media and let a busy
+ * session evict it — the exact failure the split buffer exists to prevent.
+ *
+ * Matched per chunk rather than per stream to keep the content script free of
+ * per-stream bookkeeping on a hot path. A media chunk that happens to open
+ * with these two bytes is admitted too; the byte budget absorbs it, and real
+ * control data is orders of magnitude smaller than the budget.
+ */
+const UNI_CONTROL_STREAM_PREFIX = [0x6f, 0x00]
+
+function opensUniControlStream(data: ArrayBuffer | string): boolean {
+  if (!(data instanceof ArrayBuffer)) return false
+  if (data.byteLength < UNI_CONTROL_STREAM_PREFIX.length) return false
+  const head = new Uint8Array(data, 0, UNI_CONTROL_STREAM_PREFIX.length)
+  return UNI_CONTROL_STREAM_PREFIX.every((b, i) => head[i] === b)
+}
+
+/** Whether a buffered event belongs to the control plane rather than bulk media */
+function isControlPlane(msg: ContentToBackgroundMsg): boolean {
+  if (msg.type !== 'stream:data') return false
+  return msg.bidi === true || opensUniControlStream(msg.data)
+}
+
 /** Queue or forward a message depending on activation state */
 function send(msg: ContentToBackgroundMsg) {
   if (activated) {
@@ -872,7 +899,7 @@ function send(msg: ContentToBackgroundMsg) {
   }
   const entry: BufferedMsg = { seq: bufferSeq++, msg, bytes: payloadBytes(msg) }
   // Cap each buffer to prevent memory leaks on pages that never open DevTools
-  if (msg.type === 'stream:data' && msg.bidi === true) {
+  if (isControlPlane(msg)) {
     controlBuffer.push(entry)
     controlBytes += entry.bytes
     while (
@@ -886,6 +913,7 @@ function send(msg: ContentToBackgroundMsg) {
   } else if (msg.type === 'stream:data' || msg.type === 'datagram:data') {
     // Includes bidi === undefined: a hook predating the flag reports no stream
     // class, so treat it as bulk and keep the pre-existing behaviour.
+    // Datagrams are always bulk — no draft carries control messages on them.
     dataBuffer.push(entry)
     if (dataBuffer.length > MAX_DATA_BUFFER) dataBuffer.shift()
   } else {

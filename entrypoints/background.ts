@@ -20,6 +20,7 @@ import {
   type StreamContentType,
 } from '@/src/detect/content-detect'
 import {
+  couldBeControlStream,
   detectFromControlStream,
   type DetectionResult,
 } from '@/src/detect/draft-detect'
@@ -78,6 +79,8 @@ interface SessionRecord {
   streamBuffers: Map<number, { data: Uint8Array; direction: 'tx' | 'rx' }[]>
   /** Total bytes held in streamBuffers, against DETECTION_BUDGET_BYTES */
   detectionBytes: number
+  /** Streams whose leading bytes proved they are not a control stream */
+  detectionRuledOut: Set<number>
   /** Whether we've attempted detection on this session */
   detectionAttempted: boolean
   /** Stream ID identified as the control stream (once detected) */
@@ -230,6 +233,24 @@ function flushPanelBatches() {
  * bidirectional streams.
  */
 const DETECTION_BUDGET_BYTES = 256 * 1024
+
+/**
+ * First few bytes of a stream, gathered across however many chunks they
+ * arrived in — enough for couldBeControlStream to read the leading varint.
+ * Clients routinely split a control message's type, length and body across
+ * separate writes, so the first chunk alone can be a single byte.
+ */
+function leadingBytes(chunks: { data: Uint8Array }[], max = 8): Uint8Array {
+  const out = new Uint8Array(max)
+  let n = 0
+  for (const chunk of chunks) {
+    for (let i = 0; i < chunk.data.length && n < max; i++) {
+      out[n++] = chunk.data[i]
+    }
+    if (n >= max) break
+  }
+  return out.subarray(0, n)
+}
 
 /** Try to detect MoQT draft from accumulated bytes on a given stream.
  *  Returns track updates discovered during initial message decoding. */
@@ -764,6 +785,7 @@ function handleContentMessage(
         detectedDraft: null,
         streamBuffers: new Map(),
         detectionBytes: 0,
+        detectionRuledOut: new Set(),
         detectionAttempted: false,
         controlStreamId: null,
         controlRemainder: null,
@@ -834,15 +856,17 @@ function handleContentMessage(
        */
       let controlJustIdentified = false
 
-      // Buffer stream data for detection. Only bidirectional streams are
-      // candidates: every MoQT draft from 07 to 19 states "Objects are sent on
-      // unidirectional streams", so a known-unidirectional stream cannot be
-      // the control stream. Skipping it keeps media out of the buffer entirely
-      // and removes the chance of a video stream false-positiving as the
-      // control stream. `bidi === undefined` means a page-side hook that
-      // predates the flag, which still gets the old buffer-everything
-      // treatment.
-      if (!session.detectionAttempted && message.bidi !== false) {
+      // Buffer stream data for detection, dropping each stream as soon as its
+      // leading varint proves it is not a control stream — which is every
+      // media stream, after two bytes. Deliberately not keyed on bidi/uni:
+      // the control stream is bidirectional through draft-16 but a pair of
+      // unidirectional streams from draft-17 on (§3.4 lists SETUP as
+      // unidirectional stream type 0x2F00), so direction cannot stand in for
+      // this test without breaking detection on one era or the other.
+      if (
+        !session.detectionAttempted &&
+        !session.detectionRuledOut.has(message.streamId)
+      ) {
         let chunks = session.streamBuffers.get(message.streamId)
         if (!chunks) {
           chunks = []
@@ -851,44 +875,51 @@ function handleContentMessage(
         chunks.push({ data: bytes, direction: message.direction })
         session.detectionBytes += bytes.length
 
-        const trackUpdates = attemptDetection(session, message.streamId)
-        if (session.detection) {
-          sendToPanel(tabId, {
-            type: 'panel:detection',
-            sessionId: message.sessionId,
-            result: session.detection,
-          })
-          // Send detection-phase control messages to the panel
-          // (replayState already ran before the buffer flush, so these
-          // would otherwise never reach the panel)
-          for (const msg of session.controlMessages) {
+        if (!couldBeControlStream(leadingBytes(chunks))) {
+          session.detectionRuledOut.add(message.streamId)
+          for (const chunk of chunks)
+            session.detectionBytes -= chunk.data.length
+          session.streamBuffers.delete(message.streamId)
+        } else {
+          const trackUpdates = attemptDetection(session, message.streamId)
+          if (session.detection) {
             sendToPanel(tabId, {
-              type: 'panel:control-message',
+              type: 'panel:detection',
               sessionId: message.sessionId,
-              direction: msg.direction,
-              timestamp: msg.timestamp,
-              decoded: msg.decoded,
-              messageType: msg.messageType,
-              raw: msg.raw,
-              stack: msg.stack,
+              result: session.detection,
             })
+            // Send detection-phase control messages to the panel
+            // (replayState already ran before the buffer flush, so these
+            // would otherwise never reach the panel)
+            for (const msg of session.controlMessages) {
+              sendToPanel(tabId, {
+                type: 'panel:control-message',
+                sessionId: message.sessionId,
+                direction: msg.direction,
+                timestamp: msg.timestamp,
+                decoded: msg.decoded,
+                messageType: msg.messageType,
+                raw: msg.raw,
+                stack: msg.stack,
+              })
+            }
+            for (const track of trackUpdates) {
+              sendTrackUpdate(tabId, message.sessionId, track)
+            }
+            controlJustIdentified = session.controlStreamId === message.streamId
+            // Detection consumed these; controlRemainder owns its own copy of
+            // the leftover bytes, so nothing here is needed again.
+            session.streamBuffers.clear()
+            session.detectionBytes = 0
+          } else if (session.detectionBytes > DETECTION_BUDGET_BYTES) {
+            // Nothing decodable in the first quarter-megabyte of candidate
+            // traffic. MoQ clients send SETUP as their first bytes, so this is
+            // a plain WebTransport session — stop retaining data for a
+            // detection that will never succeed.
+            session.detectionAttempted = true
+            session.streamBuffers.clear()
+            session.detectionBytes = 0
           }
-          for (const track of trackUpdates) {
-            sendTrackUpdate(tabId, message.sessionId, track)
-          }
-          controlJustIdentified = session.controlStreamId === message.streamId
-          // Detection consumed these; controlRemainder owns its own copy of
-          // the leftover bytes, so nothing here is needed again.
-          session.streamBuffers.clear()
-          session.detectionBytes = 0
-        } else if (session.detectionBytes > DETECTION_BUDGET_BYTES) {
-          // Nothing decodable in the first quarter-megabyte of bidirectional
-          // traffic. MoQ clients send CLIENT_SETUP as their first bytes, so
-          // this is a plain WebTransport session — stop retaining data for a
-          // detection that will never succeed.
-          session.detectionAttempted = true
-          session.streamBuffers.clear()
-          session.detectionBytes = 0
         }
       } else if (
         session.detectedDraft &&
