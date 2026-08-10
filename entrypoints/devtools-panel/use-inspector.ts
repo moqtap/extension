@@ -42,6 +42,10 @@ export interface SessionEntry {
   frameId?: number
   /** Parseable subset of the WebTransport constructor options */
   options?: WebTransportOptionsInfo
+  /** moqt_implementation from CLIENT_SETUP, when the client advertises one */
+  clientImplementation?: string
+  /** moqt_implementation from SERVER_SETUP, when the relay advertises one */
+  serverImplementation?: string
   streams: Map<number, StreamEntry>
   messages: MessageEntry[]
   tracks: Map<string, TrackEntry>
@@ -301,6 +305,29 @@ function prettifyValues(obj: unknown): unknown {
  * Returns PrettifiedValue wrappers so the UI shows a human-readable label
  * with the original hex value available as a tooltip.
  */
+/**
+ * Record the `moqt_implementation` setup parameter when either side
+ * advertises one — the client and relay name themselves on the wire, which
+ * beats any fingerprint we could infer.
+ *
+ * Called from both the live control-message path and the trace import path,
+ * so an imported .moqtrace shows the same thing a live session does.
+ */
+function applySetupImplementation(
+  session: SessionEntry,
+  messageType: string,
+  decoded: unknown,
+): void {
+  if (messageType !== 'client_setup' && messageType !== 'server_setup') return
+  if (!decoded || typeof decoded !== 'object') return
+  const params = (decoded as Record<string, unknown>).parameters
+  if (!params || typeof params !== 'object') return
+  const impl = (params as Record<string, unknown>).moqt_implementation
+  if (typeof impl !== 'string' || impl.length === 0) return
+  if (messageType === 'client_setup') session.clientImplementation = impl
+  else session.serverImplementation = impl
+}
+
 function prettifySetupVersions(
   messageType: string,
   decoded: Record<string, unknown>,
@@ -434,6 +461,11 @@ export function useInspector() {
             raw: base64ToBytes(msg.raw),
             stack: msg.stack,
           })
+          applySetupImplementation(
+            session,
+            msg.messageType,
+            tagged ? untagDecoded(tagged) : null,
+          )
           return true
         }
         return false
@@ -1035,6 +1067,8 @@ export function useInspector() {
             ),
             raw: ce.raw ?? new Uint8Array(0),
           })
+
+          applySetupImplementation(session, msgType, msg)
 
           // Extract track info from control messages
           extractTrackFromImported(
