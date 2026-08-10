@@ -76,6 +76,8 @@ interface SessionRecord {
   detectedDraft: SupportedDraft | null
   /** Accumulated bytes per stream for buffered detection/decoding */
   streamBuffers: Map<number, { data: Uint8Array; direction: 'tx' | 'rx' }[]>
+  /** Total bytes held in streamBuffers, against DETECTION_BUDGET_BYTES */
+  detectionBytes: number
   /** Whether we've attempted detection on this session */
   detectionAttempted: boolean
   /** Stream ID identified as the control stream (once detected) */
@@ -214,6 +216,18 @@ function flushPanelBatches() {
     sendToPanel(tabId, { type: 'panel:batch', items: batch })
   }
 }
+
+/**
+ * Bytes of candidate stream data retained per session while trying to detect
+ * MoQT, before we give up and release them.
+ *
+ * Without a ceiling this buffer never drains on a session that isn't MoQ at
+ * all: detection never succeeds, so every chunk of every stream is retained
+ * for the life of the session. The value is far above what detection needs —
+ * MoQ clients send CLIENT_SETUP as their very first bytes — and only counts
+ * bidirectional streams.
+ */
+const DETECTION_BUDGET_BYTES = 256 * 1024
 
 /** Try to detect MoQT draft from accumulated bytes on a given stream.
  *  Returns track updates discovered during initial message decoding. */
@@ -747,6 +761,7 @@ function handleContentMessage(
         detection: null,
         detectedDraft: null,
         streamBuffers: new Map(),
+        detectionBytes: 0,
         detectionAttempted: false,
         controlStreamId: null,
         controlRemainder: null,
@@ -804,14 +819,21 @@ function handleContentMessage(
 
       if (!stream.firstDataAt) stream.firstDataAt = Date.now()
 
-      // Buffer stream data for detection (any stream could be the control stream)
-      if (!session.detectionAttempted) {
+      // Buffer stream data for detection. Only bidirectional streams are
+      // candidates — every MoQ dialect puts its control plane there — so a
+      // known-unidirectional stream is skipped outright. That keeps media out
+      // of the buffer entirely and removes the chance of a video stream
+      // false-positiving as the control stream. `bidi === undefined` means a
+      // page-side hook that predates the flag, which still gets the old
+      // buffer-everything treatment.
+      if (!session.detectionAttempted && message.bidi !== false) {
         let chunks = session.streamBuffers.get(message.streamId)
         if (!chunks) {
           chunks = []
           session.streamBuffers.set(message.streamId, chunks)
         }
         chunks.push({ data: bytes, direction: message.direction })
+        session.detectionBytes += bytes.length
 
         const trackUpdates = attemptDetection(session, message.streamId)
         if (session.detection) {
@@ -838,6 +860,18 @@ function handleContentMessage(
           for (const track of trackUpdates) {
             sendTrackUpdate(tabId, message.sessionId, track)
           }
+          // Detection consumed these; controlRemainder owns its own copy of
+          // the leftover bytes, so nothing here is needed again.
+          session.streamBuffers.clear()
+          session.detectionBytes = 0
+        } else if (session.detectionBytes > DETECTION_BUDGET_BYTES) {
+          // Nothing decodable in the first quarter-megabyte of bidirectional
+          // traffic. MoQ clients send CLIENT_SETUP as their first bytes, so
+          // this is a plain WebTransport session — stop retaining data for a
+          // detection that will never succeed.
+          session.detectionAttempted = true
+          session.streamBuffers.clear()
+          session.detectionBytes = 0
         }
       } else if (
         session.detectedDraft &&
