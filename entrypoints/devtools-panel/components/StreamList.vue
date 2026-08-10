@@ -171,9 +171,11 @@ function codecLabel(contentType: StreamContentType): string {
 /**
  * QUIC stream class marker shown beside the stream id.
  *
- * Worth the column space because it is the structural split in every MoQ
- * dialect: control plane on bidirectional streams, media on unidirectional
- * ones. Absent for imported traces, which carry no stream class.
+ * Worth the column space because it is the structural split in MoQT: every
+ * draft from 07 to 19 states "Objects are sent on unidirectional streams",
+ * leaving bidirectional streams to the control plane — the control stream in
+ * all drafts, plus per-request streams from draft-17 on. Absent for imported
+ * traces, which carry no stream class.
  */
 function kindGlyph(stream: StreamEntry): string {
   return stream.bidi ? '⇄' : '→'
@@ -181,8 +183,8 @@ function kindGlyph(stream: StreamEntry): string {
 
 function kindTitle(stream: StreamEntry): string {
   return stream.bidi
-    ? 'Bidirectional stream — carries the control plane'
-    : 'Unidirectional stream'
+    ? 'Bidirectional stream — control or request messages'
+    : 'Unidirectional stream — objects'
 }
 
 function transferSummary(list: StreamEntry[]): string {
