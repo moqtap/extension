@@ -170,6 +170,24 @@ describe('WebTransport hook — session capture', () => {
     expect(sessions[0].url).toBe('https://relay.example.com/moq')
   })
 
+  it('stringifies a URL object so the session stays structured-cloneable', () => {
+    const mockGlobal = createMockGlobal()
+    const sessions: InterceptedSession[] = []
+    installWebTransportHook(mockGlobal, (s) => sessions.push(s), {
+      onData: vi.fn(),
+      onClose: vi.fn(),
+      onError: vi.fn(),
+    })
+
+    const url = new URL('https://relay.example.com/moq')
+    const _wt = new (mockGlobal.WebTransport as any)(url)
+    expect(sessions).toHaveLength(1)
+    expect(typeof sessions[0].url).toBe('string')
+    expect(sessions[0].url).toBe('https://relay.example.com/moq')
+    // A URL instance would throw DataCloneError here, killing session:opened
+    expect(() => structuredClone({ url: sessions[0].url })).not.toThrow()
+  })
+
   it('assigns unique session IDs', () => {
     const mockGlobal = createMockGlobal()
     const sessions: InterceptedSession[] = []

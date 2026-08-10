@@ -58,8 +58,7 @@ export function installWebTransportHook(
 ): () => void {
   const glob = target as Record<string, unknown>
   const OriginalWebTransport = glob.WebTransport as
-    | (new (...args: unknown[]) => unknown)
-    | undefined
+    (new (...args: unknown[]) => unknown) | undefined
 
   // No WebTransport on this global (e.g. Worker without WebTransport support).
   // Return a safe no-op cleanup.
@@ -73,19 +72,25 @@ export function installWebTransportHook(
 
   function PatchedWebTransport(
     this: unknown,
-    url: string,
+    url: string | URL,
     options?: Record<string, unknown>,
   ) {
-    // Delegate to the real constructor
-    const instance = new (OriginalWebTransport as new (
-      url: string,
-      options?: Record<string, unknown>,
-    ) => Record<string, unknown>)(url, options)
+    // Delegate to the real constructor with the caller's original argument
+    const instance = new (
+      OriginalWebTransport as new (
+        url: string | URL,
+        options?: Record<string, unknown>,
+      ) => Record<string, unknown>
+    )(url, options)
 
-    // Notify the session callback
+    // Notify the session callback.
+    // The spec allows a URL object here, and several MoQ libraries pass one.
+    // It must be stringified: URL is not structured-cloneable, so leaving it
+    // as-is makes the postMessage carrying session:opened throw DataCloneError
+    // and the session is never reported.
     const session: InterceptedSession = {
       id: generateSessionId(),
-      url,
+      url: String(url),
       createdAt: Date.now(),
     }
     const sessionId = session.id
@@ -174,8 +179,7 @@ export function installWebTransportHook(
 
       // .closed resolves on clean close, rejects on error-based closure
       const closed = instance.closed as
-        | Promise<{ closeCode?: number; reason?: string }>
-        | undefined
+        Promise<{ closeCode?: number; reason?: string }> | undefined
       if (closed && typeof closed.then === 'function') {
         closed.then(
           (info) => {
