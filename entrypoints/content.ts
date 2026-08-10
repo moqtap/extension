@@ -22,13 +22,31 @@ import type { ContentToBackgroundMsg } from '@/src/messaging/types'
  * Max buffered events before oldest are dropped (prevents memory leaks on
  * pages that never open DevTools).
  *
- * Data and lifecycle events are capped separately: a high-bitrate session can
- * produce hundreds of stream:data events per second, and a single shared FIFO
- * would evict session:opened within seconds. Without that record the background
- * drops every subsequent event for the session, so the panel shows nothing.
+ * Split three ways rather than one shared FIFO, because a high-bitrate session
+ * produces hundreds of stream:data events per second and would otherwise evict
+ * everything that makes the session interpretable within seconds:
+ *
+ *   1. Lifecycle — session:opened and friends. Losing session:opened makes the
+ *      background drop every later event for that session, so the panel shows
+ *      nothing at all.
+ *   2. Control plane — stream:data on bidirectional streams. Every MoQ dialect
+ *      puts SETUP, ANNOUNCE, SUBSCRIBE and the rest here; it is what lets the
+ *      panel name a draft and reconstruct track state. Keeping only the first
+ *      few events would recover the SETUP exchange but not the track mapping,
+ *      so this is budgeted by bytes: a whole session's control plane is a few
+ *      kilobytes (~150 B of SETUP, ~100 B per track), so the budget below is
+ *      generous by orders of magnitude while still holding less memory than
+ *      the bulk buffer.
+ *   3. Bulk — media on unidirectional streams and datagrams. Genuinely
+ *      unbounded, and the least valuable per byte, so it stays a small FIFO.
+ *
+ * Tier 2 is also capped by entry count: a page writing tiny chunks to a bidi
+ * stream would otherwise build a huge array well under the byte budget.
  */
-const MAX_DATA_BUFFER = 500
 const MAX_LIFECYCLE_BUFFER = 500
+const MAX_CONTROL_BUFFER = 2000
+const MAX_CONTROL_BYTES = 256 * 1024
+const MAX_DATA_BUFFER = 500
 
 /**
  * Origins where worker wrapping is known to fail (CSP, etc.).
@@ -67,15 +85,19 @@ try {
 
 let activated = false
 
-/** A buffered event plus its arrival order, so the two buffers can be
+/** A buffered event plus its arrival order, so the buffers can be
  *  re-merged into the original sequence when they are flushed. */
 interface BufferedMsg {
   seq: number
   msg: ContentToBackgroundMsg
+  /** Payload size, for the byte-budgeted control buffer */
+  bytes: number
 }
 let bufferSeq = 0
-let dataBuffer: BufferedMsg[] = []
 let lifecycleBuffer: BufferedMsg[] = []
+let controlBuffer: BufferedMsg[] = []
+let controlBytes = 0
+let dataBuffer: BufferedMsg[] = []
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -833,15 +855,34 @@ if (OrigWT) {
 
 // ─── Send helpers ─────────────────────────────────────────────────────
 
+/** Byte size of a message's payload, or 0 for messages that carry none */
+function payloadBytes(msg: ContentToBackgroundMsg): number {
+  if (msg.type !== 'stream:data' && msg.type !== 'datagram:data') return 0
+  return msg.data instanceof ArrayBuffer ? msg.data.byteLength : msg.data.length
+}
+
 /** Queue or forward a message depending on activation state */
 function send(msg: ContentToBackgroundMsg) {
   if (activated) {
     forward(msg)
     return
   }
-  const entry: BufferedMsg = { seq: bufferSeq++, msg }
+  const entry: BufferedMsg = { seq: bufferSeq++, msg, bytes: payloadBytes(msg) }
   // Cap each buffer to prevent memory leaks on pages that never open DevTools
-  if (msg.type === 'stream:data' || msg.type === 'datagram:data') {
+  if (msg.type === 'stream:data' && msg.bidi === true) {
+    controlBuffer.push(entry)
+    controlBytes += entry.bytes
+    while (
+      controlBuffer.length > MAX_CONTROL_BUFFER ||
+      controlBytes > MAX_CONTROL_BYTES
+    ) {
+      const dropped = controlBuffer.shift()
+      if (!dropped) break
+      controlBytes -= dropped.bytes
+    }
+  } else if (msg.type === 'stream:data' || msg.type === 'datagram:data') {
+    // Includes bidi === undefined: a hook predating the flag reports no stream
+    // class, so treat it as bulk and keep the pre-existing behaviour.
     dataBuffer.push(entry)
     if (dataBuffer.length > MAX_DATA_BUFFER) dataBuffer.shift()
   } else {
@@ -850,19 +891,17 @@ function send(msg: ContentToBackgroundMsg) {
   }
 }
 
-/** Flush both buffers in their original arrival order */
+/** Flush every buffer in the original arrival order */
 function flushBuffers() {
-  let i = 0
-  let j = 0
-  while (i < lifecycleBuffer.length && j < dataBuffer.length) {
-    if (lifecycleBuffer[i].seq <= dataBuffer[j].seq)
-      forward(lifecycleBuffer[i++].msg)
-    else forward(dataBuffer[j++].msg)
-  }
-  while (i < lifecycleBuffer.length) forward(lifecycleBuffer[i++].msg)
-  while (j < dataBuffer.length) forward(dataBuffer[j++].msg)
+  const pending = [...lifecycleBuffer, ...controlBuffer, ...dataBuffer]
   lifecycleBuffer = []
+  controlBuffer = []
   dataBuffer = []
+  controlBytes = 0
+  // Each buffer is already ordered; sorting the union is simpler than an
+  // n-way merge and the combined length is capped in the low thousands.
+  pending.sort((a, b) => a.seq - b.seq)
+  for (const entry of pending) forward(entry.msg)
 }
 
 /**
