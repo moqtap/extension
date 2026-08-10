@@ -346,6 +346,14 @@ function closeStreamData() {
               <td class="details-label">Protocol</td>
               <td>{{ protocolLabel(session) }}</td>
             </tr>
+            <tr v-if="session.clientImplementation">
+              <td class="details-label">Client</td>
+              <td>{{ session.clientImplementation }}</td>
+            </tr>
+            <tr v-if="session.serverImplementation">
+              <td class="details-label">Relay</td>
+              <td>{{ session.serverImplementation }}</td>
+            </tr>
             <tr v-if="session.options?.protocols?.length">
               <td class="details-label">Offered Protocols</td>
               <td>{{ session.options.protocols.join(', ') }}</td>
