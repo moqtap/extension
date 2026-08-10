@@ -129,7 +129,7 @@ function bootstrap() {
       })
     },
     {
-      onData(sessionId, streamId, data, direction, stack) {
+      onData(sessionId, streamId, data, direction, bidi, stack) {
         // Copy the buffer so the page retains the original and we can transfer the copy
         const copy = data.buffer.slice(
           data.byteOffset,
@@ -140,6 +140,7 @@ function bootstrap() {
           sessionId,
           streamId,
           direction,
+          bidi,
           data: copy,
           stack,
           capturedAt: Date.now(),
@@ -663,7 +664,7 @@ function __moqtapSend(msg) {
   }
 }
 
-function __moqtapWrapReadable(rs, sessionId, sid, dir) {
+function __moqtapWrapReadable(rs, sessionId, sid, dir, bidi) {
   if (!rs || typeof rs !== "object" || typeof rs.getReader !== "function") return;
   var orig = rs.getReader.bind(rs);
   rs.getReader = function() {
@@ -674,7 +675,7 @@ function __moqtapWrapReadable(rs, sessionId, sid, dir) {
         if (result.done) {
           __moqtapSend({ type: "stream:closed", sessionId: sessionId, streamId: sid });
         } else if (result.value instanceof Uint8Array) {
-          __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(result.value), capturedAt: Date.now() });
+          __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, bidi: bidi, data: __moqtapCopyBuf(result.value), capturedAt: Date.now() });
         }
         return result;
       }, function(err) {
@@ -686,7 +687,7 @@ function __moqtapWrapReadable(rs, sessionId, sid, dir) {
   };
 }
 
-function __moqtapWrapWritable(ws, sessionId, sid, dir, captureStack) {
+function __moqtapWrapWritable(ws, sessionId, sid, dir, bidi, captureStack) {
   if (!ws || typeof ws !== "object" || typeof ws.getWriter !== "function") return;
   var orig = ws.getWriter.bind(ws);
   ws.getWriter = function() {
@@ -695,7 +696,7 @@ function __moqtapWrapWritable(ws, sessionId, sid, dir, captureStack) {
     writer.write = function(chunk) {
       if (chunk instanceof Uint8Array) {
         var stack = captureStack ? (new Error().stack || "") : undefined;
-        __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, data: __moqtapCopyBuf(chunk), stack: stack, capturedAt: Date.now() });
+        __moqtapSend({ type: "stream:data", sessionId: sessionId, streamId: sid, direction: dir, bidi: bidi, data: __moqtapCopyBuf(chunk), stack: stack, capturedAt: Date.now() });
       }
       return origWrite(chunk);
     };
@@ -720,10 +721,10 @@ function __moqtapTapIncoming(incoming, sessionId, isBidi) {
           var sid = __moqtapNextStreamId++;
           var stream = result.value;
           if (isBidi) {
-            __moqtapWrapReadable(stream.readable, sessionId, sid, "rx");
-            __moqtapWrapWritable(stream.writable, sessionId, sid, "tx");
+            __moqtapWrapReadable(stream.readable, sessionId, sid, "rx", true);
+            __moqtapWrapWritable(stream.writable, sessionId, sid, "tx", true);
           } else {
-            __moqtapWrapReadable(stream, sessionId, sid, "rx");
+            __moqtapWrapReadable(stream, sessionId, sid, "rx", false);
           }
         }
         return result;
@@ -781,8 +782,8 @@ if (OrigWT) {
       inst.createBidirectionalStream = function() {
         var sid = __moqtapNextStreamId++;
         return origBidi.apply(inst, arguments).then(function(stream) {
-          __moqtapWrapReadable(stream.readable, sessionId, sid, "rx");
-          __moqtapWrapWritable(stream.writable, sessionId, sid, "tx", true);
+          __moqtapWrapReadable(stream.readable, sessionId, sid, "rx", true);
+          __moqtapWrapWritable(stream.writable, sessionId, sid, "tx", true, true);
           return stream;
         });
       };
@@ -793,7 +794,7 @@ if (OrigWT) {
         var sid = __moqtapNextStreamId++;
         var stack = new Error().stack || "";
         return origUni.apply(inst, arguments).then(function(writable) {
-          __moqtapWrapWritable(writable, sessionId, sid, "tx");
+          __moqtapWrapWritable(writable, sessionId, sid, "tx", false);
           __moqtapSend({ type: "stream:created", sessionId: sessionId, streamId: sid, stack: stack });
           return writable;
         });

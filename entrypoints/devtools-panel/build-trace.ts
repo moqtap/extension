@@ -64,7 +64,10 @@ export async function buildTrace(
       seq: seq++,
       timestamp: toRelativeUs(msg.timestamp, startTime),
       direction: msg.direction === 'tx' ? 0 : 1,
-      messageType: resolveMessageTypeId(msg.messageType, session.draft as SupportedDraft),
+      messageType: resolveMessageTypeId(
+        msg.messageType,
+        session.draft as SupportedDraft,
+      ),
       message: (msg.decoded ?? {}) as Record<string, unknown>,
       raw: msg.raw.length > 0 ? toBytes(msg.raw) : undefined,
     })
@@ -80,7 +83,8 @@ export async function buildTrace(
       timestamp: ts,
       streamId: BigInt(stream.streamId),
       direction: stream.direction === 'tx' ? 0 : 1,
-      streamType: 0, // bidi=0, we don't distinguish
+      // MoQT data stream type (0=subgroup, 1=datagram, 2=fetch), not bidi/uni
+      streamType: 0,
     })
 
     // Load stream data via callback (background serves from memory + IDB)

@@ -281,6 +281,17 @@ function closeStreamData() {
             </span>
             <span v-if="selectedStream" class="detail-meta">
               {{ selectedStream.direction === 'tx' ? 'TX' : 'RX' }}
+              <template
+                v-if="
+                  !selectedStream.datagramGroupKey &&
+                  selectedStream.bidi !== undefined
+                "
+              >
+                ·
+                {{
+                  selectedStream.bidi ? 'bidirectional' : 'unidirectional'
+                }}</template
+              >
               · {{ formatBytes(selectedStream.byteCount) }}
               <template v-if="selectedStream.datagramGroupKey">
                 · {{ selectedStream.datagramCount }} datagrams</template
