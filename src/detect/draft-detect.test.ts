@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from 'vitest'
 import {
+  couldBeControlStream,
   detectFromControlStream,
   refineFromSelectedVersion,
   versionToDraft,
@@ -207,5 +208,48 @@ describe('versionToDraft', () => {
 
   it('returns undefined for reserved RFC version 1', () => {
     expect(versionToDraft(1)).toBeUndefined()
+  })
+})
+
+describe('couldBeControlStream', () => {
+  const bytes = (...b: number[]) => new Uint8Array(b)
+
+  it('accepts CLIENT_SETUP for drafts <= 10 and 11-16', () => {
+    expect(couldBeControlStream(bytes(0x40, 0x40, 0x02))).toBe(true)
+    expect(couldBeControlStream(bytes(0x20, 0x00, 0x2c))).toBe(true)
+  })
+
+  it('accepts SERVER_SETUP, since either direction may be observed first', () => {
+    expect(couldBeControlStream(bytes(0x40, 0x41, 0x02))).toBe(true)
+    expect(couldBeControlStream(bytes(0x21, 0x00, 0x0a))).toBe(true)
+  })
+
+  it('accepts the draft-17+ unidirectional control stream type 0x2F00', () => {
+    // The control stream stopped being bidirectional in draft-17, so this
+    // case is the one a direction-based test would wrongly reject.
+    expect(couldBeControlStream(bytes(0x6f, 0x00))).toBe(true)
+  })
+
+  it('rejects data stream types', () => {
+    expect(couldBeControlStream(bytes(0x05, 0x01))).toBe(false) // FETCH_HEADER
+    expect(couldBeControlStream(bytes(0x10, 0x01))).toBe(false) // SUBGROUP_HEADER
+    expect(couldBeControlStream(bytes(0x04, 0x0b, 0x63))).toBe(false)
+  })
+
+  it('rejects an Annex-B video chunk', () => {
+    expect(couldBeControlStream(bytes(0x00, 0x00, 0x00, 0x01, 0x09))).toBe(
+      false,
+    )
+  })
+
+  it('stays undecided while the leading varint is incomplete', () => {
+    // A client may write a control message's type, length and body as three
+    // separate writes, so one byte of a two-byte varint must not rule it out.
+    expect(couldBeControlStream(bytes(0x6f))).toBe(true)
+    expect(couldBeControlStream(bytes())).toBe(true)
+  })
+
+  it('rejects a complete varint that merely starts like 0x2F00', () => {
+    expect(couldBeControlStream(bytes(0x6f, 0x01))).toBe(false)
   })
 })

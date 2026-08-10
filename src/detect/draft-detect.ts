@@ -23,6 +23,45 @@ const CLIENT_SETUP_DRAFT07 = 0x40 // drafts ≤ 10
 const CLIENT_SETUP_DRAFT11 = 0x20 // drafts 11-16
 const SETUP_DRAFT17_PLUS = 0x2f00 // draft-17+ (unidirectional control streams)
 
+/**
+ * Every message type that can legally open a control stream, across all
+ * drafts. SERVER_SETUP is included because a control stream carries both
+ * directions and we make no assumption about which side we observe first.
+ */
+const CONTROL_STREAM_OPENERS: ReadonlySet<number> = new Set([
+  CLIENT_SETUP_DRAFT07,
+  0x41, // SERVER_SETUP, drafts ≤ 10
+  CLIENT_SETUP_DRAFT11,
+  0x21, // SERVER_SETUP, drafts 11-16
+  SETUP_DRAFT17_PLUS,
+])
+
+/**
+ * Could a stream that begins with these bytes be a MoQT control stream?
+ *
+ * Answers from the leading varint alone, so a caller can stop retaining a
+ * stream's bytes as soon as it is provably not a control stream — which is
+ * every media stream, after two bytes.
+ *
+ * Deliberately answers `true` while undecided: with too few bytes to read the
+ * leading varint the honest answer is "keep looking", and control streams get
+ * written in small pieces (a client may write the message type, length and
+ * body as three separate writes).
+ *
+ * Note this is about the *stream*, not the transport: the control stream is
+ * bidirectional through draft-16 but a pair of unidirectional streams from
+ * draft-17 on, so stream direction cannot stand in for this check.
+ */
+export function couldBeControlStream(leadingBytes: Uint8Array): boolean {
+  try {
+    const [msgType] = decodeVarint(leadingBytes, 0)
+    return CONTROL_STREAM_OPENERS.has(msgType)
+  } catch {
+    // Leading varint not yet complete — undecided.
+    return true
+  }
+}
+
 /** Latest draft assumed when only the ALPN-era SETUP message type is visible. */
 const LATEST_ALPN_DRAFT: SupportedDraft = '19'
 const LATEST_ALPN_DRAFT_VERSION = 0xff000013
