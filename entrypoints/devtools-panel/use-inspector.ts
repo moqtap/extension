@@ -16,6 +16,7 @@ import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
 // Panel no longer accesses IDB directly — data requests go through background
 import { detectMediaInfo, type PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
+  detectAnnexB,
   detectContentType,
   type StreamContentType,
 } from '@/src/detect/content-detect'
@@ -122,6 +123,8 @@ export interface StreamEntry {
   contentType: StreamContentType
   /** ISO BMFF media info (variant + box types) from first object payload */
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string when the payload is a raw elementary stream */
+  codecString?: string
   /** Timestamp of first data chunk (ms) */
   firstDataAt?: number
   /** Timestamp of most recent data chunk (ms) */
@@ -151,6 +154,8 @@ export interface DatagramGroupEntry {
   datagramCount: number
   contentType: StreamContentType
   mediaInfo?: PayloadMediaInfo
+  /** RFC 6381 codec string when the payload is a raw elementary stream */
+  codecString?: string
   firstDataAt?: number
   lastDataAt?: number
 }
@@ -455,6 +460,7 @@ export function useInspector() {
               chunkCount: 0,
               contentType: msg.contentType ?? 'binary',
               mediaInfo: msg.mediaInfo,
+              codecString: msg.codecString,
               firstDataAt: now,
               trackAlias: msg.trackAlias,
               isControl: msg.isControl,
@@ -464,6 +470,7 @@ export function useInspector() {
             // First-chunk metadata arrived (possible if stream was created by an earlier message)
             stream.contentType = msg.contentType
             stream.mediaInfo = msg.mediaInfo
+            stream.codecString = msg.codecString
             stream.trackAlias = msg.trackAlias
             if (msg.isControl) stream.isControl = true
           }
@@ -490,6 +497,7 @@ export function useInspector() {
             chunkCount: 0, // not tracked during replay
             contentType: msg.contentType,
             mediaInfo: msg.mediaInfo,
+            codecString: msg.codecString,
             trackAlias: msg.trackAlias,
             isControl: msg.isControl,
             firstDataAt: msg.firstDataAt,
@@ -622,12 +630,14 @@ export function useInspector() {
               datagramCount: 0,
               contentType: msg.contentType ?? 'binary',
               mediaInfo: msg.mediaInfo,
+              codecString: msg.codecString,
               firstDataAt: now,
             }
             session.datagramGroups.set(gk, group)
           } else if (msg.isNewGroup && msg.contentType != null) {
             group.contentType = msg.contentType
             group.mediaInfo = msg.mediaInfo
+            group.codecString = msg.codecString
           }
           group.byteCount += msg.byteLength
           group.datagramCount++
@@ -1131,6 +1141,11 @@ export function useInspector() {
           if (stream.contentType === 'fmp4') {
             // Imported payloads are raw object data — detect BMFF boxes directly
             stream.mediaInfo = detectMediaInfo(chunk) ?? undefined
+          } else if (
+            stream.contentType === 'h264' ||
+            stream.contentType === 'h265'
+          ) {
+            stream.codecString = detectAnnexB(chunk)?.codecString
           }
         }
       }

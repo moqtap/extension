@@ -323,6 +323,7 @@ function closeStreamData() {
             v-else-if="selectedStreamData"
             :data="selectedStreamData"
             :content-type="selectedContentType"
+            :codec-string="selectedStream?.codecString"
             :media-info="selectedStream?.mediaInfo"
             :is-moqt="session.protocol === 'moqt'"
             :draft="session.draft"

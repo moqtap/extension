@@ -18,6 +18,8 @@ import JsonTree from './JsonTree.vue'
 const props = defineProps<{
   data: Uint8Array
   contentType: StreamContentType
+  /** RFC 6381 codec string, when the payload is a raw elementary stream */
+  codecString?: string
   /** Pre-computed media info from background first-chunk detection */
   mediaInfo?: PayloadMediaInfo
   /** Whether this stream belongs to a MoQT session (enables framing parsing) */
@@ -294,6 +296,12 @@ if (preferredMode === 'json' && hasStructuredContent.value) {
       <span v-else-if="contentType === 'fmp4'" class="content-tag fmp4-tag"
         >fMP4</span
       >
+      <span
+        v-else-if="contentType === 'h264' || contentType === 'h265'"
+        class="content-tag codec-tag"
+        :title="codecString ?? undefined"
+        >{{ codecString ?? (contentType === 'h265' ? 'H.265' : 'H.264') }}</span
+      >
       <span v-if="resolvedTrack" class="content-tag track-tag">{{
         resolvedTrack.fullName
       }}</span>
@@ -369,6 +377,11 @@ if (preferredMode === 'json' && hasStructuredContent.value) {
 .fmp4-tag {
   background: var(--content-fmp4-bg);
   color: var(--content-fmp4-color);
+  cursor: default;
+}
+.codec-tag {
+  background: var(--content-codec-bg);
+  color: var(--content-codec-color);
   cursor: default;
 }
 .framing-tag {

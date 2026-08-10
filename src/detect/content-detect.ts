@@ -8,15 +8,19 @@
  * Runs synchronously before IndexedDB write — must be fast.
  */
 
+import type { AnnexBInfo } from './annexb'
+import { detectAnnexB } from './annexb'
 import type { PayloadMediaInfo } from './bmff-boxes'
 import { detectMediaInfo, scanAndDetectMedia } from './bmff-boxes'
 import { looksLikeCbor } from './cbor-decode'
 import { looksLikeMsgpack } from './msgpack-decode'
 
-export type { PayloadMediaInfo }
+export type { AnnexBInfo, PayloadMediaInfo }
+export { detectAnnexB }
 
 /** Detected content type for a stream's payload data */
-export type StreamContentType = 'json' | 'fmp4' | 'cbor' | 'msgpack' | 'binary'
+export type StreamContentType =
+  'json' | 'fmp4' | 'cbor' | 'msgpack' | 'h264' | 'h265' | 'binary'
 
 /** How far into the buffer to scan for signatures */
 const SCAN_LIMIT = 256
@@ -34,6 +38,12 @@ export function detectContentType(data: Uint8Array): StreamContentType {
 
   // Scan for ISO BMFF box signatures within the first N bytes.
   if (scanAndDetectMedia(data, limit)) return 'fmp4'
+
+  // Raw codec frames (hang and friends send Annex-B behind a timestamp varint).
+  // Checked before CBOR/msgpack, whose loose first-byte heuristics could
+  // otherwise claim a frame that starts with a varint prefix.
+  const annexb = detectAnnexB(data)
+  if (annexb) return annexb.codec
 
   // Scan for JSON: look for { or [ that's preceded by whitespace or is at a
   // plausible payload boundary (after MoQT varint framing)
