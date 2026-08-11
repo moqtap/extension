@@ -16,6 +16,7 @@ import {
   versionToDraft,
 } from './draft-detect'
 import { encodeVarint, concat } from '../codec/test-helpers'
+import { encodeMoqtVarint } from '../codec/varint'
 
 // ═══════════════════════════════════════════════════════════════════════
 // Helper: build raw CLIENT_SETUP wire bytes
@@ -117,7 +118,9 @@ describe('detectFromControlStream', () => {
   it('defaults to latest ALPN draft-19 for SETUP (type 0x2F00)', () => {
     // Draft-17+ SETUP carries no version on the wire (negotiated via ALPN),
     // so detection defaults to the newest known ALPN-era draft.
-    const bytes = encodeVarint(0x2f00)
+    const bytes = encodeMoqtVarint(0x2f00)
+    expect(Array.from(bytes)).toEqual([0xaf, 0x00])
+
     const result = detectFromControlStream(bytes)
 
     expect(result.protocol).toBe('moqt')
@@ -125,6 +128,15 @@ describe('detectFromControlStream', () => {
       expect(result.draft).toBe('19')
       expect(result.versions).toEqual([0xff000013])
     }
+  })
+
+  it('does not read SETUP with the RFC 9000 varint', () => {
+    // `6f 00` is what RFC 9000 makes of 0x2F00, and no draft writes it: the
+    // drafts that define SETUP replaced that encoding. Accepting it would mean
+    // detection is reading draft-17+ streams the pre-17 way.
+    expect(detectFromControlStream(encodeVarint(0x2f00)).protocol).toBe(
+      'unknown',
+    )
   })
 })
 
@@ -226,8 +238,9 @@ describe('couldBeControlStream', () => {
 
   it('accepts the draft-17+ unidirectional control stream type 0x2F00', () => {
     // The control stream stopped being bidirectional in draft-17, so this
-    // case is the one a direction-based test would wrongly reject.
-    expect(couldBeControlStream(bytes(0x6f, 0x00))).toBe(true)
+    // case is the one a direction-based test would wrongly reject. 0x2F00 is
+    // `af 00` because draft-17 also replaced the varint encoding.
+    expect(couldBeControlStream(bytes(0xaf, 0x00))).toBe(true)
   })
 
   it('rejects data stream types', () => {
@@ -245,11 +258,13 @@ describe('couldBeControlStream', () => {
   it('stays undecided while the leading varint is incomplete', () => {
     // A client may write a control message's type, length and body as three
     // separate writes, so one byte of a two-byte varint must not rule it out.
-    expect(couldBeControlStream(bytes(0x6f))).toBe(true)
+    expect(couldBeControlStream(bytes(0xaf))).toBe(true)
     expect(couldBeControlStream(bytes())).toBe(true)
   })
 
   it('rejects a complete varint that merely starts like 0x2F00', () => {
-    expect(couldBeControlStream(bytes(0x6f, 0x01))).toBe(false)
+    // Long enough to finish under both encodings: `af 01` is 0x2F01 to MoQT,
+    // and all four bytes are 0x2F010000 to RFC 9000. Neither opens a stream.
+    expect(couldBeControlStream(bytes(0xaf, 0x01, 0x00, 0x00))).toBe(false)
   })
 })

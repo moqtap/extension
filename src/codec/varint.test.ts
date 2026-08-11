@@ -1,5 +1,7 @@
 /**
- * Tests for QUIC variable-length integer encoding/decoding per RFC 9000 §16.
+ * Tests for variable-length integer encoding/decoding, in both formats the
+ * draft series uses: RFC 9000 §16 through draft-16, and MoQT's own from
+ * draft-17 on (covered at the bottom of the file).
  *
  * The varint format uses the two MSBs of the first byte to encode length:
  *   00 → 1 byte  (6-bit value,  max 63)
@@ -13,11 +15,19 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  decodeMoqtVarint,
   decodeVarint,
+  decodeVarintForDraft,
+  encodeMoqtVarint,
   encodeVarint,
+  encodeVarintForDraft,
   VARINT_MAX,
+  VarintError,
   varintEncodedLength,
+  varintEncoding,
+  type VarintEncoding,
 } from './varint'
+import type { SupportedDraft } from '../types/common'
 
 // ─── Helper ─────────────────────────────────────────────────────────────
 
@@ -298,5 +308,146 @@ describe('varint — consecutive decoding', () => {
     const [v3, c3] = decodeVarint(buf, offset)
     expect(v3).toBe(0)
     expect(c3).toBe(1)
+  })
+})
+
+// ─── MoQT varint (draft-17 §1.4.1) ──────────────────────────────────────
+
+/**
+ * Draft-17 replaced the RFC 9000 integer with MoQT's own, whose length is the
+ * number of leading 1 bits in the first byte. Hex and values below are the
+ * @moqtap/test-vectors draft-17/18 varint vectors.
+ */
+describe('MoQT varint — decoding', () => {
+  it.each([
+    ['25', 37, 1],
+    ['7f', 127, 1], // one byte reaches 127, where RFC 9000 stops at 63
+    ['8080', 128, 2],
+    ['bbbd', 15293, 2],
+    ['bfff', 16383, 2],
+    ['e0200000', 2097152, 4],
+    ['ed7f3e7d', 226442877, 4],
+    ['efffffff', 268435455, 4],
+    ['fc8998abc66bc0', 151288809941952, 7],
+  ])('decodes %s as %d in %d bytes', (h, value, length) => {
+    expect(decodeMoqtVarint(hex(h))).toEqual([value, length])
+  })
+
+  it('accepts non-minimal encodings, which draft-18 §1.4.1 requires', () => {
+    // "any encoding length that can represent the value is valid"
+    expect(decodeMoqtVarint(hex('e000007f'))[0]).toBe(127)
+    expect(decodeMoqtVarint(hex('ff0000000000000000'))).toEqual([0, 9])
+  })
+
+  it('throws on a truncated varint rather than reading short', () => {
+    expect(() => decodeMoqtVarint(hex('e00000'))).toThrow(VarintError)
+    expect(() => decodeMoqtVarint(hex('ff00000000'))).toThrow(VarintError)
+    expect(() => decodeMoqtVarint(new Uint8Array())).toThrow(VarintError)
+  })
+
+  it('decodes 0x2F00 from af 00, the SETUP that opens a control stream', () => {
+    // The same bytes are 0x2f000000-something to RFC 9000, and RFC 9000's
+    // 6f 00 is 0x6f to MoQT. Neither encoding errors on the other's bytes.
+    expect(decodeMoqtVarint(hex('af00'))).toEqual([0x2f00, 2])
+    expect(decodeMoqtVarint(hex('6f00'))).toEqual([0x6f, 1])
+  })
+})
+
+describe('MoQT varint — the draft-17 seven-byte gap', () => {
+  it('rejects the 7-byte form on draft-17, which has no such length', () => {
+    // draft-17 §1.4.1: "11111100 is an invalid code point. An endpoint that
+    // receives this value MUST close the session with a PROTOCOL_VIOLATION."
+    expect(() => decodeMoqtVarint(hex('fc8998abc66bc0'), 0, 'moqt17')).toThrow(
+      VarintError,
+    )
+    expect(decodeMoqtVarint(hex('fc8998abc66bc0'), 0, 'moqt18')[0]).toBe(
+      151288809941952,
+    )
+  })
+
+  it('spends eight bytes on draft-17 where draft-18 spends seven', () => {
+    const value = 151288809941952
+    expect(encodeMoqtVarint(value, 'moqt17')).toEqual(hex('fe008998abc66bc0'))
+    expect(encodeMoqtVarint(value, 'moqt18')).toEqual(hex('fc8998abc66bc0'))
+  })
+})
+
+describe('MoQT varint — encoding', () => {
+  it.each([
+    [37, '25'],
+    [127, '7f'],
+    [128, '8080'],
+    [15293, 'bbbd'],
+    [226442877, 'ed7f3e7d'],
+    [0x2f00, 'af00'],
+  ])('encodes %d as %s, the shortest form that holds it', (value, h) => {
+    expect(encodeMoqtVarint(value)).toEqual(hex(h))
+  })
+
+  it('round-trips every length boundary', () => {
+    for (let n = 1; n <= 7; n++) {
+      for (const value of [2 ** (7 * n) - 1, 2 ** (7 * n)]) {
+        const [decoded] = decodeMoqtVarint(encodeMoqtVarint(value))
+        expect(decoded, `2^${7 * n} boundary`).toBe(value)
+      }
+    }
+  })
+
+  it('rejects values it cannot represent exactly as a number', () => {
+    expect(() => encodeMoqtVarint(-1)).toThrow(VarintError)
+    expect(() => encodeMoqtVarint(2 ** 53)).toThrow(VarintError)
+  })
+})
+
+// ─── Which encoding a draft writes ──────────────────────────────────────
+
+describe('varintEncoding', () => {
+  it('puts every draft on the encoding its spec defines', () => {
+    // Not a `>= 17` threshold: draft-17 introduced the MoQT integer and
+    // draft-18 revised it by restoring the 7-byte length.
+    const expected: Record<SupportedDraft, VarintEncoding> = {
+      '07': 'rfc9000',
+      '08': 'rfc9000',
+      '09': 'rfc9000',
+      '10': 'rfc9000',
+      '11': 'rfc9000',
+      '12': 'rfc9000',
+      '13': 'rfc9000',
+      '14': 'rfc9000',
+      '15': 'rfc9000',
+      '16': 'rfc9000',
+      '17': 'moqt17',
+      '18': 'moqt18',
+      '19': 'moqt18',
+    }
+    for (const [draft, encoding] of Object.entries(expected)) {
+      expect(varintEncoding(draft as SupportedDraft), `draft-${draft}`).toBe(
+        encoding,
+      )
+    }
+  })
+
+  it('reads and writes SETUP differently either side of draft-17', () => {
+    expect(encodeVarintForDraft('16', 0x2f00)).toEqual(hex('6f00'))
+    expect(encodeVarintForDraft('19', 0x2f00)).toEqual(hex('af00'))
+
+    expect(decodeVarintForDraft('16', hex('6f00'))[0]).toBe(0x2f00)
+    expect(decodeVarintForDraft('19', hex('af00'))[0]).toBe(0x2f00)
+  })
+
+  it('round-trips message-type-sized values on every draft', () => {
+    const drafts: SupportedDraft[] = [
+      '07', '08', '09', '10', '11', '12', '13',
+      '14', '15', '16', '17', '18', '19',
+    ]
+    for (const draft of drafts) {
+      for (const value of [0, 0x20, 0x40, 0x51, 0x2f00, 0xff000013]) {
+        const [decoded] = decodeVarintForDraft(
+          draft,
+          encodeVarintForDraft(draft, value),
+        )
+        expect(decoded, `draft-${draft} ${value}`).toBe(value)
+      }
+    }
   })
 })

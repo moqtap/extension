@@ -15,7 +15,7 @@ import {
   REQUEST_STREAM_OPENERS,
 } from './control-streams'
 import { getMessageIdMap } from '../codec/message-ids'
-import { encodeVarint } from '../codec/varint'
+import { encodeVarintForDraft } from '../codec/varint'
 import type { SupportedDraft } from '../types/common'
 
 const ALL_DRAFTS: SupportedDraft[] = [
@@ -34,11 +34,15 @@ const ALL_DRAFTS: SupportedDraft[] = [
   '19',
 ]
 
-/** Wire bytes that open a stream with the named message. */
+/**
+ * Wire bytes that open a stream with the named message, in the varint encoding
+ * that draft actually writes — draft-17 replaced the RFC 9000 one, so encoding
+ * these the old way would let the test agree with a decoder that is wrong.
+ */
 function opener(draft: SupportedDraft, name: string): Uint8Array {
   const id = getMessageIdMap(draft).get(name)
   if (id == null) throw new Error(`draft-${draft} has no message "${name}"`)
-  return encodeVarint(Number(id))
+  return encodeVarintForDraft(draft, Number(id))
 }
 
 describe('hasRequestStreams', () => {
@@ -130,9 +134,22 @@ describe('classifyStreamOpener', () => {
   })
 
   it('stays pending on an incomplete leading varint', () => {
-    // 0x6f opens a two-byte varint; one byte is not yet a verdict.
-    expect(classifyStreamOpener(new Uint8Array([0x6f]), '19')).toBe('pending')
+    // 0xaf opens a two-byte MoQT varint; one byte is not yet a verdict.
+    expect(classifyStreamOpener(new Uint8Array([0xaf]), '19')).toBe('pending')
     expect(classifyStreamOpener(new Uint8Array(), '19')).toBe('pending')
+  })
+
+  it('reads the opener with the draft-17+ varint, not RFC 9000', () => {
+    // SETUP is 0x2F00, which is `af 00` under MoQT's encoding and `6f 00`
+    // under RFC 9000. Reading the wrong way round yields a plausible number
+    // rather than an error, so a draft-17+ control stream would be filed as
+    // media and never decoded.
+    expect(classifyStreamOpener(new Uint8Array([0xaf, 0x00]), '19')).toBe(
+      'control',
+    )
+    expect(classifyStreamOpener(new Uint8Array([0x6f, 0x00]), '19')).toBe(
+      'data',
+    )
   })
 
   it('does not treat request openers as request streams before draft-17', () => {

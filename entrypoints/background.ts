@@ -276,7 +276,7 @@ const DETECTION_BUDGET_BYTES = 256 * 1024
  * Clients routinely split a control message's type, length and body across
  * separate writes, so the first chunk alone can be a single byte.
  */
-function leadingBytes(chunks: { data: Uint8Array }[], max = 8): Uint8Array {
+function leadingBytes(chunks: { data: Uint8Array }[], max = 9): Uint8Array {
   const out = new Uint8Array(max)
   let n = 0
   for (const chunk of chunks) {
@@ -290,8 +290,9 @@ function leadingBytes(chunks: { data: Uint8Array }[], max = 8): Uint8Array {
 
 /**
  * Bytes of a stream's opening we will hold while its leading varint is still
- * incomplete. A message type varint is at most 8 bytes, so a stream that has
- * not resolved within this is not one we can classify.
+ * incomplete. A message type varint is at most 9 bytes — the longest MoQT
+ * form, draft-17 §1.4.1 — so a stream that has not resolved within this is
+ * not one we can classify.
  */
 const MAX_OPENER_LEAD = 16
 
