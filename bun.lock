@@ -5,7 +5,7 @@
     "": {
       "name": "@moqtap/extension",
       "dependencies": {
-        "@moqtap/codec": "^0.6.0",
+        "@moqtap/codec": "^0.7.0",
         "@moqtap/trace": "^0.1.3",
         "vue": "^3.5.29",
       },
@@ -116,7 +116,7 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@moqtap/codec": ["@moqtap/codec@0.6.0", "", {}, "sha512-OoSs2IACqO499vP3Sojh2tgAiBOsA2vccOmi545JkWiYkitpJFrlXsPhv+XYI21ezhgUCo8Ld1Ry5QIXM83P1Q=="],
+    "@moqtap/codec": ["@moqtap/codec@0.7.0", "", {}, "sha512-tEjTmRWu5jhnfaymAhn5xQt4zecuoBZmX+Z9FO7zWzdx1xByuu78USn69IIeQEpb7nWopcqR2m+4P1PeD/T4SA=="],
 
     "@moqtap/trace": ["@moqtap/trace@0.1.3", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": "^0.3.0" } }, "sha512-pcyK5IT23u/dehuX6Hjf4tABhQTvi4djY/i35ehi6ESOVxD4zYS+bdURfpN5fdmZpBbSHJK/cty65E0Uuv5N3A=="],
 

@@ -19,28 +19,8 @@
  */
 
 import { getMessageIdMap } from '../codec/message-ids'
-import { decodeVarint } from '../codec/varint'
+import { decodeVarintForDraft } from '../codec/varint'
 import type { SupportedDraft } from '../types/common'
-
-/**
- * KNOWN DIVERGENCE — draft-17 §1.4.1 defines a new variable-length integer
- * encoding ("New variable-length integer encoding", changelog #1016): the
- * length is a unary run of leading 1 bits, not RFC 9000's two-bit prefix, and
- * a one-byte value covers 0–127 rather than 0–63.
- *
- * @moqtap/codec implements RFC 9000 for every draft, and @moqtap/test-vectors
- * encodes its draft-17+ fixtures the same way, so the two agree with each
- * other and not with the spec. The visible effect is on ids >= 0x40: SETUP
- * (0x2F00) is `6f 00` here where the spec says `af 00`, and draft-18+
- * SUBSCRIBE_NAMESPACE (0x50) / SUBSCRIBE_TRACKS (0x51) gain a spurious `40`
- * prefix. Ids below 0x40 are identical under both, which is most messages.
- *
- * This module deliberately follows the codec rather than the spec: the
- * extension decodes through that codec, so a classifier that disagreed with
- * it would recognise streams it then could not parse. If the codec is fixed,
- * this follows automatically — everything here resolves ids through
- * getMessageIdMap and encodes with the shared varint helpers.
- */
 
 /**
  * Message types that open a request stream (draft-19 §3.3). Named rather than
@@ -129,7 +109,7 @@ export function classifyStreamOpener(
 ): OpenerVerdict {
   let msgType: number
   try {
-    ;[msgType] = decodeVarint(lead, 0)
+    ;[msgType] = decodeVarintForDraft(draft, lead, 0)
   } catch {
     return 'pending'
   }

@@ -2,11 +2,14 @@
  * MoQT draft auto-detection from WebTransport control stream bytes.
  *
  * Detection strategy:
- * 1. Peek at the first varint on the control stream
+ * 1. Peek at the first varint on the control stream. Which of the two varint
+ *    encodings is in force depends on the draft, which is what we are trying
+ *    to establish, so the bytes are read both ways (see ../codec/varint).
  * 2. If it matches a known message type ID, it's likely MoQT:
- *    - 0x40 → CLIENT_SETUP for drafts ≤ 10
- *    - 0x20 → CLIENT_SETUP for drafts 11-16
- *    - 0x2F00 → SETUP for draft-17+ (ALPN-based version negotiation)
+ *    - 0x40 → CLIENT_SETUP for drafts ≤ 10        (RFC 9000: `40 40`)
+ *    - 0x20 → CLIENT_SETUP for drafts 11-16       (RFC 9000: `20`)
+ *    - 0x2F00 → SETUP for draft-17+ (ALPN-based version negotiation),
+ *      written with MoQT's varint as `af 00`
  * 3. For CLIENT_SETUP: parse supported_versions to identify draft
  * 4. For SETUP (0x2F00): defaults to latest known draft (version via ALPN,
  *    not in wire — drafts 17, 18 and 19 are wire-indistinguishable on the
@@ -15,7 +18,7 @@
  * 6. If nothing matches → unknown protocol (pass through gracefully)
  */
 
-import { decodeVarint } from '../codec/varint'
+import { decodeMoqtVarint, decodeVarint } from '../codec/varint'
 import type { SupportedDraft } from '../types/common'
 
 /** Known CLIENT_SETUP / SETUP message type IDs by era */
@@ -24,17 +27,23 @@ const CLIENT_SETUP_DRAFT11 = 0x20 // drafts 11-16
 const SETUP_DRAFT17_PLUS = 0x2f00 // draft-17+ (unidirectional control streams)
 
 /**
- * Every message type that can legally open a control stream, across all
- * drafts. SERVER_SETUP is included because a control stream carries both
+ * Every message type that can legally open a control stream, split by the
+ * varint encoding its draft writes: draft-17 §1.4.1 replaced the RFC 9000
+ * integer, so the leading bytes have to be read both ways before the draft is
+ * known. SERVER_SETUP is included because a control stream carries both
  * directions and we make no assumption about which side we observe first.
+ *
+ * The sets do not overlap in practice: no draft ≤ 16 defines message type
+ * 0x2F00, and draft-17 collapsed CLIENT_SETUP and SERVER_SETUP into SETUP.
  */
-const CONTROL_STREAM_OPENERS: ReadonlySet<number> = new Set([
+const RFC9000_STREAM_OPENERS: ReadonlySet<number> = new Set([
   CLIENT_SETUP_DRAFT07,
   0x41, // SERVER_SETUP, drafts ≤ 10
   CLIENT_SETUP_DRAFT11,
   0x21, // SERVER_SETUP, drafts 11-16
-  SETUP_DRAFT17_PLUS,
 ])
+
+const MOQT_STREAM_OPENERS: ReadonlySet<number> = new Set([SETUP_DRAFT17_PLUS])
 
 /**
  * Could a stream that begins with these bytes be a MoQT control stream?
@@ -53,13 +62,26 @@ const CONTROL_STREAM_OPENERS: ReadonlySet<number> = new Set([
  * draft-17 on, so stream direction cannot stand in for this check.
  */
 export function couldBeControlStream(leadingBytes: Uint8Array): boolean {
+  // Which encoding is in force is exactly what detection has not established
+  // yet, so both are tried. A stream is only ruled out once neither can still
+  // turn into an opener — at most nine bytes, the longest MoQT varint.
+  let incomplete = false
+
   try {
     const [msgType] = decodeVarint(leadingBytes, 0)
-    return CONTROL_STREAM_OPENERS.has(msgType)
+    if (RFC9000_STREAM_OPENERS.has(msgType)) return true
   } catch {
-    // Leading varint not yet complete — undecided.
-    return true
+    incomplete = true
   }
+
+  try {
+    const [msgType] = decodeMoqtVarint(leadingBytes, 0)
+    if (MOQT_STREAM_OPENERS.has(msgType)) return true
+  } catch {
+    incomplete = true
+  }
+
+  return incomplete
 }
 
 /** Latest draft assumed when only the ALPN-era SETUP message type is visible. */
@@ -103,12 +125,12 @@ export function detectFromControlStream(bytes: Uint8Array): DetectionResult {
     return { protocol: 'unknown' }
   }
 
+  // Draft-17+: SETUP (0x2F00) on a unidirectional control stream, written with
+  // MoQT's own varint — `af 00`, not the `6f 00` RFC 9000 would produce.
+  // Version is negotiated via ALPN, not present in wire bytes — drafts 17,
+  // 18 and 19 are indistinguishable here, so we default to the newest.
   try {
-    const [msgType, msgTypeLen] = decodeVarint(bytes, 0)
-
-    // Draft-17+: SETUP (0x2F00) on unidirectional control stream.
-    // Version is negotiated via ALPN, not present in wire bytes — drafts 17,
-    // 18 and 19 are indistinguishable here, so we default to the newest.
+    const [msgType] = decodeMoqtVarint(bytes, 0)
     if (msgType === SETUP_DRAFT17_PLUS) {
       return {
         protocol: 'moqt',
@@ -116,8 +138,15 @@ export function detectFromControlStream(bytes: Uint8Array): DetectionResult {
         versions: [LATEST_ALPN_DRAFT_VERSION],
       }
     }
+  } catch {
+    // Too few bytes for the MoQT form; the RFC 9000 reading may still land.
+  }
 
-    // Drafts ≤ 16: CLIENT_SETUP on bidirectional control stream
+  // Drafts ≤ 16: CLIENT_SETUP on a bidirectional control stream. Everything
+  // below stays on RFC 9000 because only those drafts reach it.
+  try {
+    const [msgType, msgTypeLen] = decodeVarint(bytes, 0)
+
     if (msgType !== CLIENT_SETUP_DRAFT07 && msgType !== CLIENT_SETUP_DRAFT11) {
       return { protocol: 'unknown' }
     }
