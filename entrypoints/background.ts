@@ -11,6 +11,7 @@
 import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing'
 import { decodeControlMessage, getCodec } from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
+import { TrackRegistry, type TrackFields } from '@/src/codec/track-info'
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
   detectAnnexB,
@@ -102,6 +103,8 @@ interface SessionRecord {
   controlMessages: ControlMessageRecord[]
   /** Track registry: subscribeId -> track info */
   tracks: Map<string, TrackRecord>
+  /** Keeps `tracks` up to date from the session's control messages */
+  trackRegistry: TrackRegistry<TrackRecord>
   /** Whether stream data recording is active (default true) */
   streamRecording: boolean
   /** Stream IDs whose data should be discarded (cleared while still open) */
@@ -129,19 +132,11 @@ interface ControlStreamState {
   firstMessageType?: string
 }
 
-interface TrackRecord {
-  subscribeId: string
-  trackAlias?: string
-  trackNamespace: string[]
-  trackName: string
-  direction: 'tx' | 'rx'
-  status: 'pending' | 'active' | 'error' | 'done'
-  errorReason?: string
-  subscribedAt?: number
-  subscribeOkAt?: number
-  subscribeErrorAt?: number
-  subscribeDoneAt?: number
-}
+/**
+ * A track as the background knows it. Identical to the shared shape the
+ * registry fills in — the panel's copy adds display-only fields on top.
+ */
+type TrackRecord = TrackFields
 
 interface StreamRecord {
   streamId: number
@@ -152,6 +147,8 @@ interface StreamRecord {
   bidi?: boolean
   contentType?: StreamContentType
   trackAlias?: number
+  /** Request id from a fetch stream's header — a fetch has no track alias */
+  fetchRequestId?: number
   /** ISO BMFF media info from first object payload */
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string when the payload is a raw elementary stream */
@@ -207,6 +204,7 @@ function sendTrackUpdate(tabId: number, sessionId: string, track: TrackRecord) {
     trackNamespace: track.trackNamespace,
     trackName: track.trackName,
     direction: track.direction,
+    via: track.via,
     status: track.status,
     errorReason: track.errorReason,
     subscribedAt: track.subscribedAt,
@@ -493,10 +491,11 @@ function decodeControlBytes(
       records.push(record)
       state.firstMessageType ??= msgType
 
-      const trackUpdate = extractTrackInfo(
-        session,
+      // streamId matters from draft-17: responses there carry no request id,
+      // so the request stream they arrive on is what identifies them.
+      const trackUpdate = session.trackRegistry.apply(
         msg as unknown as Record<string, unknown>,
-        direction,
+        { direction, streamId, timestamp: record.timestamp },
       )
       if (trackUpdate) trackUpdates.push(trackUpdate)
 
@@ -510,6 +509,9 @@ function decodeControlBytes(
           direction: direction === 'tx' ? 0 : 1,
           messageType: wireId != null ? Number(wireId) : 0,
           message: msg as unknown as Record<string, unknown>,
+          // Recorded so a reader can pair a draft-17+ response with its
+          // request. Optional in the format, so older readers ignore it.
+          streamId: BigInt(streamId),
         })
       }
 
@@ -523,92 +525,6 @@ function decodeControlBytes(
   state.remainder = offset < buf.length ? buf.subarray(offset) : null
 
   return { records, trackUpdates }
-}
-
-/**
- * Extract track subscription info from a decoded control message.
- * Returns a track update to send to the panel, or null if not track-related.
- */
-function extractTrackInfo(
-  session: SessionRecord,
-  msg: Record<string, unknown>,
-  direction: 'tx' | 'rx',
-): TrackRecord | null {
-  const msgType = String(msg.type ?? '')
-
-  switch (msgType) {
-    case 'subscribe': {
-      // Draft-07: subscribeId, trackAlias, trackNamespace, trackName
-      // Draft-14: request_id, track_namespace, track_name
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const trackAlias =
-        msg.trackAlias != null ? String(msg.trackAlias) : undefined
-      const trackNamespace = (msg.trackNamespace ??
-        msg.track_namespace ??
-        []) as string[]
-      const trackName = String(msg.trackName ?? msg.track_name ?? '')
-
-      const track: TrackRecord = {
-        subscribeId,
-        trackAlias,
-        trackNamespace,
-        trackName,
-        direction,
-        status: 'pending',
-        subscribedAt: Date.now(),
-      }
-      session.tracks.set(subscribeId, track)
-      return track
-    }
-
-    case 'subscribe_ok': {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const track = session.tracks.get(subscribeId)
-      if (track) {
-        track.status = 'active'
-        track.subscribeOkAt = Date.now()
-        return track
-      }
-      return null
-    }
-
-    case 'subscribe_error': {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const track = session.tracks.get(subscribeId)
-      if (track) {
-        track.status = 'error'
-        track.errorReason = String(msg.reasonPhrase ?? msg.reason_phrase ?? '')
-        track.subscribeErrorAt = Date.now()
-        return track
-      }
-      return null
-    }
-
-    case 'subscribe_done': {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const track = session.tracks.get(subscribeId)
-      if (track) {
-        track.status = 'done'
-        track.subscribeDoneAt = Date.now()
-        return track
-      }
-      return null
-    }
-
-    case 'unsubscribe': {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const track = session.tracks.get(subscribeId)
-      if (track) {
-        track.status = 'done'
-        track.subscribeDoneAt = Date.now()
-        return track
-      }
-      return null
-    }
-
-    default:
-      return null
-  }
 }
 
 /**
@@ -702,6 +618,7 @@ function replayState(tabId: number) {
           byteCount: stream.byteCount,
           contentType: stream.contentType ?? 'binary',
           trackAlias: stream.trackAlias,
+          fetchRequestId: stream.fetchRequestId,
           mediaInfo: stream.mediaInfo,
           codecString: stream.codecString,
           bidi: stream.bidi,
@@ -839,6 +756,7 @@ function handleContentMessage(
 
   switch (message.type) {
     case 'session:opened': {
+      const tracks = new Map<string, TrackRecord>()
       const record: SessionRecord = {
         sessionId: message.sessionId,
         url: message.url,
@@ -856,7 +774,8 @@ function handleContentMessage(
         controlStreams: new Map(),
         recorder: null,
         controlMessages: [],
-        tracks: new Map(),
+        tracks,
+        trackRegistry: new TrackRegistry(tracks, (fields) => ({ ...fields })),
         streamRecording: true,
         discardedStreamIds: new Set(),
       }
@@ -1037,6 +956,9 @@ function handleContentMessage(
             const framing = parseStreamFraming(bytes, session.detectedDraft)
             if (framing) {
               stream.trackAlias = framing.headerFields.trackAlias
+              // Fetch streams identify their track by the request id in the
+              // header; only subgroup and datagram streams carry an alias.
+              stream.fetchRequestId = framing.headerFields.requestId
 
               // Use framing boundaries for precise BMFF detection on first object payload
               if (framing.objects.length > 0) {
@@ -1111,6 +1033,7 @@ function handleContentMessage(
             ? {
                 contentType: stream.contentType,
                 trackAlias: stream.trackAlias,
+                fetchRequestId: stream.fetchRequestId,
                 mediaInfo: stream.mediaInfo,
                 codecString: stream.codecString,
                 bidi: stream.bidi,

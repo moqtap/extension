@@ -75,12 +75,23 @@ interface TrackStats {
   dgGroupCount: number
 }
 
-const trackStatsByAlias = computed(() => {
+/**
+ * Stats keyed the way each kind of stream names its track: `a:<alias>` for
+ * subgroup and datagram data, `r:<requestId>` for fetch streams, which carry
+ * no alias at all. Prefixed so the two number spaces cannot collide.
+ */
+const trackStatsByKey = computed(() => {
   const map = new Map<string, TrackStats>()
 
   for (const stream of props.session.streams.values()) {
-    if (stream.trackAlias == null) continue
-    const alias = String(stream.trackAlias)
+    const key =
+      stream.trackAlias != null
+        ? `a:${stream.trackAlias}`
+        : stream.fetchRequestId != null
+          ? `r:${stream.fetchRequestId}`
+          : null
+    if (key == null) continue
+    const alias = key
     let stats = map.get(alias)
     if (!stats) {
       stats = {
@@ -107,7 +118,7 @@ const trackStatsByAlias = computed(() => {
   }
 
   for (const dg of props.session.datagramGroups.values()) {
-    const alias = String(dg.trackAlias)
+    const alias = `a:${dg.trackAlias}`
     let stats = map.get(alias)
     if (!stats) {
       stats = {
@@ -137,8 +148,13 @@ const trackStatsByAlias = computed(() => {
 })
 
 function getStats(track: TrackEntry): TrackStats | undefined {
+  // A fetch's data arrives under its request id; everything else under an
+  // alias the publisher assigned.
+  if (track.via === 'fetch') {
+    return trackStatsByKey.value.get(`r:${track.subscribeId}`)
+  }
   if (track.trackAlias == null) return undefined
-  return trackStatsByAlias.value.get(track.trackAlias)
+  return trackStatsByKey.value.get(`a:${track.trackAlias}`)
 }
 
 // ── Computed rows with bitrate ───────────────────────────────────
