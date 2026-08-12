@@ -77,10 +77,17 @@ const framingTags = computed((): HeaderTag[] => framing.value?.tags ?? [])
 /** Header size for hex viewer annotation */
 const headerSize = computed(() => framing.value?.headerEnd ?? 0)
 
-/** Resolve trackAlias from framing to a known track */
+/**
+ * Resolve the framing header to a known track — by track alias, or by request
+ * id for a fetch stream, which carries no alias.
+ */
 const resolvedTrack = computed((): TrackEntry | null => {
   const f = framing.value
   if (!f || !props.tracks) return null
+  if (f.streamType === 'fetch') {
+    const track = props.tracks.get(String(f.headerFields.requestId))
+    return track?.via === 'fetch' ? track : null
+  }
   const alias = String(f.headerFields.trackAlias)
   for (const track of props.tracks.values()) {
     if (track.trackAlias === alias) return track

@@ -27,21 +27,31 @@ const emit = defineEmits<{
 }>()
 
 // ── Track lookup index (O(1) instead of O(n) per stream) ─────────
-const trackIndex = computed(() => {
+const tracksByAlias = computed(() => {
   const byAlias = new Map<string, TrackEntry>()
-  const bySubId = new Map<string, TrackEntry>()
   for (const track of props.tracks.values()) {
     if (track.trackAlias) byAlias.set(track.trackAlias, track)
-    bySubId.set(track.subscribeId, track)
   }
-  return { byAlias, bySubId }
+  return byAlias
 })
 
+/**
+ * The track a data stream belongs to.
+ *
+ * Subgroup and datagram streams are found by the alias in their header, and by
+ * alias only: a request id is a different number space, and falling back to it
+ * labels a stream with whichever unrelated subscription happens to share the
+ * number. A fetch stream has no alias — it carries the request id of the FETCH
+ * that asked for it, which is the key its track is filed under. An unresolved
+ * stream shows its alias instead.
+ */
 function resolveTrack(stream: StreamEntry): TrackEntry | null {
+  if (stream.fetchRequestId != null) {
+    const track = props.tracks.get(String(stream.fetchRequestId))
+    return track?.via === 'fetch' ? track : null
+  }
   if (stream.trackAlias == null) return null
-  const alias = String(stream.trackAlias)
-  const idx = trackIndex.value
-  return idx.byAlias.get(alias) ?? idx.bySubId.get(alias) ?? null
+  return tracksByAlias.value.get(String(stream.trackAlias)) ?? null
 }
 
 // ── Control-plane stream naming ───────────────────────────────────
@@ -81,6 +91,7 @@ function streamLabel(stream: StreamEntry): string {
   const suffix = stream.datagramGroupKey ? ` g:${stream.groupId}` : ''
   if (track) return track.fullName + suffix
   if (stream.trackAlias != null) return `alias:${stream.trackAlias}${suffix}`
+  if (stream.fetchRequestId != null) return `fetch:${stream.fetchRequestId}`
   return `#${stream.streamId}`
 }
 
@@ -401,6 +412,11 @@ function transferSummary(list: StreamEntry[]): string {
                   <span v-if="stream.datagramGroupKey" class="group-tag mono"
                     >g:{{ stream.groupId }}</span
                   >
+                  <span
+                    v-else-if="stream.fetchRequestId != null"
+                    class="group-tag"
+                    >fetch</span
+                  >
                 </span>
                 <span
                   v-else-if="stream.trackAlias != null"
@@ -410,6 +426,12 @@ function transferSummary(list: StreamEntry[]): string {
                   <span v-if="stream.datagramGroupKey" class="group-tag"
                     >g:{{ stream.groupId }}</span
                   >
+                </span>
+                <span
+                  v-else-if="stream.fetchRequestId != null"
+                  class="track-alias mono"
+                >
+                  fetch:{{ stream.fetchRequestId }}
                 </span>
                 <span v-else class="track-alias mono"
                   >#{{ stream.streamId }}</span

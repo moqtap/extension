@@ -6,6 +6,7 @@
  * sessions without OOM. Only metadata stays in memory.
  */
 
+import { TrackRegistry, type TrackVia } from '@/src/codec/track-info'
 import { versionToDraft } from '@/src/detect/draft-detect'
 import type {
   BackgroundToPanelMsg,
@@ -108,6 +109,8 @@ export interface TrackEntry {
   /** Full display name: namespace/trackName */
   fullName: string
   direction: 'tx' | 'rx'
+  /** Request that registered the track — decides how its streams find it */
+  via: TrackVia
   status: 'pending' | 'active' | 'error' | 'done'
   errorReason?: string
   /** Assigned color index for consistent color-coding */
@@ -137,6 +140,11 @@ export interface StreamEntry {
   chunkCount: number
   /** MoQT trackAlias from data stream framing header (if detected) */
   trackAlias?: number
+  /**
+   * Request id from a fetch stream's framing header. Fetch streams carry no
+   * track alias, so this is how they find their track.
+   */
+  fetchRequestId?: number
   /**
    * QUIC stream class: true = bidirectional, false = unidirectional.
    * Undefined for imported traces and for datagram-group entries, which
@@ -527,6 +535,7 @@ export function useInspector() {
               codecString: msg.codecString,
               firstDataAt: now,
               trackAlias: msg.trackAlias,
+              fetchRequestId: msg.fetchRequestId,
               bidi: msg.bidi,
               isControl: msg.isControl,
               controlRole: msg.controlRole,
@@ -538,6 +547,7 @@ export function useInspector() {
             stream.mediaInfo = msg.mediaInfo
             stream.codecString = msg.codecString
             stream.trackAlias = msg.trackAlias
+            stream.fetchRequestId = msg.fetchRequestId
             if (msg.bidi !== undefined) stream.bidi = msg.bidi
             if (msg.isControl) stream.isControl = true
             if (msg.controlRole) stream.controlRole = msg.controlRole
@@ -567,6 +577,7 @@ export function useInspector() {
             mediaInfo: msg.mediaInfo,
             codecString: msg.codecString,
             trackAlias: msg.trackAlias,
+            fetchRequestId: msg.fetchRequestId,
             bidi: msg.bidi,
             isControl: msg.isControl,
             controlRole: msg.controlRole,
@@ -619,6 +630,7 @@ export function useInspector() {
               trackName: msg.trackName,
               fullName,
               direction: msg.direction,
+              via: msg.via,
               status: msg.status,
               errorReason: msg.errorReason,
               colorIndex: nextColorIndex++,
@@ -629,6 +641,11 @@ export function useInspector() {
             }
             session.tracks.set(msg.subscribeId, track)
           } else {
+            // The alias usually arrives on a later message than the name did
+            // (SUBSCRIBE_OK from draft-12 on), so an existing track has to be
+            // able to learn it — without it the stream list cannot resolve
+            // this track's data streams.
+            if (msg.trackAlias != null) track.trackAlias = msg.trackAlias
             track.status = msg.status
             track.errorReason = msg.errorReason
             if (msg.subscribedAt != null) track.subscribedAt = msg.subscribedAt
@@ -1084,6 +1101,20 @@ export function useInspector() {
     // For imported traces, we use trackAlias=0 since we don't have it
     const dgPayloads = new Map<string, Uint8Array[]>()
 
+    // Tracks are rebuilt from the trace's control messages the same way they
+    // are live, including the stream each message came from — a draft-17+
+    // response identifies its request only by the stream it arrived on.
+    // Traces written before the format carried a stream id have none, and
+    // their draft-17+ subscriptions stay unresolved.
+    const trackRegistry = new TrackRegistry<TrackEntry>(
+      session.tracks,
+      (fields) => ({
+        ...fields,
+        fullName: [...fields.trackNamespace, fields.trackName].join('/'),
+        colorIndex: nextColorIndex++,
+      }),
+    )
+
     // Reconstruct state from trace events
     for (const event of trace.events) {
       switch (event.type) {
@@ -1113,13 +1144,17 @@ export function useInspector() {
             ce.direction === 0 ? 'tx' : 'rx',
           )
 
-          // Extract track info from control messages
-          extractTrackFromImported(
-            session,
-            msg,
-            ce.direction === 0 ? 'tx' : 'rx',
-            ce.timestamp,
-          )
+          // Extract track info from control messages. The stream id is read
+          // structurally because it reaches ControlMessageEvent in
+          // @moqtap/trace 0.2.0 — older traces simply have none.
+          const controlStreamId = (ce as { streamId?: bigint }).streamId
+          trackRegistry.apply(msg, {
+            direction: ce.direction === 0 ? 'tx' : 'rx',
+            ...(controlStreamId != null
+              ? { streamId: Number(controlStreamId) }
+              : {}),
+            timestamp: ce.timestamp,
+          })
           break
         }
 
@@ -1277,56 +1312,6 @@ export function useInspector() {
     sessions.value.set(sessionId, session)
     selectedSessionId.value = sessionId
     triggerRef(sessions)
-  }
-
-  /** Extract track subscription info from an imported control message */
-  function extractTrackFromImported(
-    session: SessionEntry,
-    msg: Record<string, unknown>,
-    direction: 'tx' | 'rx',
-    timestamp?: number,
-  ) {
-    const msgType = String(msg.type ?? '')
-
-    if (msgType === 'subscribe') {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const ns = (msg.trackNamespace ?? msg.track_namespace ?? []) as string[]
-      const name = String(msg.trackName ?? msg.track_name ?? '')
-      const fullName = [...ns, name].join('/')
-      session.tracks.set(subscribeId, {
-        subscribeId,
-        trackAlias: msg.trackAlias != null ? String(msg.trackAlias) : undefined,
-        trackNamespace: ns,
-        trackName: name,
-        fullName,
-        direction,
-        status: 'pending',
-        colorIndex: nextColorIndex++,
-        subscribedAt: timestamp,
-      })
-    } else if (msgType === 'subscribe_ok') {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const track = session.tracks.get(subscribeId)
-      if (track) {
-        track.status = 'active'
-        track.subscribeOkAt = timestamp
-      }
-    } else if (msgType === 'subscribe_error') {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const track = session.tracks.get(subscribeId)
-      if (track) {
-        track.status = 'error'
-        track.errorReason = String(msg.reasonPhrase ?? msg.reason_phrase ?? '')
-        track.subscribeErrorAt = timestamp
-      }
-    } else if (msgType === 'subscribe_done' || msgType === 'unsubscribe') {
-      const subscribeId = String(msg.subscribeId ?? msg.request_id ?? '')
-      const track = session.tracks.get(subscribeId)
-      if (track) {
-        track.status = 'done'
-        track.subscribeDoneAt = timestamp
-      }
-    }
   }
 
   onMounted(() => {

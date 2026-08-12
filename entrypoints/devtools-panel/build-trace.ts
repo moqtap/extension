@@ -69,6 +69,8 @@ export async function buildTrace(
         session.draft as SupportedDraft,
       ),
       message: (msg.decoded ?? {}) as Record<string, unknown>,
+      // Lets an importer pair a draft-17+ response with its request.
+      ...(msg.streamId != null ? { streamId: BigInt(msg.streamId) } : {}),
       raw: msg.raw.length > 0 ? toBytes(msg.raw) : undefined,
     })
   }

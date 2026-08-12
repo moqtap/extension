@@ -12,6 +12,7 @@
  * base64 strings to avoid encode/decode overhead on the hot path.
  */
 
+import type { TrackVia } from '../codec/track-info'
 import type {
   PayloadMediaInfo,
   StreamContentType,
@@ -239,6 +240,11 @@ export interface PanelStreamDataMsg {
   contentType?: StreamContentType
   /** MoQT trackAlias from stream framing header (first chunk only, if MoQT) */
   trackAlias?: number
+  /**
+   * Request id from a fetch stream's framing header (first chunk only). A
+   * fetch has no track alias — this is what names its track instead.
+   */
+  fetchRequestId?: number
   /** ISO BMFF media info from first object payload (first chunk only, if fMP4) */
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string from the elementary stream (if h264/h265) */
@@ -270,6 +276,8 @@ export interface PanelStreamInfoMsg {
   byteCount: number
   contentType: StreamContentType
   trackAlias?: number
+  /** Request id from a fetch stream's framing header (fetch streams only) */
+  fetchRequestId?: number
   /** ISO BMFF media info from first object payload (if fMP4) */
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string from the elementary stream (if h264/h265) */
@@ -311,6 +319,8 @@ export interface PanelTrackUpdateMsg {
   trackName: string
   /** Direction of the SUBSCRIBE message (tx = we subscribed, rx = peer subscribed) */
   direction: 'tx' | 'rx'
+  /** Request that registered the track — decides how its streams find it */
+  via: TrackVia
   status: 'pending' | 'active' | 'error' | 'done'
   errorReason?: string
   subscribedAt?: number
