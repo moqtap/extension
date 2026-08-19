@@ -6,6 +6,7 @@
  */
 
 import { getMessageIdMap } from '@/src/codec/message-ids'
+import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
 import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
@@ -50,7 +51,7 @@ export async function buildTrace(
     detail: 'headers+data',
     startTime,
     endTime: Date.now(),
-    source: 'moqtap-extension/0.1.0',
+    source: traceSource(),
     endpoint: session.url,
   }
 

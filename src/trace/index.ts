@@ -8,6 +8,7 @@
 
 import { createRecorder } from '@moqtap/trace'
 import type { SupportedDraft } from '../types/common'
+import { traceSource } from './source'
 
 /**
  * Create a trace recorder configured for the extension's observer role.
@@ -23,7 +24,7 @@ export function createExtensionRecorder(
     protocol: `moq-transport-${draft}`,
     perspective: 'observer',
     detail: 'headers',
-    source: 'moqtap-extension/0.1.0',
+    source: traceSource(),
     endpoint,
   })
 }
