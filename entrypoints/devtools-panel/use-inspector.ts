@@ -1144,15 +1144,11 @@ export function useInspector() {
             ce.direction === 0 ? 'tx' : 'rx',
           )
 
-          // Extract track info from control messages. The stream id is read
-          // structurally because it reaches ControlMessageEvent in
-          // @moqtap/trace 0.2.0 — older traces simply have none.
-          const controlStreamId = (ce as { streamId?: bigint }).streamId
+          // Extract track info from control messages. Traces recorded before
+          // the stream id existed simply have none.
           trackRegistry.apply(msg, {
             direction: ce.direction === 0 ? 'tx' : 'rx',
-            ...(controlStreamId != null
-              ? { streamId: Number(controlStreamId) }
-              : {}),
+            ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
             timestamp: ce.timestamp,
           })
           break
