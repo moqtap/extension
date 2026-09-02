@@ -12,6 +12,7 @@ import {
   MAX_ARRIVALS,
   recordArrival,
 } from '@/src/trace/arrivals'
+import { controlMessageName, draftFromProtocol } from '@/src/trace/message-name'
 import { versionToDraft } from '@/src/detect/draft-detect'
 import type {
   BackgroundToPanelMsg,
@@ -1103,8 +1104,7 @@ export function useInspector() {
     const header = trace.header
 
     // Determine draft from protocol string (e.g. "moq-transport-14")
-    const draftMatch = header.protocol.match(/moq-transport-(\d+)/)
-    const draft = draftMatch ? draftMatch[1] : undefined
+    const draft = draftFromProtocol(header.protocol)
 
     const session: SessionEntry = {
       sessionId,
@@ -1148,10 +1148,7 @@ export function useInspector() {
         case 'control': {
           const ce = event as ControlMessageEvent
           const msg = ce.message
-          const msgType =
-            typeof msg.type === 'string'
-              ? msg.type
-              : `0x${(ce.messageType ?? 0).toString(16)}`
+          const msgType = controlMessageName(ce.messageType, draft, msg)
           session.messages.push({
             timestamp: ce.timestamp,
             direction: ce.direction === 0 ? 'tx' : 'rx',
