@@ -15,6 +15,7 @@ import {
   isIncomplete,
 } from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
+import { DECODE_ERROR_MESSAGE_TYPE } from '@/src/trace/decode-error'
 import { TrackRegistry, type TrackFields } from '@/src/codec/track-info'
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
@@ -474,7 +475,7 @@ function reportUndecodable(
     direction,
     timestamp: Date.now(),
     decoded: JSON.stringify({ code, reason }),
-    messageType: 'decode_error',
+    messageType: DECODE_ERROR_MESSAGE_TYPE,
     raw: bytesToBase64(bytes.subarray(0, MAX_UNDECODABLE_RAW)),
   }
   session.controlMessages.push(record)

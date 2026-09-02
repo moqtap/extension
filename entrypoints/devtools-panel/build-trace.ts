@@ -17,6 +17,11 @@ import type { SupportedDraft } from '@/src/types/common'
 import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
 import { arrivalAt } from '@/src/trace/arrivals'
+import {
+  DECODE_ERROR_CODE,
+  decodeErrorReason,
+  isDecodeError,
+} from '@/src/trace/decode-error'
 import type { SessionEntry } from './use-inspector'
 
 /** Resolve a message type name (e.g. "subscribe") to its wire ID number. */
@@ -85,6 +90,22 @@ export async function buildTrace(
 
   // Control messages
   for (const msg of session.messages) {
+    // An undecodable run is the absence of a control message, not one of type
+    // zero. The format keeps a protocol violation in its error event, so that
+    // is where this goes. The offending bytes stay behind: Event 6 has no
+    // field to carry them, and Event 0's `raw` is not available to an event
+    // that is not a message.
+    if (isDecodeError(msg.messageType)) {
+      push(msg.timestamp, {
+        type: 'error',
+        seq: 0,
+        timestamp: 0,
+        errorCode: DECODE_ERROR_CODE,
+        reason: decodeErrorReason(msg.decoded),
+      })
+      continue
+    }
+
     push(msg.timestamp, {
       type: 'control',
       seq: 0,
