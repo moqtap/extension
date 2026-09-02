@@ -9,7 +9,11 @@
  */
 
 import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing'
-import { decodeControlMessage, getCodec } from '@/src/codec/control-message'
+import {
+  decodeControlMessage,
+  getCodec,
+  isIncomplete,
+} from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import { TrackRegistry, type TrackFields } from '@/src/codec/track-info'
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
@@ -130,6 +134,16 @@ interface ControlStreamState {
   remainder: Uint8Array | null
   /** Message type of the first decoded message, which names a request stream */
   firstMessageType?: string
+  /**
+   * Set once this stream produced bytes that no continuation can decode.
+   *
+   * A message split across chunks runs out of bytes and nothing else, so it is
+   * held as `remainder` and retried. Anything else is already whole and still
+   * wrong, and retrying it holds the same bytes forever while every later
+   * message on the stream goes unread. The stream stops here instead, and the
+   * reason is reported once.
+   */
+  undecodable?: boolean
 }
 
 /**
@@ -427,6 +441,47 @@ function attemptDetection(
 }
 
 /**
+ * How much of an undecodable run to keep for display.
+ *
+ * The bytes are shown so the violation can be read off the wire; a control
+ * message is far smaller than this, and the rest of the run is whatever the
+ * peer sent after it, which is no longer being interpreted.
+ */
+const MAX_UNDECODABLE_RAW = 4096
+
+/**
+ * Record that a control-plane stream carried bytes that will not decode, and
+ * stop reading it.
+ *
+ * The panel shows this beside the messages that did decode, so a stream that
+ * ends early says why. Nothing is written to the trace recorder: the format
+ * holds MoQT messages, and this is the absence of one.
+ */
+function reportUndecodable(
+  session: SessionRecord,
+  streamId: number,
+  state: ControlStreamState,
+  bytes: Uint8Array,
+  direction: 'tx' | 'rx',
+  code: string,
+  reason: string,
+): ControlMessageRecord {
+  state.undecodable = true
+  state.remainder = null
+
+  const record: ControlMessageRecord = {
+    streamId,
+    direction,
+    timestamp: Date.now(),
+    decoded: JSON.stringify({ code, reason }),
+    messageType: 'decode_error',
+    raw: bytesToBase64(bytes.subarray(0, MAX_UNDECODABLE_RAW)),
+  }
+  session.controlMessages.push(record)
+  return record
+}
+
+/**
  * Decode every complete control message in a run of bytes from one
  * control-plane stream, reassembling messages that span chunks.
  *
@@ -449,6 +504,7 @@ function decodeControlBytes(
   const records: ControlMessageRecord[] = []
   const trackUpdates: TrackRecord[] = []
   if (!session.detectedDraft) return { records, trackUpdates }
+  if (state.undecodable) return { records, trackUpdates }
 
   // Prepend this stream's leftover bytes from the previous chunk
   let buf: Uint8Array
@@ -467,16 +523,32 @@ function decodeControlBytes(
     const remaining = buf.subarray(offset)
     if (remaining.length < 2) break
 
+    // Offsets shift by the carried bytes, which belong to the previous chunk
+    const direction = directionAt(Math.max(0, offset - carried))
+
     try {
       const result = decodeControlMessage(remaining, session.detectedDraft)
-      if (!result.ok) break // incomplete message, wait for more data
+      if (!result.ok) {
+        if (isIncomplete(result.error)) break // wait for the rest of it
+
+        records.push(
+          reportUndecodable(
+            session,
+            streamId,
+            state,
+            remaining,
+            direction,
+            result.error.code,
+            result.error.message,
+          ),
+        )
+        return { records, trackUpdates }
+      }
 
       const msg = result.value
       const msgType =
         'type' in msg && typeof msg.type === 'string' ? msg.type : 'unknown'
       const raw = remaining.subarray(0, result.bytesRead)
-      // Offsets shift by the carried bytes, which belong to the previous chunk
-      const direction = directionAt(Math.max(0, offset - carried))
 
       const record: ControlMessageRecord = {
         streamId,
@@ -516,8 +588,21 @@ function decodeControlBytes(
       }
 
       offset += result.bytesRead
-    } catch {
-      break
+    } catch (e) {
+      // The codec answers a malformed message with `ok: false`, so a throw is
+      // the codec itself failing on these bytes. More of them will not help.
+      records.push(
+        reportUndecodable(
+          session,
+          streamId,
+          state,
+          remaining,
+          direction,
+          'DECODER_THREW',
+          e instanceof Error ? e.message : String(e),
+        ),
+      )
+      return { records, trackUpdates }
     }
   }
 

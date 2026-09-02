@@ -5,7 +5,13 @@
  * The codec supports all drafts 07-19 natively.
  */
 
-import { createCodec, type BaseCodec, type DecodeResult } from '@moqtap/codec'
+import {
+  createCodec,
+  type BaseCodec,
+  type DecodeError,
+  type DecodeErrorCode,
+  type DecodeResult,
+} from '@moqtap/codec'
 import type { SupportedDraft } from '../types/common'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,6 +35,33 @@ export function decodeControlMessage(
   return getCodec(draft).decodeMessage(buf) as DecodeResult<
     Record<string, unknown>
   >
+}
+
+/**
+ * Whether a failed decode is one that more bytes can still turn into a
+ * message.
+ *
+ * A control message declares its length before its payload, so a message that
+ * is still arriving is the single failure that runs out of bytes. Every other
+ * code names bytes that are already whole and still wrong — a varint the draft
+ * leaves undefined, a message type it does not have, a parameter outside the
+ * messages its own definition allows — and a reader that holds those waiting
+ * for the rest of them waits forever, never reading the messages behind them.
+ *
+ * The mapping is written out per code rather than as a default, so a code
+ * added to the codec fails to compile here instead of silently becoming one or
+ * the other.
+ */
+const RESOLVES_WITH_MORE_BYTES: Record<DecodeErrorCode, boolean> = {
+  UNEXPECTED_END: true,
+  INVALID_VARINT: false,
+  UNKNOWN_MESSAGE_TYPE: false,
+  INVALID_PARAMETER: false,
+  CONSTRAINT_VIOLATION: false,
+}
+
+export function isIncomplete(error: DecodeError): boolean {
+  return RESOLVES_WITH_MORE_BYTES[error.code] ?? false
 }
 
 /** Encode a control message to bytes using the specified draft codec */
