@@ -3,6 +3,12 @@
  *
  * Stream data is fetched via a callback (typically routed through the
  * background service worker which owns the page buffers + IDB).
+ *
+ * Events are collected with the wall-clock time they happened and are sorted
+ * and numbered at the end. Numbering them in source order instead — every
+ * control message, then every stream, then every datagram group — would put
+ * `seq` in an order the timestamps contradict, and `seq` is what the format
+ * says to order by.
  */
 
 import { getMessageIdMap } from '@/src/codec/message-ids'
@@ -10,6 +16,7 @@ import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
 import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
+import { arrivalAt } from '@/src/trace/arrivals'
 import type { SessionEntry } from './use-inspector'
 
 /** Resolve a message type name (e.g. "subscribe") to its wire ID number. */
@@ -27,6 +34,24 @@ function toRelativeUs(timestampMs: number, startTimeMs: number): number {
 function toBytes(data: Uint8Array): Uint8Array {
   return new Uint8Array(data)
 }
+
+/**
+ * An event plus the absolute time it happened, before `seq` and the
+ * header-relative timestamp are assigned.
+ */
+interface PendingEvent {
+  /** Absolute wall-clock time, epoch ms. */
+  at: number
+  event: TraceEvent
+}
+
+/**
+ * MoQT data stream type, as the format's Event 1 `"st"` field defines it:
+ * 0 = subgroup, 1 = datagram, 2 = fetch. Not the QUIC bidi/uni distinction.
+ */
+const STREAM_TYPE_SUBGROUP = 0
+const STREAM_TYPE_DATAGRAM = 1
+const STREAM_TYPE_FETCH = 2
 
 /**
  * Build a complete Trace from a session, including stream payload data.
@@ -55,15 +80,15 @@ export async function buildTrace(
     endpoint: session.url,
   }
 
-  const events: TraceEvent[] = []
-  let seq = 0
+  const pending: PendingEvent[] = []
+  const push = (at: number, event: TraceEvent) => pending.push({ at, event })
 
   // Control messages
   for (const msg of session.messages) {
-    events.push({
+    push(msg.timestamp, {
       type: 'control',
-      seq: seq++,
-      timestamp: toRelativeUs(msg.timestamp, startTime),
+      seq: 0,
+      timestamp: 0,
       direction: msg.direction === 'tx' ? 0 : 1,
       messageType: resolveMessageTypeId(
         msg.messageType,
@@ -78,16 +103,23 @@ export async function buildTrace(
 
   // Streams — open events, payload data, close events
   for (const stream of session.streams.values()) {
-    const ts = toRelativeUs(startTime, startTime) // 0 — we don't have per-stream timestamps
+    // Nothing records when a stream opened, so the first chunk's arrival is
+    // the earliest moment it is known to have existed. A stream that carried
+    // no data falls back to session start.
+    const openedAt = stream.firstDataAt ?? startTime
 
-    events.push({
+    push(openedAt, {
       type: 'stream-opened',
-      seq: seq++,
-      timestamp: ts,
+      seq: 0,
+      timestamp: 0,
       streamId: BigInt(stream.streamId),
       direction: stream.direction === 'tx' ? 0 : 1,
-      // MoQT data stream type (0=subgroup, 1=datagram, 2=fetch), not bidi/uni
-      streamType: 0,
+      // A fetch stream carries a request id in its framing header where a
+      // subgroup stream carries a track alias; that is what tells them apart.
+      streamType:
+        stream.fetchRequestId != null
+          ? STREAM_TYPE_FETCH
+          : STREAM_TYPE_SUBGROUP,
     })
 
     // Load stream data via callback (background serves from memory + IDB)
@@ -105,11 +137,16 @@ export async function buildTrace(
                 data.length,
               )
               const payload = data.slice(obj.payloadOffset, end)
+              // When this object's bytes actually arrived, resolved through the
+              // chunk-boundary index the panel keeps. Absent for streams
+              // replayed from IDB, which nobody watched arrive.
+              const objectAt =
+                arrivalAt(stream.arrivals, obj.payloadOffset) ?? openedAt
 
-              events.push({
+              push(objectAt, {
                 type: 'object-header',
-                seq: seq++,
-                timestamp: ts,
+                seq: 0,
+                timestamp: 0,
                 streamId: BigInt(stream.streamId),
                 groupId: BigInt(hf.groupId ?? 0),
                 objectId: BigInt(obj.objectId),
@@ -117,10 +154,10 @@ export async function buildTrace(
                 objectStatus: 0,
               })
 
-              events.push({
+              push(objectAt, {
                 type: 'object-payload',
-                seq: seq++,
-                timestamp: ts,
+                seq: 0,
+                timestamp: 0,
                 streamId: BigInt(stream.streamId),
                 groupId: BigInt(hf.groupId ?? 0),
                 objectId: BigInt(obj.objectId),
@@ -130,10 +167,10 @@ export async function buildTrace(
             }
           } else {
             // No MoQT framing — store raw as a single object-payload
-            events.push({
+            push(openedAt, {
               type: 'object-payload',
-              seq: seq++,
-              timestamp: ts,
+              seq: 0,
+              timestamp: 0,
               streamId: BigInt(stream.streamId),
               groupId: 0n,
               objectId: 0n,
@@ -148,10 +185,10 @@ export async function buildTrace(
     }
 
     if (stream.closed) {
-      events.push({
+      push(stream.lastDataAt ?? openedAt, {
         type: 'stream-closed',
-        seq: seq++,
-        timestamp: ts,
+        seq: 0,
+        timestamp: 0,
         streamId: BigInt(stream.streamId),
         errorCode: 0,
       })
@@ -161,24 +198,40 @@ export async function buildTrace(
   // Datagram groups — export as object-header + object-payload events
   if (getDatagramGroupData) {
     for (const dg of session.datagramGroups.values()) {
-      const ts = toRelativeUs(dg.firstDataAt ?? startTime, startTime)
+      const groupAt = dg.firstDataAt ?? startTime
 
       try {
         const data = await getDatagramGroupData(session.sessionId, dg.groupKey)
         if (data) {
           const framing = parseDatagramGroupFraming(data, session.draft)
           if (framing && framing.objects.length > 0) {
+            // Datagrams are not a QUIC stream and have no stream id; the
+            // convention here is 0. Declaring one open as a datagram stream
+            // is how a reader learns that from the format's own stream-type
+            // field rather than inferring it from the id being zero.
+            push(groupAt, {
+              type: 'stream-opened',
+              seq: 0,
+              timestamp: 0,
+              streamId: 0n,
+              direction: dg.direction === 'tx' ? 0 : 1,
+              streamType: STREAM_TYPE_DATAGRAM,
+            })
+
             for (const obj of framing.objects) {
               const end = Math.min(
                 obj.payloadOffset + obj.payloadLength,
                 data.length,
               )
               const payload = data.slice(obj.payloadOffset, end)
+              // Each datagram was timestamped as it arrived, so unlike a
+              // stream this needs no offset arithmetic.
+              const objectAt = dg.arrivals?.get(obj.objectId) ?? groupAt
 
-              events.push({
+              push(objectAt, {
                 type: 'object-header',
-                seq: seq++,
-                timestamp: ts,
+                seq: 0,
+                timestamp: 0,
                 streamId: 0n, // datagrams use streamId=0 by convention
                 groupId: BigInt(dg.groupId),
                 objectId: BigInt(obj.objectId),
@@ -186,10 +239,10 @@ export async function buildTrace(
                 objectStatus: 0,
               })
 
-              events.push({
+              push(objectAt, {
                 type: 'object-payload',
-                seq: seq++,
-                timestamp: ts,
+                seq: 0,
+                timestamp: 0,
                 streamId: 0n,
                 groupId: BigInt(dg.groupId),
                 objectId: BigInt(obj.objectId),
@@ -204,6 +257,19 @@ export async function buildTrace(
       }
     }
   }
+
+  // Sort by time, then number. The sort is stable, so an object-header still
+  // precedes the payload it shares a timestamp with, as the format requires.
+  pending.sort((a, b) => a.at - b.at)
+
+  const events: TraceEvent[] = pending.map(
+    ({ at, event }, seq) =>
+      ({
+        ...event,
+        seq,
+        timestamp: toRelativeUs(at, startTime),
+      }) as TraceEvent,
+  )
 
   return { header, events }
 }

@@ -7,6 +7,11 @@
  */
 
 import { TrackRegistry, type TrackVia } from '@/src/codec/track-info'
+import {
+  type ByteArrival,
+  MAX_ARRIVALS,
+  recordArrival,
+} from '@/src/trace/arrivals'
 import { versionToDraft } from '@/src/detect/draft-detect'
 import type {
   BackgroundToPanelMsg,
@@ -138,6 +143,11 @@ export interface StreamEntry {
   lastDataAt?: number
   /** Number of data chunks received (for debugging transport behavior) */
   chunkCount: number
+  /**
+   * Byte-offset to arrival-time index over this stream's buffer. Present only
+   * for streams whose chunks this panel saw arrive; see {@link arrivalAt}.
+   */
+  arrivals?: ByteArrival[]
   /** MoQT trackAlias from data stream framing header (if detected) */
   trackAlias?: number
   /**
@@ -182,6 +192,12 @@ export interface DatagramGroupEntry {
   codecString?: string
   firstDataAt?: number
   lastDataAt?: number
+  /**
+   * objectId to arrival time (ms, page-side capturedAt). A group is one GoP,
+   * so this stays small; it is capped anyway against a publisher that treats
+   * groups as unbounded.
+   */
+  arrivals?: Map<number, number>
 }
 
 export interface MessageEntry {
@@ -522,7 +538,11 @@ export function useInspector() {
 
         {
           let stream = session.streams.get(msg.streamId)
-          const now = Date.now()
+          // Page-side capture time, not panel receipt: a burst of buffered
+          // postMessages on tab refocus all arrive "now" but carry the spread
+          // of times they were actually seen at, and the exported trace is
+          // only as honest as the timestamps behind it.
+          const now = msg.capturedAt
           if (!stream) {
             stream = {
               streamId: msg.streamId,
@@ -555,6 +575,8 @@ export function useInspector() {
           stream.lastDataAt = now
           stream.byteCount += msg.byteLength
           stream.chunkCount++
+          if (!stream.arrivals) stream.arrivals = []
+          recordArrival(stream.arrivals, stream.byteCount, now)
           session.bitrateSamples.push({
             at: msg.capturedAt,
             bytes: msg.byteLength,
@@ -705,7 +727,8 @@ export function useInspector() {
         {
           const gk = `${msg.trackAlias}:${msg.groupId}`
           let group = session.datagramGroups.get(gk)
-          const now = Date.now()
+          // See the stream:data handler — page-side capture time.
+          const now = msg.capturedAt
           if (!group) {
             group = {
               groupKey: gk,
@@ -729,6 +752,10 @@ export function useInspector() {
           group.byteCount += msg.byteLength
           group.datagramCount++
           group.lastDataAt = now
+          if (!group.arrivals) group.arrivals = new Map()
+          if (group.arrivals.size < MAX_ARRIVALS) {
+            group.arrivals.set(msg.objectId, now)
+          }
           if (msg.endOfGroup) group.closed = true
           session.bitrateSamples.push({
             at: msg.capturedAt,
