@@ -14,6 +14,56 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release notes are the tag's own message, so the tag object
+          # itself has to come down with the checkout, not just the commit.
+          fetch-depth: 0
+
+      # This repo keeps no CHANGELOG.md. What changed in a release is written
+      # into the annotated tag, which puts the notes next to the thing they
+      # describe, makes them immutable once pushed, and leaves nowhere for an
+      # "Unreleased" section to sit and go stale.
+      - name: Take the release notes from the tag message
+        # Written outside the workspace so it cannot end up inside the sources
+        # zip that `zip:firefox` builds.
+        run: |
+          tag='${{ github.ref_name }}'
+          notes='${{ runner.temp }}/NOTES.md'
+          message='${{ runner.temp }}/TAG_MESSAGE.md'
+
+          if [ "$(git cat-file -t "$tag")" != 'tag' ]; then
+            echo "::error::$tag is a lightweight tag and carries no message." \
+                 "Release notes live in the tag: git tag -a $tag -F notes.md"
+            exit 1
+          fi
+
+          # Emptiness is a property of the tag message, so it is checked before
+          # the heading below makes the file non-empty regardless.
+          git tag -l --format='%(contents)' "$tag" > "$message"
+          if [ ! -s "$message" ]; then
+            echo "::error::$tag has an empty message, so there are no release" \
+                 "notes to publish."
+            exit 1
+          fi
+
+          {
+            printf '## Release Notes\n\n'
+            cat "$message"
+          } > "$notes"
+
+          sed "s|@@TAG@@|$tag|g" .github/release-footer.md >> "$notes"
+
+      # The tag names the release; package.json's version is what reaches the
+      # built manifest and the store listing. A release where they disagree
+      # ships a zip whose version is not the one being announced.
+      - name: Check the tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != '${{ github.ref_name }}' ]; then
+            echo "::error::tag ${{ github.ref_name }} does not match" \
+                 "package.json version $version"
+            exit 1
+          fi
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -42,27 +92,6 @@ jobs:
           files: |
             .output/moqtap-chrome-${{ github.ref_name }}.zip
             .output/moqtap-firefox-${{ github.ref_name }}.zip
+          # Appends the compare link, and any merged PRs, under the notes.
           generate_release_notes: true
-          body: |
-            ## Chrome Installation
-
-            1. Download **moqtap-chrome-${{ github.ref_name }}.zip** from the assets below
-            2. Unzip the file to a folder on your computer
-            3. Open Chrome and navigate to `chrome://extensions`
-            4. Enable **Developer mode** (toggle in the top-right corner)
-            5. Click **Load unpacked** and select the unzipped folder
-            6. Open DevTools (F12) — you'll see a new **moqtap** panel
-
-            > **Note:** Chrome does not support installing extensions from `.zip` files directly.
-            > You must unzip first, then load the unpacked folder.
-
-            ## Firefox Installation
-
-            1. Download **moqtap-firefox-${{ github.ref_name }}.zip** from the assets below
-            2. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`
-            3. Click **Load Temporary Add-on**
-            4. Select the downloaded `.zip` file (no need to unzip)
-            5. Open DevTools (F12) — you'll see a new **moqtap** panel
-
-            > **Note:** Temporary add-ons are removed when Firefox closes.
-            > For permanent installation, the extension must be signed via [Mozilla Add-ons](https://addons.mozilla.org).
+          body_path: ${{ runner.temp }}/NOTES.md

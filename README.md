@@ -136,6 +136,54 @@ Key modules:
 - `src/trace/` — `.moqtrace` recording and export
 - `src/intercept/` — WebTransport constructor monkey-patching
 
+## Releasing
+
+There is no `CHANGELOG.md`. What changed in a release is written into the
+annotated tag, and the release workflow publishes that message as the GitHub
+release body. The notes live next to the thing they describe, they are
+immutable once pushed, and there is no "Unreleased" section anywhere to fall
+out of date.
+
+The published body is assembled as:
+
+```markdown
+## Release Notes
+
+<the tag message, verbatim>
+
+## Chrome Installation
+...                     <- .github/release-footer.md, @@TAG@@ substituted
+```
+
+So write the notes with `###` subsections: they sit under the `## Release
+Notes` heading the workflow adds, and `##` would make them siblings of it and
+of the install sections below.
+
+```bash
+# 1. Bump "version" in package.json and commit it.
+# 2. Write the notes as markdown in release-notes.md (gitignored), then:
+scripts/tag-release.sh release-notes.md
+git push origin master
+git push origin "v$(node -p "require('./package.json').version")"
+```
+
+Tag by hand only if you must, and then exactly like this:
+
+```bash
+git tag -a --cleanup=verbatim -F notes.md v0.5.0
+```
+
+`--cleanup=verbatim` is not optional. Without it `git tag` strips every line
+beginning with `#`, which is every markdown heading in the notes, silently.
+`scripts/tag-release.sh` gets that right and also refuses a tag that already
+exists, a dirty tree, or a version that does not match `package.json`. The
+workflow re-checks the last of those, and fails the release on a lightweight
+tag rather than publishing an empty body.
+
+The same notes go in the Chrome Web Store and Mozilla Add-ons listings at
+submission time. Mozilla wants sources for the minified bundle:
+`bun run zip:firefox` writes `.output/*-sources.zip` alongside the extension.
+
 ## License
 
 MIT

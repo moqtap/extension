@@ -29,3 +29,7 @@ dist/
 *.js.map
 .vite/
 coverage/
+
+# Release notes staged for scripts/tag-release.sh. They belong in the tag, not
+# in a file — this is just where they are written on the way there.
+release-notes.md
