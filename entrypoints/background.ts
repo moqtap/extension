@@ -32,7 +32,9 @@ import {
 import {
   couldBeControlStream,
   detectFromControlStream,
+  resolveNegotiatedProtocol,
   type DetectionResult,
+  type NegotiatedProtocol,
 } from '@/src/detect/draft-detect'
 import type {
   BackgroundToPanelMsg,
@@ -77,6 +79,14 @@ interface SessionRecord {
   createdAt: number
   /** Parseable subset of the WebTransport constructor options */
   options?: WebTransportOptionsInfo
+  /**
+   * The application protocol the server selected, once it is visible.
+   *
+   * Together with `options.protocols` (the offer) this is the WebTransport
+   * version negotiation draft-20 §3.1 names, and for drafts 15+ it is the only
+   * thing on the connection that says which draft this is.
+   */
+  negotiatedProtocol?: string
   /** Frame ID — 0 for main frame, non-zero for iframes */
   frameId: number
   streams: Map<number, StreamRecord>
@@ -378,6 +388,21 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out
 }
 
+/**
+ * What the transport negotiated for this session, as draft detection wants it.
+ *
+ * Both halves come from the page-side hook: the offer is the `protocols`
+ * member of WebTransportOptions, captured when the page constructs the
+ * session, and the selection is the session's `protocol` attribute, which
+ * arrives later because it does not exist until `ready` resolves.
+ */
+function negotiatedFor(session: SessionRecord): NegotiatedProtocol {
+  return {
+    selected: session.negotiatedProtocol,
+    offered: session.options?.protocols,
+  }
+}
+
 /** Try to detect MoQT draft from accumulated bytes on a given stream.
  *  Returns track updates discovered during initial message decoding. */
 function attemptDetection(
@@ -400,7 +425,7 @@ function attemptDetection(
     offset += chunk.data.length
   }
 
-  const result = detectFromControlStream(buf)
+  const result = detectFromControlStream(buf, negotiatedFor(session))
 
   // If detection returned 'unknown', this stream may not be the control stream.
   // Don't mark as attempted — another stream might be the control stream.
@@ -655,6 +680,14 @@ function replayState(tabId: number) {
       ...(session.frameId !== 0 ? { frameId: session.frameId } : {}),
     })
 
+    if (session.negotiatedProtocol) {
+      sendToPanel(tabId, {
+        type: 'panel:session:protocol',
+        sessionId: session.sessionId,
+        protocol: session.negotiatedProtocol,
+      })
+    }
+
     // Replay detection result
     if (session.detection) {
       sendToPanel(tabId, {
@@ -879,6 +912,57 @@ function handleContentMessage(
         ...(message.options ? { options: message.options } : {}),
         ...(frameId !== 0 ? { frameId } : {}),
       })
+      break
+    }
+
+    case 'session:protocol': {
+      const session = state.sessions.get(message.sessionId)
+      if (!session) break
+      session.negotiatedProtocol = message.protocol
+
+      sendToPanel(tabId, {
+        type: 'panel:session:protocol',
+        sessionId: message.sessionId,
+        protocol: message.protocol,
+      })
+
+      // Usually this lands before a byte of SETUP is written — an application
+      // cannot open a stream until `ready` resolves, and that is what makes
+      // the pick visible. When it does not, detection has already run on
+      // weaker evidence, and an authoritative answer that arrives late is
+      // still worth taking: `via: 'unidentified'` means nothing named the
+      // draft and the newest supported one was assumed.
+      //
+      // Only the label is corrected. Control messages already decoded stay
+      // decoded as they were, so this deliberately does not fire once a
+      // stronger reading is on record.
+      if (
+        session.detection?.protocol === 'moqt' &&
+        session.detection.evidence.via === 'unidentified'
+      ) {
+        const resolved = resolveNegotiatedProtocol(negotiatedFor(session))
+        if (
+          resolved.ok &&
+          resolved.draft &&
+          resolved.draft !== session.detectedDraft
+        ) {
+          session.detection = {
+            protocol: 'moqt',
+            draft: resolved.draft,
+            evidence: {
+              via: 'negotiated-protocol',
+              protocol: resolved.protocol,
+              source: resolved.source,
+            },
+          }
+          session.detectedDraft = resolved.draft
+          sendToPanel(tabId, {
+            type: 'panel:detection',
+            sessionId: message.sessionId,
+            result: session.detection,
+          })
+        }
+      }
       break
     }
 

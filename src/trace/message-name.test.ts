@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { isSupportedDraft } from '../codec/message-ids'
 import { controlMessageName, draftFromProtocol } from './message-name'
 
 /**
@@ -68,11 +69,30 @@ describe('controlMessageName', () => {
 
   it('falls back rather than crashing on a draft outside the tables', () => {
     // A trace from a draft this build has no table for still has to open.
-    expect(controlMessageName(0x03, '20', { type: 'subscribe' })).toBe(
+    expect(controlMessageName(0x03, '21', { type: 'subscribe' })).toBe(
       'subscribe',
     )
     expect(controlMessageName(0x03, '06', {})).toBe('0x3')
     expect(controlMessageName(0x03, 'rfc9999', {})).toBe('0x3')
+  })
+
+  it('names draft-20’s own message from draft-20’s table', () => {
+    // Draft-20's table is draft-19's plus exactly one message, so 0x22 is the
+    // only line that can tell them apart — borrowing draft-19's table would
+    // look right everywhere else, which is what made it worth pinning.
+    expect(isSupportedDraft('20')).toBe(true)
+    expect(controlMessageName(0x22, '20', {})).toBe('publish_state_notify')
+  })
+
+  it('does not borrow draft-20’s table for draft-19', () => {
+    // The same message going the other way: 0x22 is unassigned in draft-19,
+    // so a draft-19 trace must fall back rather than name it.
+    expect(controlMessageName(0x22, '19', {})).toBe('0x22')
+  })
+
+  it('falls back for a draft newer than the tables', () => {
+    expect(isSupportedDraft('21')).toBe(false)
+    expect(controlMessageName(0x22, '21', {})).toBe('0x22')
   })
 
   it('gives an aliased wire ID the one name its table carries', () => {

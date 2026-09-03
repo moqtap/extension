@@ -419,6 +419,7 @@ describe('varintEncoding', () => {
       '17': 'moqt17',
       '18': 'moqt18',
       '19': 'moqt18',
+      '20': 'moqt18',
     }
     for (const [draft, encoding] of Object.entries(expected)) {
       expect(varintEncoding(draft as SupportedDraft), `draft-${draft}`).toBe(
@@ -430,15 +431,17 @@ describe('varintEncoding', () => {
   it('reads and writes SETUP differently either side of draft-17', () => {
     expect(encodeVarintForDraft('16', 0x2f00)).toEqual(hex('6f00'))
     expect(encodeVarintForDraft('19', 0x2f00)).toEqual(hex('af00'))
+    expect(encodeVarintForDraft('20', 0x2f00)).toEqual(hex('af00'))
 
     expect(decodeVarintForDraft('16', hex('6f00'))[0]).toBe(0x2f00)
     expect(decodeVarintForDraft('19', hex('af00'))[0]).toBe(0x2f00)
+    expect(decodeVarintForDraft('20', hex('af00'))[0]).toBe(0x2f00)
   })
 
   it('round-trips message-type-sized values on every draft', () => {
     const drafts: SupportedDraft[] = [
       '07', '08', '09', '10', '11', '12', '13',
-      '14', '15', '16', '17', '18', '19',
+      '14', '15', '16', '17', '18', '19', '20',
     ]
     for (const draft of drafts) {
       for (const value of [0, 0x20, 0x40, 0x51, 0x2f00, 0xff000013]) {

@@ -28,9 +28,12 @@ import type { DetectionResult } from '../detect/draft-detect'
  * the page controls that object, and anything not structured-cloneable in it
  * would take the whole session:opened message down with it.
  *
- * `protocols` is the interesting one for MoQ — it carries the application
- * protocol offer (e.g. ["moq-lite", "moq-transport"]), naming the dialect the
- * client speaks before a single wire byte is exchanged.
+ * `protocols` is the interesting one for MoQ — it is `WT-Available-Protocols`
+ * ([WebTransport] §3.3), the application protocol offer (e.g. ["moq-lite"],
+ * ["moqt-20"]), naming the dialect the client speaks before a single wire byte
+ * is exchanged. For MoQT it also names the draft: draft-20 §3.1 negotiates the
+ * version with a `moqt-NN` string and puts no version number on the wire at
+ * all. `src/detect/draft-detect.ts` reads it for exactly that.
  */
 export interface WebTransportOptionsInfo {
   protocols?: string[]
@@ -48,6 +51,23 @@ export interface SessionOpenedMsg {
   url: string
   createdAt: number
   options?: WebTransportOptionsInfo
+}
+
+/**
+ * The application protocol the server selected, once the session is
+ * established.
+ *
+ * A message of its own rather than a field on session:opened because it does
+ * not exist yet when the constructor returns: the WebTransport session's
+ * `protocol` attribute is empty until `ready` resolves. Never sent at all on
+ * browsers without protocol negotiation, or when the server picked nothing.
+ */
+export interface SessionProtocolMsg {
+  type: 'session:protocol'
+  tabId?: number
+  sessionId: string
+  /** The server's pick — for MoQT, a `moqt-NN` string. */
+  protocol: string
 }
 
 export interface StreamDataMsg {
@@ -158,6 +178,7 @@ export interface DatagramDataMsg {
 /** Messages sent from content script / bridge to background */
 export type ContentToBackgroundMsg =
   | SessionOpenedMsg
+  | SessionProtocolMsg
   | StreamDataMsg
   | StreamCreatedMsg
   | StreamClosedMsg
@@ -178,6 +199,13 @@ export interface PanelSessionOpenedMsg {
   /** Non-zero when session originates from an iframe */
   frameId?: number
   options?: WebTransportOptionsInfo
+}
+
+/** The server's protocol pick, forwarded so the panel can show it. */
+export interface PanelSessionProtocolMsg {
+  type: 'panel:session:protocol'
+  sessionId: string
+  protocol: string
 }
 
 export interface PanelDetectionMsg {
@@ -429,6 +457,7 @@ export interface PanelBatchMsg {
 /** Messages sent from background to DevTools panel */
 export type BackgroundToPanelMsg =
   | PanelSessionOpenedMsg
+  | PanelSessionProtocolMsg
   | PanelDetectionMsg
   | PanelControlMessageMsg
   | PanelStreamOpenedMsg

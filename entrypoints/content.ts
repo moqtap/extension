@@ -15,6 +15,7 @@
  * then auto-excluded so future page loads skip wrapping entirely.
  */
 
+import { opensUniControlStream } from '@/src/detect/uni-control-prefix'
 import { installWebTransportHook } from '@/src/intercept/webtransport-hook'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 
@@ -202,6 +203,9 @@ function bootstrap() {
     },
     (sessionId, reason) => {
       send({ type: 'session:closed', sessionId, reason })
+    },
+    (sessionId, protocol) => {
+      send({ type: 'session:protocol', sessionId, protocol })
     },
   )
 
@@ -836,7 +840,18 @@ if (OrigWT) {
       __moqtapSend({ type: "session:closed", sessionId: session.id, reason: reason });
     }
     if (inst.ready && typeof inst.ready.then === "function") {
-      inst.ready.then(undefined, function(err) {
+      // The server's protocol pick — WT-Available-Protocols' other half — is
+      // the empty string until the session is established, so it is read here
+      // and not at construction. Absent entirely on browsers without
+      // WebTransport protocol negotiation.
+      inst.ready.then(function() {
+        try {
+          var proto = inst.protocol;
+          if (typeof proto === "string" && proto.length > 0) {
+            __moqtapSend({ type: "session:protocol", sessionId: sessionId, protocol: proto });
+          }
+        } catch(e) {}
+      }, function(err) {
         __reportClose(String(err));
       });
     }
@@ -865,26 +880,16 @@ function payloadBytes(msg: ContentToBackgroundMsg): number {
   return msg.data instanceof ArrayBuffer ? msg.data.byteLength : msg.data.length
 }
 
-/**
- * Wire bytes of the draft-17+ unidirectional control stream type (0x2F00 as a
- * QUIC varint). From draft-17 the control stream is a pair of unidirectional
- * streams, so `bidi` alone would file SETUP under bulk media and let a busy
- * session evict it — the exact failure the split buffer exists to prevent.
+/*
+ * `opensUniControlStream` and its prefix live in `@/src/detect/uni-control-prefix`
+ * so that this file and the detection layer cannot disagree about them again —
+ * this file held `6f 00`, the RFC 9000 encoding, where draft-17+ writes `af 00`.
  *
  * Matched per chunk rather than per stream to keep the content script free of
  * per-stream bookkeeping on a hot path. A media chunk that happens to open
  * with these two bytes is admitted too; the byte budget absorbs it, and real
  * control data is orders of magnitude smaller than the budget.
  */
-const UNI_CONTROL_STREAM_PREFIX = [0x6f, 0x00]
-
-function opensUniControlStream(data: ArrayBuffer | string): boolean {
-  if (!(data instanceof ArrayBuffer)) return false
-  if (data.byteLength < UNI_CONTROL_STREAM_PREFIX.length) return false
-  const head = new Uint8Array(data, 0, UNI_CONTROL_STREAM_PREFIX.length)
-  return UNI_CONTROL_STREAM_PREFIX.every((b, i) => head[i] === b)
-}
-
 /** Whether a buffered event belongs to the control plane rather than bulk media */
 function isControlPlane(msg: ContentToBackgroundMsg): boolean {
   if (msg.type !== 'stream:data') return false

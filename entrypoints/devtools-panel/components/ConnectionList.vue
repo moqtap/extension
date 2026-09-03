@@ -46,8 +46,12 @@ function protocolBadge(session: SessionEntry): {
 } {
   switch (session.protocol) {
     case 'moqt':
+      // Trailing "?" marks a draft nothing on the connection named — the
+      // details pane spells out why.
       return {
-        label: session.draft ? `MoQT d${session.draft}` : 'MoQT',
+        label: session.draft
+          ? `MoQT d${session.draft}${session.draftAssumed ? '?' : ''}`
+          : 'MoQT',
         class: 'badge-moqt',
       }
     case 'moqt-unknown-draft':

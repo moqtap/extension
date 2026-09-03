@@ -108,3 +108,51 @@ describe('isIncomplete', () => {
     expect(result.ok).toBe(true)
   })
 })
+
+describe('draft-20 against draft-19', () => {
+  /**
+   * The whole difference between the two control message registries is
+   * PUBLISH_STATE_NOTIFY at 0x22 (draft-20 §10.10) — every other codepoint
+   * holds the same name in both. So this one message is the only thing that
+   * can catch a session decoded under the wrong one of the two, which is what
+   * made the draft coming from the negotiated protocol string worth fixing.
+   */
+  const publishStateNotify = encodeControlMessage(
+    { type: 'publish_state_notify', parameters: {} },
+    '20',
+  )
+
+  it('decodes PUBLISH_STATE_NOTIFY on draft-20', () => {
+    const result = decodeControlMessage(publishStateNotify, '20')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.type).toBe('publish_state_notify')
+  })
+
+  it('writes it at 0x22, with no request id of its own', () => {
+    // Identified by the subscription's bidirectional stream, not a request id.
+    expect(publishStateNotify[0]).toBe(0x22)
+  })
+
+  it('refuses it on draft-19, which does not assign 0x22', () => {
+    const result = decodeControlMessage(publishStateNotify, '19')
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('UNKNOWN_MESSAGE_TYPE')
+    expect(isIncomplete(result.error)).toBe(false)
+  })
+
+  it('holds a draft-20 message that is still arriving', () => {
+    const whole = encodeControlMessage(
+      { type: 'goaway', new_session_uri: 'https://example.test/', timeout: 0n },
+      '20',
+    )
+    for (let cut = 3; cut < whole.length; cut++) {
+      const result = decodeControlMessage(whole.subarray(0, cut), '20')
+      expect(result.ok, `truncated to ${cut} bytes`).toBe(false)
+      if (result.ok) continue
+      expect(isIncomplete(result.error)).toBe(true)
+    }
+    expect(decodeControlMessage(whole, '20').ok).toBe(true)
+  })
+})

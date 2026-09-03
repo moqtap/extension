@@ -121,6 +121,9 @@ const VARINT_ENCODINGS: Record<SupportedDraft, VarintEncoding> = {
   '17': 'moqt17',
   '18': 'moqt18',
   '19': 'moqt18',
+  // Draft-20 §1.4.1 is draft-19's word for word apart from one hyphen; both
+  // varint tables, the 7-byte length included, are byte-identical.
+  '20': 'moqt18',
 }
 
 /** The variable-length integer encoding this draft writes on the wire. */

@@ -45,10 +45,26 @@ export interface SessionEntry {
   closedReason?: string
   protocol: 'moqt' | 'moqt-unknown-draft' | 'unknown' | 'detecting'
   draft?: string
+  /**
+   * True when nothing on the connection named the draft and `draft` is the
+   * newest this build supports rather than something observed. The UI has to
+   * say so — a guessed draft decodes just as confidently as a known one.
+   */
+  draftAssumed?: boolean
+  /** Why no draft could be identified, when `draftAssumed` is set. */
+  draftAssumedReason?: string
+  /**
+   * The `moqt-NN` string the draft was read out of, when one was. It may be
+   * the server's pick or the client's offer — `negotiatedProtocol` below holds
+   * the pick alone, so the two agreeing is what says the server confirmed it.
+   */
+  draftFromProtocol?: string
   /** Non-zero when session originates from an iframe */
   frameId?: number
   /** Parseable subset of the WebTransport constructor options */
   options?: WebTransportOptionsInfo
+  /** The application protocol the server selected (WebTransport `protocol`) */
+  negotiatedProtocol?: string
   /** moqt_implementation from CLIENT_SETUP, when the client advertises one */
   clientImplementation?: string
   /** moqt_implementation from SERVER_SETUP, when the relay advertises one */
@@ -410,13 +426,9 @@ function prettifySetupVersions(
       selected_version: formatVersion(decoded.selected_version),
     }
   }
-  // draft-17/18/19: unified SETUP message may contain selected_version
-  if (messageType === 'setup' && decoded.selected_version != null) {
-    return {
-      ...decoded,
-      selected_version: formatVersion(decoded.selected_version),
-    }
-  }
+  // The unified SETUP of draft-17+ has no version field to prettify: it is
+  // Type, Length and Setup Options, and its draft comes from the negotiated
+  // protocol string instead (draft-20 §10.3, §3.1).
   return decoded
 }
 
@@ -484,6 +496,13 @@ export function useInspector() {
         return true
       }
 
+      case 'panel:session:protocol': {
+        const session = sessions.value.get(msg.sessionId)
+        if (!session) return false
+        session.negotiatedProtocol = msg.protocol
+        return true
+      }
+
       case 'panel:detection': {
         const session = sessions.value.get(msg.sessionId)
         if (session) {
@@ -491,6 +510,16 @@ export function useInspector() {
             msg.result.protocol === 'moqt' ? 'moqt' : msg.result.protocol
           if (msg.result.protocol === 'moqt') {
             session.draft = msg.result.draft
+          }
+          if (msg.result.protocol !== 'unknown') {
+            const evidence = msg.result.evidence
+            session.draftAssumed = evidence.via === 'unidentified'
+            session.draftAssumedReason =
+              evidence.via === 'unidentified' ? evidence.reason : undefined
+            session.draftFromProtocol =
+              evidence.via === 'negotiated-protocol'
+                ? evidence.protocol
+                : undefined
           }
           return true
         }

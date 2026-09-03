@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   installWebTransportHook,
+  readNegotiatedProtocol,
   uninstallWebTransportHook,
 } from './webtransport-hook'
 import type { InterceptedSession, StreamInterceptor } from './webtransport-hook'
@@ -217,6 +218,145 @@ describe('WebTransport hook — session capture', () => {
     const after = Date.now()
     expect(sessions[0].createdAt).toBeGreaterThanOrEqual(before)
     expect(sessions[0].createdAt).toBeLessThanOrEqual(after)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Negotiated application protocol
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('WebTransport hook — negotiated protocol', () => {
+  /** A mock whose `protocol` attribute behaves the way the spec says. */
+  class ProtocolWebTransport extends MockWebTransport {
+    protocol = ''
+    constructor(url: string, options?: Record<string, unknown>) {
+      super(url, options)
+      // Empty until the session is established, then the server's pick.
+      this.ready.then(() => {
+        this.protocol = 'moqt-20'
+      })
+    }
+  }
+
+  function globalWith(WT: unknown) {
+    return { WebTransport: WT } as unknown as typeof globalThis
+  }
+
+  const noopInterceptor: StreamInterceptor = {
+    onData: vi.fn(),
+    onClose: vi.fn(),
+    onError: vi.fn(),
+  }
+
+  it('reads the server’s pick, but only once ready has resolved', async () => {
+    const onProtocol = vi.fn()
+    const mockGlobal = globalWith(ProtocolWebTransport)
+    installWebTransportHook(
+      mockGlobal,
+      vi.fn(),
+      noopInterceptor,
+      undefined,
+      onProtocol,
+    )
+
+    const wt = new (mockGlobal as any).WebTransport('https://relay.test/moq', {
+      protocols: ['moqt-20'],
+    })
+    // Before ready the attribute is the empty string — reporting that as the
+    // negotiated protocol would say the server picked nothing.
+    expect(onProtocol).not.toHaveBeenCalled()
+
+    await wt.ready
+    await Promise.resolve()
+
+    expect(onProtocol).toHaveBeenCalledTimes(1)
+    expect(onProtocol.mock.calls[0][1]).toBe('moqt-20')
+  })
+
+  it('reports nothing on a browser without protocol negotiation', async () => {
+    // MockWebTransport has no `protocol` attribute at all, which is what an
+    // implementation predating WT-Available-Protocols looks like.
+    const onProtocol = vi.fn()
+    const mockGlobal = createMockGlobal()
+    installWebTransportHook(
+      mockGlobal,
+      vi.fn(),
+      noopInterceptor,
+      undefined,
+      onProtocol,
+    )
+
+    const wt = new (mockGlobal.WebTransport as any)('https://relay.test/moq')
+    await wt.ready
+    await Promise.resolve()
+
+    expect(onProtocol).not.toHaveBeenCalled()
+  })
+
+  it('does not report a protocol for a session that never opened', async () => {
+    const onProtocol = vi.fn()
+    const failing = class {
+      ready = Promise.reject(new Error('connection failed'))
+      closed = new Promise(() => {})
+      datagrams = {
+        readable: new MockReadableStream(),
+        writable: new MockWritableStream(),
+      }
+      protocol = 'moqt-20'
+    }
+    const mockGlobal = globalWith(failing)
+    installWebTransportHook(
+      mockGlobal,
+      vi.fn(),
+      noopInterceptor,
+      undefined,
+      onProtocol,
+    )
+
+    const wt = new (mockGlobal as any).WebTransport('https://relay.test/moq')
+    await wt.ready.catch(() => {})
+    await Promise.resolve()
+
+    expect(onProtocol).not.toHaveBeenCalled()
+  })
+
+  it('captures the offered protocols as WT-Available-Protocols', () => {
+    const sessions: InterceptedSession[] = []
+    const mockGlobal = createMockGlobal()
+    installWebTransportHook(mockGlobal, (s) => sessions.push(s), noopInterceptor)
+
+    new (mockGlobal.WebTransport as any)('https://relay.test/moq', {
+      protocols: ['moqt-19', 'moqt-20'],
+    })
+
+    expect(sessions[0].options?.protocols).toEqual(['moqt-19', 'moqt-20'])
+  })
+})
+
+describe('readNegotiatedProtocol', () => {
+  it('reads a non-empty protocol string', () => {
+    expect(readNegotiatedProtocol({ protocol: 'moqt-20' })).toBe('moqt-20')
+  })
+
+  it('treats the pre-established empty string as no answer', () => {
+    expect(readNegotiatedProtocol({ protocol: '' })).toBeUndefined()
+  })
+
+  it('answers nothing when the attribute is absent or not a string', () => {
+    expect(readNegotiatedProtocol({})).toBeUndefined()
+    expect(readNegotiatedProtocol({ protocol: 42 })).toBeUndefined()
+    expect(readNegotiatedProtocol(null)).toBeUndefined()
+    expect(readNegotiatedProtocol(undefined)).toBeUndefined()
+  })
+
+  it('survives a throwing getter on a page-controlled object', () => {
+    const hostile = Object.defineProperty({}, 'protocol', {
+      get() {
+        throw new Error('nope')
+      },
+    })
+    expect(() => readNegotiatedProtocol(hostile)).not.toThrow()
+    expect(readNegotiatedProtocol(hostile)).toBeUndefined()
   })
 })
 

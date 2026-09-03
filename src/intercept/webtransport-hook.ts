@@ -7,6 +7,7 @@
  *
  * The hook captures:
  * - Connection setup (URL, options)
+ * - The negotiated application protocol, once the session is established
  * - Bidirectional streams (the control stream is stream #0)
  * - Unidirectional streams (data streams: subgroup, fetch)
  * - Datagrams
@@ -63,6 +64,35 @@ export function extractSessionOptions(
   }
 }
 
+/**
+ * The application protocol the server picked, read off the session once it is
+ * established.
+ *
+ * This is the other half of the WebTransport protocol negotiation whose client
+ * side arrives as `options.protocols` (`WT-Available-Protocols`): the server
+ * answers with one of them, and the WebTransport spec exposes the answer as
+ * the session's `protocol` attribute. For MoQT that string is `moqt-NN` and it
+ * is what names the draft from draft-15 on.
+ *
+ * Empty until the session is established, so this is only worth calling from
+ * the `ready` continuation. Undefined on browsers that have not implemented
+ * protocol negotiation, where the attribute is simply absent — the offer list
+ * is the fallback, and it settles the draft on its own whenever it names one
+ * MoQT protocol.
+ *
+ * Every read touches a page-controlled object, so a throwing getter must not
+ * escape into the page's own connection.
+ */
+export function readNegotiatedProtocol(instance: unknown): string | undefined {
+  try {
+    if (!instance || typeof instance !== 'object') return undefined
+    const p = (instance as Record<string, unknown>).protocol
+    return typeof p === 'string' && p.length > 0 ? p : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export interface SessionLifecycleCallbacks {
   onSession: (session: InterceptedSession) => void
   onSessionClosed: (sessionId: string, reason: string) => void
@@ -109,6 +139,12 @@ export function installWebTransportHook(
   onSession: (session: InterceptedSession) => void,
   onStream: StreamInterceptor,
   onSessionClosed?: (sessionId: string, reason: string) => void,
+  /**
+   * Called once, after `ready` resolves, when the server's protocol pick is
+   * visible. Separate from `onSession` because the pick does not exist yet at
+   * construction time — see readNegotiatedProtocol.
+   */
+  onSessionProtocol?: (sessionId: string, protocol: string) => void,
 ): () => void {
   const glob = target as Record<string, unknown>
   const OriginalWebTransport = glob.WebTransport as
@@ -227,6 +263,18 @@ export function installWebTransportHook(
     // Intercept datagrams (readable = rx, writable = tx)
     if (onStream.onDatagram) {
       interceptDatagrams(instance.datagrams, sessionId, onStream)
+    }
+
+    // Report the server's protocol pick once the session is established. It is
+    // the empty string before that, so the read has to wait for `ready`.
+    if (onSessionProtocol) {
+      const ready = instance.ready as Promise<unknown> | undefined
+      if (ready && typeof ready.then === 'function') {
+        ready.then(() => {
+          const protocol = readNegotiatedProtocol(instance)
+          if (protocol) onSessionProtocol(sessionId, protocol)
+        }, () => {})
+      }
     }
 
     // Monitor connection lifecycle promises

@@ -32,6 +32,7 @@ const ALL_DRAFTS: SupportedDraft[] = [
   '17',
   '18',
   '19',
+  '20',
 ]
 
 /**
@@ -65,7 +66,14 @@ describe('streamOpeners', () => {
     // A rename in a future draft silently shrinks this set and stops request
     // streams being recognised, so pin the expected count per era.
     // Draft-17 §3.3 lists six openers; draft-18 added SUBSCRIBE_TRACKS.
-    const expected: Record<string, number> = { '17': 6, '18': 7, '19': 7 }
+    // Draft-20 §3.3 lists the same seven; PUBLISH_STATE_NOTIFY (0x22) is new
+    // but rides an already-open subscription stream and never opens one.
+    const expected: Record<string, number> = {
+      '17': 6,
+      '18': 7,
+      '19': 7,
+      '20': 7,
+    }
     for (const draft of ALL_DRAFTS.filter(hasRequestStreams)) {
       const map = getMessageIdMap(draft)
       const found = REQUEST_STREAM_OPENERS.filter((n) => map.get(n) != null)
@@ -175,5 +183,24 @@ describe('classifyStreamOpener', () => {
     expect(
       classifyStreamOpener(opener('17', 'subscribe_namespace'), '19'),
     ).not.toBe('request')
+  })
+
+  it('does not let draft-20’s PUBLISH_STATE_NOTIFY open a stream', () => {
+    // 0x22 is new in draft-20, but §10.10 sends it on a subscription's
+    // already-open bidirectional stream and Table 5 does not mark it "First".
+    // Admitting it as an opener would start decoding media whose first byte is
+    // 0x22 as control messages.
+    expect(getMessageIdMap('20').get('publish_state_notify')).toBe(0x22n)
+    expect(streamOpeners('20').request.has(0x22)).toBe(false)
+    expect(streamOpeners('20').control.has(0x22)).toBe(false)
+    expect(classifyStreamOpener(new Uint8Array([0x22]), '20')).toBe('data')
+  })
+
+  it('opens a draft-20 request stream with each of the seven openers', () => {
+    for (const name of REQUEST_STREAM_OPENERS) {
+      expect(classifyStreamOpener(opener('20', name), '20'), name).toBe(
+        'request',
+      )
+    }
   })
 })

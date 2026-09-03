@@ -1,6 +1,6 @@
 {
   "name": "@moqtap/extension",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "WebTransport Inspector — DevTools extension for inspecting WebTransport connections and MoQT protocol traffic",
   "private": true,
   "type": "module",
@@ -18,18 +18,18 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
-    "@moqtap/codec": "^0.8.1",
+    "@moqtap/codec": "^0.9.0",
     "@moqtap/trace": "^0.3.0",
-    "vue": "^3.5.29"
+    "vue": "^3.5.42"
   },
   "devDependencies": {
-    "@moqtap/test-vectors": "0.12.1",
+    "@moqtap/test-vectors": "0.13.0",
     "@types/chrome": "^0.0.280",
     "@wxt-dev/module-vue": "^1.0.3",
     "typescript": "^5.9.3",
-    "vitest": "^3.0.0",
-    "vue-tsc": "^3.2.5",
-    "wxt": "^0.20.20"
+    "vitest": "^3.2.7",
+    "vue-tsc": "^3.3.11",
+    "wxt": "^0.20.27"
   },
   "license": "MIT",
   "repository": {

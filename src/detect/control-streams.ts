@@ -15,7 +15,7 @@
  * unidirectional streams, so bulk media never appears here. Everything else
  * has to come from the leading varint, which the spec makes reliable: a
  * request stream must begin with one of seven request messages, and anything
- * else on a bidirectional stream is a protocol violation (draft-19 §3.3).
+ * else on a bidirectional stream is a protocol violation (draft-20 §3.3).
  */
 
 import { getMessageIdMap } from '../codec/message-ids'
@@ -23,7 +23,7 @@ import { decodeVarintForDraft } from '../codec/varint'
 import type { SupportedDraft } from '../types/common'
 
 /**
- * Message types that open a request stream (draft-19 §3.3). Named rather than
+ * Message types that open a request stream (draft-20 §3.3). Named rather than
  * hardcoded so wire ids come from the draft's own map — they have moved, and
  * will move again: SUBSCRIBE_NAMESPACE is 0x11 in draft-17 and 0x50 in
  * draft-18+. Draft-17 lists only six of these (no SUBSCRIBE_TRACKS), which

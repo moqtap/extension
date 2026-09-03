@@ -123,14 +123,35 @@ const filteredMessages = computed(() => {
 function protocolLabel(session: SessionEntry): string {
   switch (session.protocol) {
     case 'moqt':
-      return `MoQT draft-${session.draft}`
+      // A draft nothing named is a fallback, and saying so is the difference
+      // between a reading and a guess that looks like one.
+      return session.draftAssumed
+        ? `MoQT draft-${session.draft} (assumed)`
+        : `MoQT draft-${session.draft}`
     case 'moqt-unknown-draft':
-      return 'MoQT (unknown draft)'
+      return session.draftFromProtocol
+        ? `MoQT ${session.draftFromProtocol} (draft not supported)`
+        : 'MoQT (unknown draft)'
     case 'detecting':
       return 'Detecting...'
     default:
       return 'WebTransport (non-MoQT)'
   }
+}
+
+/** Where the draft came from, spelled out for the details table. */
+function draftSourceLabel(session: SessionEntry): string | null {
+  const isMoqt =
+    session.protocol === 'moqt' || session.protocol === 'moqt-unknown-draft'
+  if (!isMoqt) return null
+  if (session.draftAssumed) {
+    const why = session.draftAssumedReason ?? 'nothing named the draft'
+    return `assumed — ${why}`
+  }
+  if (session.draftFromProtocol) {
+    return `negotiated protocol "${session.draftFromProtocol}"`
+  }
+  return 'version number in SETUP'
 }
 
 function formatBytes(n: number): string {
@@ -358,6 +379,10 @@ function closeStreamData() {
               <td class="details-label">Protocol</td>
               <td>{{ protocolLabel(session) }}</td>
             </tr>
+            <tr v-if="draftSourceLabel(session)">
+              <td class="details-label">Draft From</td>
+              <td>{{ draftSourceLabel(session) }}</td>
+            </tr>
             <tr v-if="session.clientImplementation">
               <td class="details-label">Client</td>
               <td>{{ session.clientImplementation }}</td>
@@ -369,6 +394,10 @@ function closeStreamData() {
             <tr v-if="session.options?.protocols?.length">
               <td class="details-label">Offered Protocols</td>
               <td>{{ session.options.protocols.join(', ') }}</td>
+            </tr>
+            <tr v-if="session.negotiatedProtocol">
+              <td class="details-label">Selected Protocol</td>
+              <td>{{ session.negotiatedProtocol }}</td>
             </tr>
             <tr v-if="session.options?.congestionControl">
               <td class="details-label">Congestion Control</td>

@@ -33,6 +33,7 @@ const DRAFTS: SupportedDraft[] = [
   '17',
   '18',
   '19',
+  '20',
 ]
 
 /**
@@ -53,6 +54,7 @@ const UNASSIGNED = 'unknown'
 const ALIASES: Partial<Record<SupportedDraft, Record<string, string>>> = {
   '18': { publish_ok: 'request_ok' },
   '19': { publish_ok: 'request_ok' },
+  '20': { publish_ok: 'request_ok' },
 }
 
 /** The `message_type` / `message_type_id` header every vector file carries. */
