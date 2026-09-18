@@ -11,7 +11,7 @@ const require_ = createRequire(import.meta.url)
 const VECTORS_BASE = dirname(require_.resolve('@moqtap/test-vectors/manifest'))
 
 /** Drafts whose control stream is a pair of unidirectional streams. */
-const UNI_CONTROL_DRAFTS = ['17', '18', '19', '20'] as const
+const UNI_CONTROL_DRAFTS = ['17', '18', '19', '20', '21'] as const
 
 function setupVectors(draft: string): { id: string; hex: string }[] {
   const path = join(
@@ -35,12 +35,11 @@ function bufferOf(hex: string): ArrayBuffer {
 
 describe('UNI_CONTROL_STREAM_PREFIX', () => {
   /*
-   * The regression this exists for: the content script hardcoded `6f 00`, the
-   * RFC 9000 encoding of 0x2F00, where draft-17+ writes MoQT's varint `af 00`.
-   * Nothing matched, SETUP was filed as bulk media, and a busy session evicted
-   * it. The detection layer had this right and was tested; the content script
-   * had its own copy and was not. So this pins the bytes against the corpus
-   * rather than against another hand-written constant.
+   * Pinned against the corpus SETUP vectors rather than against another
+   * hand-written constant. A hand-written copy can encode 0x2F00 the RFC 9000
+   * way (`6f 00`) where draft-17+ writes MoQT's varint (`af 00`), and nothing
+   * about that failure is loud: nothing matches, SETUP is filed as bulk media,
+   * and a busy session evicts it.
    */
   it.each(UNI_CONTROL_DRAFTS)(
     'matches the real first bytes of every draft-%s SETUP vector',

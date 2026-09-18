@@ -21,12 +21,15 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 ## Development
 
 ```bash
-npm install
-npm run dev          # Dev mode with hot reload
-npm run build        # Production build
-npm run test         # Run test suite
-npm run compile      # Type check
+bun install
+bun run dev          # Dev mode with hot reload
+bun run build        # Production build
+bun run test         # Run test suite
+bun run compile      # Type check
 ```
+
+bun, not npm: the lockfile is `bun.lock` and the release workflow installs
+with `bun install --frozen-lockfile`.
 
 Load the built extension from `.output/chrome-mv3/` in `chrome://extensions` (developer mode).
 
@@ -39,7 +42,7 @@ CLIENT_SETUP through draft-16, `0x2F00` for the SETUP of draft-17 and later.
 That is all the message type says; it does not name a draft, and it is not
 meant to.
 
-**Which draft?** Draft-20 §3.1: *"MOQT uses ALPN in QUIC and
+**Which draft?** Draft-21 §6.2: *"MOQT uses ALPN in QUIC and
 `WT-Available-Protocols` in WebTransport to perform version negotiation [...]
 ALPNs used to identify IETF drafts are created by appending the draft number to
 `moqt-`."* This extension observes WebTransport, so the mechanism it sees is
@@ -51,7 +54,7 @@ drafts 15 and later put **no version number on the wire at all**.
 
 So: a version number for drafts 07–14, the `moqt-NN` string for 15 and up. When
 neither is available the newest supported draft is assumed, and every surface
-that shows it says so — `MoQT draft-20 (assumed)` in the details pane, a
+that shows it says so — `MoQT draft-21 (assumed)` in the details pane, a
 trailing `?` on the connection badge, and a "Draft From" row giving the reason.
 
 ## Adding a New MoQT Draft
@@ -60,9 +63,11 @@ trailing `?` on the connection badge, and a "Draft From" row giving the reason.
 
 The codec package must support the new draft first — the extension delegates
 all message encoding/decoding to it. Once it is published with the new draft,
-bump the dependency in `package.json`.
+take it with `bun add @moqtap/codec@^X.Y.Z` rather than editing
+`package.json`: the release workflow installs with `--frozen-lockfile`, which
+fails on a `bun.lock` the edit left behind.
 
-### 2. Register the draft (5 files)
+### 2. Register the draft (6 files)
 
 **`src/types/common.ts`** — Add to `SUPPORTED_DRAFTS`. `SupportedDraft` derives
 from it, so every per-draft `Record` in the codebase stops compiling until it
@@ -71,9 +76,10 @@ is filled in.
 **`src/codec/message-ids.ts`** — Import `MESSAGE_ID_MAP` / `MESSAGE_TYPE_MAP`
 from the new draft subpath and register both.
 
-**`src/codec/varint.ts`** — Add the draft to `VARINT_ENCODINGS`. Check the
-draft's §1.4.1 rather than assuming it inherits: draft-17 replaced the RFC 9000
-integer and draft-18 revised the replacement.
+**`src/codec/varint.ts`** — Add the draft to `VARINT_ENCODINGS`. Read the
+draft's own integer section rather than assuming it inherits — §8.1 in
+draft-21, §1.4.1 in drafts 17–20: draft-17 replaced the RFC 9000 integer and
+draft-18 revised the replacement.
 
 **`entrypoints/devtools-panel/stream-framing/index.ts`** — Register a parser
 via `registerDraftParser('NN', createCodecDraftParser('NN'))`.
@@ -82,7 +88,9 @@ via `registerDraftParser('NN', createCodecDraftParser('NN'))`.
 subpath aliases. Every draft has to be listed, not just the ones a test imports
 directly: `src/codec/message-ids.ts` imports all of them.
 
-**`src/detect/draft-detect.ts`** — Bump `NEWEST_SUPPORTED_DRAFT`. Do **not** add
+**`src/detect/draft-detect.ts`** — Bump `NEWEST_SUPPORTED_DRAFT`; a test pins
+it to the last entry of `SUPPORTED_DRAFTS`, because a build that decodes a
+draft but assumes the one below it guesses just as confidently. Do **not** add
 a row to `VERSION_TO_DRAFT`: it stops at draft-14 because that is where wire
 version numbers stop, and a new row there would be a value no peer sends.
 
@@ -104,19 +112,25 @@ per-era counts its test pins.
 
 Add the draft to the per-draft lists in `src/codec/message-ids.test.ts`,
 `src/codec/track-info.test.ts`, `src/codec/varint.test.ts` and
-`src/detect/control-streams.test.ts`, and add a detection case to
+`src/detect/control-streams.test.ts`; to `UNI_CONTROL_DRAFTS` in
+`src/detect/uni-control-prefix.test.ts` if its control stream is a pair of
+unidirectional ones; and add a detection case to
 `src/detect/draft-detect.test.ts`. The test count must move — if it does not,
 the new draft is being skipped rather than exercised.
 
 ### 5. Build and verify
 
 ```bash
-npm run compile      # Type check
-npm run test         # All tests pass
-npm run build        # Bundle includes new draft support
+bun run compile      # Type check
+bun run test         # All tests pass
+bun run build        # Bundle includes new draft support
 ```
 
-Currently supported drafts: **07 through 20**.
+Currently supported drafts: **07 through 21**.
+
+Draft-21 needed no step 3: it restructures draft-20 and changes nothing a
+decoder can observe, so its tables, framing and varint are draft-20's and the
+negotiated `moqt-21` string is the only thing that tells the two apart.
 
 ## Architecture
 
@@ -132,8 +146,9 @@ Key modules:
 - `src/detect/` — MoQT detection from stream-opening bytes, draft from the
   negotiated protocol (or a SETUP version number, drafts 07-14)
 - `src/codec/` — Multi-draft facade over `@moqtap/codec`
-- `src/session/` — Session state machine (delegates to codec)
 - `src/trace/` — `.moqtrace` recording and export
+- `src/storage/` — Memory-first stream and datagram payload stores, with
+  IndexedDB as overflow
 - `src/intercept/` — WebTransport constructor monkey-patching
 
 ## Releasing

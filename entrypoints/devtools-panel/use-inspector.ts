@@ -1,3 +1,4 @@
+import type { CollectorStatus } from '@/src/intercept/collector-presence'
 /**
  * Composable for the DevTools panel — connects to background and
  * provides reactive state for the inspector UI.
@@ -20,7 +21,7 @@ import type {
 } from '@/src/messaging/types'
 import { base64ToBytes } from '@/src/messaging/types'
 import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
-// Panel no longer accesses IDB directly — data requests go through background
+// The panel does not touch IDB directly — data requests go through the background worker.
 import { detectMediaInfo, type PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
   detectAnnexB,
@@ -34,7 +35,11 @@ import type {
   StreamOpenedEvent,
   Trace,
 } from '@moqtap/trace'
-import { readMoqtrace, writeMoqtrace } from '@moqtap/trace'
+import {
+  controlMessageFields,
+  readMoqtrace,
+  writeMoqtrace,
+} from '@moqtap/trace'
 import { buildTrace } from './build-trace'
 
 export interface SessionEntry {
@@ -63,6 +68,12 @@ export interface SessionEntry {
   frameId?: number
   /** Parseable subset of the WebTransport constructor options */
   options?: WebTransportOptionsInfo
+  /**
+   * Whether `@moqtap/collector` was instrumenting this connection when it
+   * opened. `undefined` means unknown -- an older content script, or a worker
+   * connection, where the marker is on a global we do not read.
+   */
+  collector?: CollectorStatus
   /** The application protocol the server selected (WebTransport `protocol`) */
   negotiatedProtocol?: string
   /** moqt_implementation from CLIENT_SETUP, when the client advertises one */
@@ -428,7 +439,7 @@ function prettifySetupVersions(
   }
   // The unified SETUP of draft-17+ has no version field to prettify: it is
   // Type, Length and Setup Options, and its draft comes from the negotiated
-  // protocol string instead (draft-20 §10.3, §3.1).
+  // protocol string instead (draft-21 §9.1, §6.2).
   return decoded
 }
 
@@ -489,6 +500,7 @@ export function useInspector() {
         session.protocol = 'detecting'
         if (msg.frameId) session.frameId = msg.frameId
         if (msg.options) session.options = msg.options
+        if (msg.collector) session.collector = msg.collector
         // Auto-select first session
         if (!selectedSessionId.value) {
           selectedSessionId.value = msg.sessionId
@@ -1176,34 +1188,40 @@ export function useInspector() {
       switch (event.type) {
         case 'control': {
           const ce = event as ControlMessageEvent
-          const msg = ce.message
-          const msgType = controlMessageName(ce.messageType, draft, msg)
+          // A conformant writer puts a field map in `message`, but the format
+          // obliges a reader to accept less: a trace may carry a text rendering
+          // of the message there instead. Narrowing decides which of the two
+          // this is, and everything that reads a field off it is skipped for
+          // the other rather than reading `undefined` from it.
+          const fields = controlMessageFields(ce.message)
+          const msgType = controlMessageName(ce.messageType, draft, fields)
           session.messages.push({
             timestamp: ce.timestamp,
             direction: ce.direction === 0 ? 'tx' : 'rx',
             messageType: msgType,
-            decoded: msg,
-            decodedPretty: prettifySetupVersions(
-              msgType,
-              msg as Record<string, unknown>,
-            ),
+            decoded: ce.message,
+            decodedPretty: fields
+              ? prettifySetupVersions(msgType, fields)
+              : ce.message,
             raw: ce.raw ?? new Uint8Array(0),
           })
 
           applySetupImplementation(
             session,
             msgType,
-            msg,
+            ce.message,
             ce.direction === 0 ? 'tx' : 'rx',
           )
 
           // Extract track info from control messages. Traces recorded before
           // the stream id existed simply have none.
-          trackRegistry.apply(msg, {
-            direction: ce.direction === 0 ? 'tx' : 'rx',
-            ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
-            timestamp: ce.timestamp,
-          })
+          if (fields) {
+            trackRegistry.apply(fields, {
+              direction: ce.direction === 0 ? 'tx' : 'rx',
+              ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
+              timestamp: ce.timestamp,
+            })
+          }
           break
         }
 

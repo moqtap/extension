@@ -27,6 +27,7 @@ import {
   resolveNegotiatedProtocol,
   versionToDraft,
 } from './draft-detect'
+import { SUPPORTED_DRAFTS } from '../types/common'
 import { encodeVarint, concat } from '../codec/test-helpers'
 import { encodeMoqtVarint } from '../codec/varint'
 
@@ -83,6 +84,7 @@ describe('draftFromProtocolString', () => {
   it('reads the draft number out of a moqt-NN string', () => {
     expect(draftFromProtocolString('moqt-19')).toBe('19')
     expect(draftFromProtocolString('moqt-20')).toBe('20')
+    expect(draftFromProtocolString('moqt-21')).toBe('21')
   })
 
   it('normalises a single-digit draft to the two-digit form the tables use', () => {
@@ -90,7 +92,7 @@ describe('draftFromProtocolString', () => {
   })
 
   it('reads a draft number past what this build supports', () => {
-    // Knowing it is draft-25 is what stops it being decoded as draft-20.
+    // Knowing it is draft-25 is what stops it being decoded as draft-21.
     expect(draftFromProtocolString('moqt-25')).toBe('25')
   })
 
@@ -285,6 +287,22 @@ describe('detectFromControlStream — negotiated protocol (drafts 15+)', () => {
     expect(isDraftAssumed(result)).toBe(false)
   })
 
+  it('tells draft-21 from draft-20 by the protocol string alone', () => {
+    // Nothing else can. Draft-21 restructures draft-20 and moves no byte of
+    // the wire, so a draft-20 and a draft-21 peer open with the identical
+    // SETUP and the negotiated string is the whole of the difference.
+    for (const draft of ['20', '21'] as const) {
+      const result = detectFromControlStream(SETUP_BYTES, {
+        selected: `moqt-${draft}`,
+      })
+      expect(result.protocol).toBe('moqt')
+      if (result.protocol === 'moqt') {
+        expect(result.draft).toBe(draft)
+        expect(isDraftAssumed(result)).toBe(false)
+      }
+    }
+  })
+
   it('reads draft-19 out of the offered protocol, not the newest known draft', () => {
     // The defect this replaces: every draft-17+ session was reported as the
     // newest draft the build knew, whatever the protocol string said.
@@ -335,6 +353,15 @@ describe('detectFromControlStream — negotiated protocol (drafts 15+)', () => {
         source: 'selected',
       })
     }
+  })
+
+  it('assumes the newest draft the tables cover, not a stale constant', () => {
+    // The fallback is only honest if it names a draft this build can decode,
+    // and a draft added to the tables without moving this constant leaves it
+    // naming the one below — which decodes and reports as confidently.
+    expect(NEWEST_SUPPORTED_DRAFT).toBe(
+      SUPPORTED_DRAFTS[SUPPORTED_DRAFTS.length - 1],
+    )
   })
 
   it('falls back to the newest supported draft, and says it is a fallback', () => {
@@ -408,7 +435,7 @@ describe('detectFromControlStream — versionless CLIENT_SETUP (drafts 15-16)', 
 
   it('does not fall back to a draft that has no CLIENT_SETUP to send', () => {
     // The draft-17+ path assumes the newest supported draft when nothing names
-    // one. Doing that here would report draft-20 for bytes draft-20 cannot
+    // one. Doing that here would report draft-21 for bytes draft-21 cannot
     // have written: it has no CLIENT_SETUP at all.
     const result = detectFromControlStream(buildVersionlessClientSetupBytes(), {
       offered: ['moq-lite'],

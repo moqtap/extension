@@ -62,6 +62,10 @@ import {
   MESSAGE_ID_MAP as ID_MAP_20,
   MESSAGE_TYPE_MAP as TYPE_MAP_20,
 } from '@moqtap/codec/draft20'
+import {
+  MESSAGE_ID_MAP as ID_MAP_21,
+  MESSAGE_TYPE_MAP as TYPE_MAP_21,
+} from '@moqtap/codec/draft21'
 import type { SupportedDraft } from '../types/common'
 
 type MessageIdMap = ReadonlyMap<string, bigint>
@@ -82,6 +86,7 @@ const idMaps: Record<SupportedDraft, MessageIdMap> = {
   '18': ID_MAP_18,
   '19': ID_MAP_19,
   '20': ID_MAP_20,
+  '21': ID_MAP_21,
 }
 
 const typeMaps: Record<SupportedDraft, MessageTypeMap> = {
@@ -99,6 +104,7 @@ const typeMaps: Record<SupportedDraft, MessageTypeMap> = {
   '18': TYPE_MAP_18,
   '19': TYPE_MAP_19,
   '20': TYPE_MAP_20,
+  '21': TYPE_MAP_21,
 }
 
 /** Get the MESSAGE_ID_MAP for a given draft. */
@@ -114,10 +120,10 @@ export function getMessageTypeMap(draft: SupportedDraft): MessageTypeMap {
 /**
  * Whether a draft string is one the tables are keyed by.
  *
- * Both getters index a `Record` by draft, so a draft outside 07-20 hands back
- * `undefined` rather than an empty map — a caller holding a draft from outside
- * the type system, such as one read out of a trace header, has to narrow it
- * here or crash a line later.
+ * Both getters index a `Record` by draft, so a draft outside `SUPPORTED_DRAFTS`
+ * hands back `undefined` rather than an empty map — a caller holding a draft
+ * from outside the type system, such as one read out of a trace header, has to
+ * narrow it here or crash a line later.
  *
  * Re-exported from `types/common` so callers that only need the narrowing —
  * draft detection, which runs before any codec is chosen — can import it

@@ -1,3 +1,5 @@
+import type { CollectorStatus } from '../intercept/collector-presence'
+
 /**
  * Message types for content script <-> background <-> DevTools panel communication.
  *
@@ -30,8 +32,8 @@ import type { DetectionResult } from '../detect/draft-detect'
  *
  * `protocols` is the interesting one for MoQ — it is `WT-Available-Protocols`
  * ([WebTransport] §3.3), the application protocol offer (e.g. ["moq-lite"],
- * ["moqt-20"]), naming the dialect the client speaks before a single wire byte
- * is exchanged. For MoQT it also names the draft: draft-20 §3.1 negotiates the
+ * ["moqt-21"]), naming the dialect the client speaks before a single wire byte
+ * is exchanged. For MoQT it also names the draft: draft-21 §6.2 negotiates the
  * version with a `moqt-NN` string and puts no version number on the wire at
  * all. `src/detect/draft-detect.ts` reads it for exactly that.
  */
@@ -51,6 +53,13 @@ export interface SessionOpenedMsg {
   url: string
   createdAt: number
   options?: WebTransportOptionsInfo
+  /**
+   * Whether `@moqtap/collector` is instrumenting this connection, read from the
+   * page global at the moment the connection opened. Absent on messages from
+   * builds older than this field, which is why the panel treats `undefined` as
+   * "unknown" rather than as "no".
+   */
+  collector?: CollectorStatus
 }
 
 /**
@@ -199,6 +208,8 @@ export interface PanelSessionOpenedMsg {
   /** Non-zero when session originates from an iframe */
   frameId?: number
   options?: WebTransportOptionsInfo
+  /** See {@link SessionOpenedMsg.collector}. */
+  collector?: CollectorStatus
 }
 
 /** The server's protocol pick, forwarded so the panel can show it. */

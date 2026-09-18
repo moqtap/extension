@@ -123,9 +123,13 @@ export interface StreamInterceptor {
   onDatagram?(sessionId: string, data: Uint8Array, direction: 'tx' | 'rx'): void
 }
 
-// Stored per-global so uninstallWebTransportHook can restore without
-// needing the return value from installWebTransportHook.
-const originalConstructors = new WeakMap<object, unknown>()
+import { joinChain } from './patch-chain'
+
+// The teardown closure per global, so `uninstallWebTransportHook` can run it
+// without the return value from `installWebTransportHook`. It holds the closure
+// rather than the original constructor because teardown is conditional -- see
+// the comment on `teardown` -- and a bare constructor cannot express that.
+const installedHooks = new WeakMap<object, () => void>()
 
 let sessionCounter = 0
 
@@ -147,7 +151,13 @@ export function installWebTransportHook(
   onSessionProtocol?: (sessionId: string, protocol: string) => void,
 ): () => void {
   const glob = target as Record<string, unknown>
-  const OriginalWebTransport = glob.WebTransport as
+  /**
+   * What we delegate to. **`let`, not `const`**: when a moqtap patch below us
+   * leaves the chain it hands us its delegate and we splice it out, which only
+   * works if the constructor reads this variable rather than a captured value.
+   * See `patch-chain.ts`.
+   */
+  let OriginalWebTransport = glob.WebTransport as
     (new (...args: unknown[]) => unknown) | undefined
 
   // No WebTransport on this global (e.g. Worker without WebTransport support).
@@ -156,9 +166,14 @@ export function installWebTransportHook(
     return () => {}
   }
 
-  originalConstructors.set(target, OriginalWebTransport)
-
   let nextStreamId = 0
+
+  /**
+   * Cleared by teardown. Restoring the global is **not** guaranteed to be
+   * possible (see the teardown comment below), so going inert is what actually
+   * stops observation, and it is the half that always works.
+   */
+  let live = true
 
   function PatchedWebTransport(
     this: unknown,
@@ -172,6 +187,10 @@ export function installWebTransportHook(
         options?: Record<string, unknown>,
       ) => Record<string, unknown>
     )(url, options)
+
+    // Torn down but still in the constructor chain, because something patched
+    // over us and we could not safely unwind. Delegate and observe nothing.
+    if (!live) return instance
 
     // Notify the session callback.
     // The spec allows a URL object here, and several MoQ libraries pass one.
@@ -270,10 +289,13 @@ export function installWebTransportHook(
     if (onSessionProtocol) {
       const ready = instance.ready as Promise<unknown> | undefined
       if (ready && typeof ready.then === 'function') {
-        ready.then(() => {
-          const protocol = readNegotiatedProtocol(instance)
-          if (protocol) onSessionProtocol(sessionId, protocol)
-        }, () => {})
+        ready.then(
+          () => {
+            const protocol = readNegotiatedProtocol(instance)
+            if (protocol) onSessionProtocol(sessionId, protocol)
+          },
+          () => {},
+        )
       }
     }
 
@@ -325,21 +347,56 @@ export function installWebTransportHook(
 
   glob.WebTransport = PatchedWebTransport
 
-  // Return cleanup function
-  return () => {
-    glob.WebTransport = OriginalWebTransport
-    originalConstructors.delete(target)
+  const chain = joinChain(target, {
+    id: 'extension',
+    patched: PatchedWebTransport,
+    original: OriginalWebTransport,
+    repoint(next: unknown): void {
+      OriginalWebTransport = next as typeof OriginalWebTransport
+    },
+  })
+
+  /**
+   * Teardown, in two halves that must not be confused.
+   *
+   * **Going inert always works.** Clearing `live` stops every future
+   * construction from being observed, whatever else is true of the global.
+   *
+   * **Restoring the global only sometimes does, and doing it unconditionally
+   * is a bug.** This content script runs in MAIN world at `document_start`, so
+   * it patches before any page script; `@moqtap/collector` installs its own
+   * hook from `init()` in page JS, which therefore lands *on top* of this one.
+   * A blind `glob.WebTransport = OriginalWebTransport` there discards the
+   * collector's patch, and the page goes silently uninstrumented — no error, no
+   * event, the collector simply stops seeing connections it was created to
+   * watch. The collector's own teardown already makes exactly this check for
+   * exactly this reason (`webtransport-hook.ts`, `if (glob.WebTransport ===
+   * PatchedWebTransport)`), so the asymmetry was ours.
+   *
+   * Leaving our wrapper in the chain is the lesser cost: it delegates, `live`
+   * is false, and it observes nothing.
+   */
+  const teardown = (): void => {
+    if (!live) return
+    live = false
+    installedHooks.delete(target)
+    // Leave the chain first. If a moqtap patch is above us it takes our
+    // delegate and the global keeps naming it, which is correct and removes our
+    // wrapper for real. Only when nothing claims it do we touch the global, and
+    // only if we are still outermost -- a non-participant may be on top.
+    const handover = chain.release()
+    if (handover !== null && glob.WebTransport === PatchedWebTransport) {
+      glob.WebTransport = handover.restore as typeof OriginalWebTransport
+    }
   }
+
+  installedHooks.set(target, teardown)
+  return teardown
 }
 
 /** Remove the monkey-patch and restore original WebTransport */
 export function uninstallWebTransportHook(target: typeof globalThis): void {
-  const glob = target as Record<string, unknown>
-  const original = originalConstructors.get(target)
-  if (original) {
-    glob.WebTransport = original
-    originalConstructors.delete(target)
-  }
+  installedHooks.get(target)?.()
 }
 
 // ─── Stream interception helpers ───────────────────────────────────

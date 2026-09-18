@@ -9,11 +9,11 @@
  *
  * This lives in its own module, free of imports, for two reasons. It is used by
  * the content script, which is injected into the page and must not pull in the
- * per-draft codec tables that `control-streams.ts` needs. And it was previously
- * duplicated: `control-streams.ts` derived it correctly and had a test for it,
- * while `entrypoints/content.ts` hardcoded `6f 00` and had none, so a draft-17+
- * control stream never matched and the whole SETUP exchange was filed as bulk
- * media and evicted on a busy session. One definition, one test, no drift.
+ * per-draft codec tables that `control-streams.ts` needs. And it is where
+ * the content script gets those bytes instead of hand-writing a second copy: a
+ * copy that encoded the type the RFC 9000 way would match no draft-17+ control
+ * stream at all, so the whole SETUP exchange would be filed as bulk media and
+ * evicted on a busy session. One definition, one test, no drift.
  *
  * Drafts <= 16 do not need this: their control stream is bidirectional, so the
  * `bidi` flag already identifies it and no unidirectional control stream exists.

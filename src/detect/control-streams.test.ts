@@ -33,6 +33,7 @@ const ALL_DRAFTS: SupportedDraft[] = [
   '18',
   '19',
   '20',
+  '21',
 ]
 
 /**
@@ -68,11 +69,14 @@ describe('streamOpeners', () => {
     // Draft-17 §3.3 lists six openers; draft-18 added SUBSCRIBE_TRACKS.
     // Draft-20 §3.3 lists the same seven; PUBLISH_STATE_NOTIFY (0x22) is new
     // but rides an already-open subscription stream and never opens one.
+    // Draft-21 §6.3 is that same list renumbered — it restructures draft-20
+    // and assigns no code point differently.
     const expected: Record<string, number> = {
       '17': 6,
       '18': 7,
       '19': 7,
       '20': 7,
+      '21': 7,
     }
     for (const draft of ALL_DRAFTS.filter(hasRequestStreams)) {
       const map = getMessageIdMap(draft)

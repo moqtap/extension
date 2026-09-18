@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isSupportedDraft } from '../codec/message-ids'
+import { SUPPORTED_DRAFTS } from '../types/common'
 import { controlMessageName, draftFromProtocol } from './message-name'
 
 /**
@@ -91,8 +92,14 @@ describe('controlMessageName', () => {
   })
 
   it('falls back for a draft newer than the tables', () => {
-    expect(isSupportedDraft('21')).toBe(false)
-    expect(controlMessageName(0x22, '21', {})).toBe('0x22')
+    // Derived, not written down. A literal here names a supported draft the
+    // day that draft is added, and the case then asserts the fallback about
+    // a table that exists -- it passes for the wrong reason or fails for no
+    // real one. The draft after the last is unsupported by construction.
+    const newest = SUPPORTED_DRAFTS[SUPPORTED_DRAFTS.length - 1]
+    const beyond = String(Number(newest) + 1).padStart(2, '0')
+    expect(isSupportedDraft(beyond)).toBe(false)
+    expect(controlMessageName(0x22, beyond, {})).toBe('0x22')
   })
 
   it('gives an aliased wire ID the one name its table carries', () => {

@@ -5,18 +5,18 @@
     "": {
       "name": "@moqtap/extension",
       "dependencies": {
-        "@moqtap/codec": "^0.9.0",
-        "@moqtap/trace": "^0.3.0",
-        "vue": "^3.5.29",
+        "@moqtap/codec": "^0.12.0",
+        "@moqtap/trace": "^0.4.1",
+        "vue": "^3.5.42",
       },
       "devDependencies": {
-        "@moqtap/test-vectors": "0.13.0",
+        "@moqtap/test-vectors": "0.17.0",
         "@types/chrome": "^0.0.280",
         "@wxt-dev/module-vue": "^1.0.3",
         "typescript": "^5.9.3",
-        "vitest": "^3.0.0",
-        "vue-tsc": "^3.2.5",
-        "wxt": "^0.20.20",
+        "vitest": "^3.2.7",
+        "vue-tsc": "^3.3.11",
+        "wxt": "^0.20.27",
       },
     },
   },
@@ -117,11 +117,11 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@moqtap/codec": ["@moqtap/codec@0.9.0", "", {}, "sha512-kctWBiQ7VZd3VVIUR4aoixrvD7fDKUwKnVLqcdyrwz6Qufjf6xEoI3ppmFDmPCMGzH31svea+5F5qGHIjcGOGg=="],
+    "@moqtap/codec": ["@moqtap/codec@0.12.0", "", {}, "sha512-djWdKi+j0I0JDGyo1fc14gquYks/QtfVrdoDaGKUpoCQnqFu5v3Tp5idEKqYTBCuVa0GmN2/tG73OEMV35HsGQ=="],
 
-    "@moqtap/test-vectors": ["@moqtap/test-vectors@0.13.0", "", {}, "sha512-U12L/cICJBp0jXqnZ2RZ3J8GRMrp7zIKYPW8DrmYnN5+5lyCcn8XZy7/coDPM+o4X4GoILfZwwpFW+Wm1DsM0w=="],
+    "@moqtap/test-vectors": ["@moqtap/test-vectors@0.17.0", "", {}, "sha512-nSKAgInzFXIJaAnQShv/LVmvpfurGMqOWUQ8pSbq8VN+ocGKFOnoKPuROBgjI1Zx9YJWZYN1pJBi+0VLPidksA=="],
 
-    "@moqtap/trace": ["@moqtap/trace@0.3.0", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": "*" } }, "sha512-v6VI8qSVmJqHJQSM4dY0k89Zzlnjb/LzasXHqAoX3CmPb6svLBNw9EO8k+yLpYPOLkLJwatqJEbUEptUke8PKQ=="],
+    "@moqtap/trace": ["@moqtap/trace@0.4.1", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": "*" } }, "sha512-n/Upk3wf1n8pJztkgNR683Sazu7NgtV1u10SAx8a98w1BbA0HlHKZs7pV7TEwOW9O+7ZqNnovHfl1F8oXA1+lg=="],
 
     "@pnpm/config.env-replace": ["@pnpm/config.env-replace@1.1.0", "", {}, "sha512-htyl8TWnKL7K/ESFa1oW2UB5lVDxuF5DpM7tBi6Hu2LNL3mWkIzNLG6N4zoCUP1lCKNxWy/3iu8mS8MvToGd6w=="],
 

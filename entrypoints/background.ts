@@ -83,7 +83,7 @@ interface SessionRecord {
    * The application protocol the server selected, once it is visible.
    *
    * Together with `options.protocols` (the offer) this is the WebTransport
-   * version negotiation draft-20 §3.1 names, and for drafts 15+ it is the only
+   * version negotiation draft-21 §6.2 names, and for drafts 15+ it is the only
    * thing on the connection that says which draft this is.
    */
   negotiatedProtocol?: string
@@ -868,7 +868,8 @@ function handleContentMessage(
   tabId: number,
   frameId: number,
 ) {
-  // bridge:ready is now handled by port connection, but keep as no-op guard
+  // bridge:ready is handled by the port connection itself; this guard keeps it
+  // out of the switch below.
   if (message.type === 'bridge:ready') return
 
   const state = getTabState(tabId)
@@ -911,6 +912,7 @@ function handleContentMessage(
         createdAt: message.createdAt,
         ...(message.options ? { options: message.options } : {}),
         ...(frameId !== 0 ? { frameId } : {}),
+        ...(message.collector ? { collector: message.collector } : {}),
       })
       break
     }

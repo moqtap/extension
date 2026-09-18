@@ -32,6 +32,7 @@ const ALL_DRAFTS: SupportedDraft[] = [
   '18',
   '19',
   '20',
+  '21',
 ]
 
 /**
@@ -178,7 +179,8 @@ function subgroupHeader(
   const bytes = codec.encodeSubgroupStream({
     type: 'subgroup',
     // 0x14: explicit subgroup id, no extensions — valid from draft-12 on.
-    // Spelled twice because the codec renamed the field in draft-14.
+    // Spelled twice because the per-draft codecs disagree on the name: draft-12
+    // and draft-13 call it `streamTypeId`, draft-14 and later `headerType`.
     streamTypeId: 0x14,
     headerType: 0x14,
     trackAlias,

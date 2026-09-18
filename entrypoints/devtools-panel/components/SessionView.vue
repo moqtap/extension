@@ -201,6 +201,31 @@ function closeStreamData() {
   selectedStreamData.value = null
   loadedByteCount.value = 0
 }
+/**
+ * One sentence about `@moqtap/collector` on this page, for the Details tab.
+ *
+ * The connection list carries a badge; this spells out what to do about it,
+ * because "SDK idle" and "SDK late" are both actionable and neither is
+ * self-explanatory from three words in a chip.
+ */
+const collectorDetail = computed((): string | null => {
+  const c = props.session.collector
+  if (!c || c.state === 'none') return null
+  switch (c.state) {
+    case 'collected':
+      return `@moqtap/collector ${c.version} — instrumenting this connection`
+    case 'dormant':
+      return (
+        `@moqtap/collector ${c.version} — on the page but not transmitting. ` +
+        'init() has not been given a key, so nothing is collected.'
+      )
+    case 'predates':
+      return (
+        `@moqtap/collector ${c.version} — attached after this connection opened, ` +
+        'so it never saw it. Call init() before opening the transport.'
+      )
+  }
+})
 </script>
 
 <template>
@@ -374,6 +399,10 @@ function closeStreamData() {
             <tr>
               <td class="details-label">URL</td>
               <td>{{ session.url }}</td>
+            </tr>
+            <tr v-if="collectorDetail">
+              <td class="details-label">Collector</td>
+              <td>{{ collectorDetail }}</td>
             </tr>
             <tr>
               <td class="details-label">Protocol</td>

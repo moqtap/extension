@@ -2,7 +2,8 @@
  * Control message decode/encode facade — multi-draft aware.
  *
  * Delegates to @moqtap/codec, lazily caching one codec instance per draft.
- * The codec supports all drafts 07-20 natively.
+ * The codec has a native implementation for every draft `SUPPORTED_DRAFTS`
+ * names, so nothing here has to fall back to a neighbouring draft's reading.
  */
 
 import {

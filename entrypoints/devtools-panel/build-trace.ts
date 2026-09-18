@@ -14,7 +14,7 @@
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
-import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
+import type { DetailLevel, Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
 import { arrivalAt } from '@/src/trace/arrivals'
 import {
@@ -75,16 +75,6 @@ export async function buildTrace(
   const draft = session.draft ?? 'unknown'
   const startTime = session.createdAt
 
-  const header: TraceHeader = {
-    protocol: `moq-transport-${draft}`,
-    perspective: 'observer',
-    detail: 'headers+data',
-    startTime,
-    endTime: Date.now(),
-    source: traceSource(),
-    endpoint: session.url,
-  }
-
   const pending: PendingEvent[] = []
   const push = (at: number, event: TraceEvent) => pending.push({ at, event })
 
@@ -115,7 +105,9 @@ export async function buildTrace(
         msg.messageType,
         session.draft as SupportedDraft,
       ),
-      message: (msg.decoded ?? {}) as Record<string, unknown>,
+      // An imported trace may carry something here that is not a field map, and
+      // re-exporting `{}` in its place would drop what this build did not recognise.
+      message: msg.decoded ?? {},
       // Lets an importer pair a draft-17+ response with its request.
       ...(msg.streamId != null ? { streamId: BigInt(msg.streamId) } : {}),
       raw: msg.raw.length > 0 ? toBytes(msg.raw) : undefined,
@@ -164,15 +156,25 @@ export async function buildTrace(
               const objectAt =
                 arrivalAt(stream.arrivals, obj.payloadOffset) ?? openedAt
 
+              // A fetch object carries its own Group ID and Priority; a
+              // subgroup object inherits the stream header's. Preferring the
+              // object's own is what makes a fetch stream export correctly,
+              // and is a no-op on a subgroup stream, where they are absent.
+              const objectGroupId = BigInt(obj.groupId ?? hf.groupId ?? 0)
+              const objectPriority =
+                obj.publisherPriority ?? hf.publisherPriority ?? 0
+
               push(objectAt, {
                 type: 'object-header',
                 seq: 0,
                 timestamp: 0,
                 streamId: BigInt(stream.streamId),
-                groupId: BigInt(hf.groupId ?? 0),
+                groupId: objectGroupId,
                 objectId: BigInt(obj.objectId),
-                publisherPriority: hf.publisherPriority ?? 0,
-                objectStatus: 0,
+                publisherPriority: objectPriority,
+                // Only a zero-length object has a status, and it is the
+                // difference between "carried no bytes" and "ended the group".
+                objectStatus: obj.status ?? 0,
               })
 
               push(objectAt, {
@@ -180,7 +182,7 @@ export async function buildTrace(
                 seq: 0,
                 timestamp: 0,
                 streamId: BigInt(stream.streamId),
-                groupId: BigInt(hf.groupId ?? 0),
+                groupId: objectGroupId,
                 objectId: BigInt(obj.objectId),
                 size: payload.length,
                 payload: toBytes(payload),
@@ -254,10 +256,13 @@ export async function buildTrace(
                 seq: 0,
                 timestamp: 0,
                 streamId: 0n, // datagrams use streamId=0 by convention
-                groupId: BigInt(dg.groupId),
+                groupId: BigInt(obj.groupId ?? dg.groupId),
                 objectId: BigInt(obj.objectId),
-                publisherPriority: framing.headerFields.publisherPriority ?? 0,
-                objectStatus: 0,
+                publisherPriority:
+                  obj.publisherPriority ??
+                  framing.headerFields.publisherPriority ??
+                  0,
+                objectStatus: obj.status ?? 0,
               })
 
               push(objectAt, {
@@ -291,6 +296,32 @@ export async function buildTrace(
         timestamp: toRelativeUs(at, startTime),
       }) as TraceEvent,
   )
+
+  // `detail` describes what this trace actually carries, so it is derived
+  // rather than declared. Payload capture can be off -- `streamRecording ===
+  // false` makes `getStreamData` return null -- and then no object-header and
+  // no object-payload event is built at all. A constant 'headers+data' claims
+  // bytes that are absent, and a reader trusting the header would conclude the
+  // session carried no objects rather than that they were not recorded.
+  const carriesPayload = events.some(
+    (e) => e.type === 'object-payload' && (e as { payload?: unknown }).payload !== undefined,
+  )
+  const carriesObjects = carriesPayload || events.some((e) => e.type === 'object-header')
+  const detail: DetailLevel = carriesPayload
+    ? 'headers+data'
+    : carriesObjects
+      ? 'headers'
+      : 'control'
+
+  const header: TraceHeader = {
+    protocol: `moq-transport-${draft}`,
+    perspective: 'observer',
+    detail,
+    startTime,
+    endTime: Date.now(),
+    source: traceSource(),
+    endpoint: session.url,
+  }
 
   return { header, events }
 }

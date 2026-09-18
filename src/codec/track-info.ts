@@ -12,7 +12,7 @@
  *                 sends to offer a track it already holds
  *   drafts 17+    responses carry no request id at all: each request has its
  *                 own bidirectional stream and that stream *is* the
- *                 correlation (draft-20 §3.3), so the join key becomes the
+ *                 correlation (draft-21 §6.3), so the join key becomes the
  *                 stream the response arrived on
  *
  * PUBLISH_NAMESPACE never takes part. It announces a namespace and nothing

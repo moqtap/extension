@@ -136,6 +136,42 @@ describe('WebTransport hook — installation', () => {
     expect(mockGlobal.WebTransport).toBe(originalWT)
   })
 
+  it('leaves a patch installed over ours alone, and goes inert instead', () => {
+    // The defect this guards: `@moqtap/collector` installs its own WebTransport
+    // hook from `init()` in page JS, while this content script patches in MAIN
+    // world at document_start -- so the collector always lands on top of us.
+    // Teardown used to restore the global unconditionally, which discarded the
+    // collector's patch and left the page silently uninstrumented: no error, no
+    // event, the collector just stopped seeing connections.
+    const mockGlobal = createMockGlobal()
+    const originalWT = mockGlobal.WebTransport
+    const onSession = vi.fn()
+    const cleanup = installWebTransportHook(mockGlobal, onSession, {
+      onData: vi.fn(),
+      onClose: vi.fn(),
+      onError: vi.fn(),
+    })
+    const ours = mockGlobal.WebTransport
+
+    // Somebody else patches over us, capturing our constructor as theirs.
+    const Foreign = function (this: unknown, url: string) {
+      return new (ours as new (u: string) => object)(url)
+    } as unknown as typeof mockGlobal.WebTransport
+    mockGlobal.WebTransport = Foreign
+
+    cleanup()
+
+    expect(mockGlobal.WebTransport).toBe(Foreign)
+    expect(mockGlobal.WebTransport).not.toBe(originalWT)
+
+    // ...and we observe nothing through the wrapper we could not remove.
+    onSession.mockClear()
+    new (mockGlobal.WebTransport as new (u: string) => unknown)(
+      'https://x.test',
+    )
+    expect(onSession).not.toHaveBeenCalled()
+  })
+
   it('uninstallWebTransportHook restores the original constructor', () => {
     const mockGlobal = createMockGlobal()
     const originalWT = mockGlobal.WebTransport
@@ -323,7 +359,11 @@ describe('WebTransport hook — negotiated protocol', () => {
   it('captures the offered protocols as WT-Available-Protocols', () => {
     const sessions: InterceptedSession[] = []
     const mockGlobal = createMockGlobal()
-    installWebTransportHook(mockGlobal, (s) => sessions.push(s), noopInterceptor)
+    installWebTransportHook(
+      mockGlobal,
+      (s) => sessions.push(s),
+      noopInterceptor,
+    )
 
     new (mockGlobal.WebTransport as any)('https://relay.test/moq', {
       protocols: ['moqt-19', 'moqt-20'],

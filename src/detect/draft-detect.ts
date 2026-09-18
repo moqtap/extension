@@ -7,7 +7,7 @@
  *   *which draft*       from the negotiated application protocol, or — for the
  *                       drafts that put one there — from a version on the wire
  *
- * Draft-20 Section 3.1 is explicit about the second half:
+ * Draft-21 Section 6.2 is explicit about the second half:
  *
  *   > MOQT uses ALPN in QUIC and "WT-Available-Protocols" in WebTransport
  *   > ([WebTransport], Section 3.3) to perform version negotiation. [...]
@@ -109,7 +109,7 @@ export function couldBeControlStream(leadingBytes: Uint8Array): boolean {
  * The draft assumed when nothing named one. Only ever reached through
  * `{ via: 'unidentified' }` evidence, which says so.
  */
-export const NEWEST_SUPPORTED_DRAFT: SupportedDraft = '20'
+export const NEWEST_SUPPORTED_DRAFT: SupportedDraft = '21'
 
 /**
  * Wire version numbers → draft, for the drafts that negotiate a version in
@@ -117,10 +117,9 @@ export const NEWEST_SUPPORTED_DRAFT: SupportedDraft = '20'
  *
  * Stops at 14 on purpose. Draft-15 moved version negotiation to the protocol
  * string and sends no version number at all, so `0xff00000f` and everything
- * above it is a value no peer ever writes. Earlier revisions of this file
- * carried entries through 19 and synthesised `0xff000013` for every draft-17+
- * session, presenting a number nobody had sent as an observed one; the table
- * ends where the wire does.
+ * above it is a value no peer ever writes. Carrying entries through 19 would
+ * mean synthesising `0xff000013` for every draft-17+ session, presenting a
+ * number nobody had sent as an observed one; the table ends where the wire does.
  */
 const VERSION_TO_DRAFT: ReadonlyMap<number, SupportedDraft> = new Map([
   [0xff000007, '07'],
@@ -383,14 +382,16 @@ export function detectFromControlStream(
   // Draft-17+: SETUP (0x2F00) on a unidirectional control stream, written with
   // MoQT's own varint — `af 00`, not the `6f 00` RFC 9000 would produce.
   //
-  // The type ID alone does not separate drafts 17, 18, 19 and 20: all four
-  // write SETUP as 0x2F00. That is a claim about the message type varint and
+  // The type ID alone does not separate drafts 17 through 21: all five write
+  // SETUP as 0x2F00. That is a claim about the message type varint and
   // nothing more — the bodies are not identical (draft-19 added Setup Options
   // 0x06 MAX_FILTER_RANGES and 0x08 MAX_REQUEST_UPDATES, so either one present
   // rules out 17 and 18) — but every option is optional and unknown ones must
   // be ignored, so their absence proves nothing and no body read here could
-  // settle it either way. It does not need to: the type ID says MoQT, and the
-  // negotiated protocol string says which draft.
+  // settle it either way. Drafts 20 and 21 are past settling by any read at
+  // all: 21 restructures 20 and changes nothing a decoder can observe. None of
+  // that matters here: the type ID says MoQT, and the negotiated protocol
+  // string says which draft.
   try {
     const [msgType] = decodeMoqtVarint(bytes, 0)
     if (msgType === SETUP_DRAFT17_PLUS) return identifyFromProtocol(resolution)

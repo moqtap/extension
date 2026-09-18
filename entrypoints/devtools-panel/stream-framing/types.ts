@@ -11,6 +11,23 @@ export interface StreamObject {
   payloadLength: number
   /** Object ID from the framing */
   objectId: number
+  /**
+   * Object Status, when the object carried one.
+   *
+   * Only a zero-length object has one, and it is the difference between an
+   * object that carried no bytes and an object that marked the end of a group
+   * or a track. Dropping it made those indistinguishable in an exported trace.
+   */
+  status?: number
+  /**
+   * Group ID, when the object carries its own rather than inheriting the
+   * stream's. Fetch objects do; subgroup objects do not.
+   */
+  groupId?: number
+  /** Subgroup ID, on the same terms as `groupId`. */
+  subgroupId?: number
+  /** Publisher Priority, on the same terms as `groupId`. */
+  publisherPriority?: number
 }
 
 export interface ParsedStreamFraming {

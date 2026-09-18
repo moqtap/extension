@@ -25,6 +25,10 @@
   --badge-imported-color: #6ba3d6;
   --badge-iframe-bg: #2a2a3a;
   --badge-iframe-color: #a0a0c0;
+  --badge-collected-bg: #1b3320;
+  --badge-collected-color: #6fcf8f;
+  --badge-dormant-bg: #3a3320;
+  --badge-dormant-color: #d6b26b;
   --content-json-bg: rgba(78, 154, 6, 0.2);
   --content-json-color: #8cc265;
   --content-fmp4-bg: rgba(114, 137, 218, 0.2);
@@ -79,6 +83,10 @@
     --badge-imported-color: #0451a5;
     --badge-iframe-bg: #e8e8f0;
     --badge-iframe-color: #6060a0;
+    --badge-collected-bg: #d6f0dd;
+    --badge-collected-color: #1d6b38;
+    --badge-dormant-bg: #f7ecd0;
+    --badge-dormant-color: #8a6416;
     --content-json-bg: rgba(40, 120, 10, 0.12);
     --content-json-color: #2b7a0b;
     --content-fmp4-bg: rgba(60, 80, 180, 0.12);
@@ -163,6 +171,17 @@ body,
 .badge-iframe {
   background: var(--badge-iframe-bg);
   color: var(--badge-iframe-color);
+}
+/* @moqtap/collector is instrumenting this connection. */
+.badge-collected {
+  background: var(--badge-collected-bg);
+  color: var(--badge-collected-color);
+}
+/* The SDK is on the page but not transmitting, or it attached too late to see
+   this connection. Both are misconfigurations worth showing, not hiding. */
+.badge-dormant {
+  background: var(--badge-dormant-bg);
+  color: var(--badge-dormant-color);
 }
 
 .direction-tx {

@@ -74,7 +74,7 @@ interface FetchObjectResult extends ObjectResult {
 
 /**
  * Create a DraftParser that delegates to the codec's per-draft decoders.
- * Works for all drafts (07-20).
+ * Works for every draft `SUPPORTED_DRAFTS` names.
  */
 export function createCodecDraftParser(draft: SupportedDraft): DraftParser {
   const codec = createCodec({ draft }) as unknown as DataStreamCodec
@@ -155,7 +155,7 @@ function tryDecodeFetch(
       tags.push({ label: 'request', value: String(requestId), kind: 'track' })
     }
 
-    const objects = mapObjects(stream.objects)
+    const objects = mapFetchObjects(stream.objects)
     const headerEnd = objects.length > 0 ? objects[0].offset : data.length
 
     return { streamType: 'fetch', headerEnd, headerFields, objects, tags }
@@ -201,6 +201,9 @@ function tryDecodeDatagram(
         payloadOffset,
         payloadLength: dg.payloadLength,
         objectId: Number(dg.objectId),
+        groupId: Number(dg.groupId),
+        publisherPriority: dg.publisherPriority,
+        ...(dg.status !== undefined ? { status: Number(dg.status) } : {}),
       },
     ]
 
@@ -216,12 +219,43 @@ function tryDecodeDatagram(
   }
 }
 
-/** Map codec objects (with byte offsets) to our StreamObject format. */
+/**
+ * Map codec objects (with byte offsets) to our StreamObject format.
+ *
+ * `status` is carried through because only a zero-length object has one, and it
+ * is what separates an object that carried no bytes from one that marked the
+ * end of a group. Dropping it here would not surface as a gap: `build-trace.ts`
+ * exports `obj.status ?? 0`, so an absent status silently becomes a real 0.
+ */
 function mapObjects(codecObjects: ObjectResult[]): StreamObject[] {
   return codecObjects.map((obj) => ({
     offset: obj.byteOffset,
     payloadOffset: obj.payloadByteOffset,
     payloadLength: obj.payloadLength,
     objectId: Number(obj.objectId),
+    ...(obj.status !== undefined ? { status: Number(obj.status) } : {}),
   }))
+}
+
+/**
+ * The same, for fetch objects, which carry their own Group ID, Subgroup ID and
+ * Priority rather than inheriting the stream's.
+ *
+ * A fetch stream has no group or priority in its header at all -- Section
+ * 11.4.4 puts them on each object -- so mapping these through `mapObjects` gave
+ * every object in an exported trace the same wrong values: group 0 and priority
+ * 0, for a stream whose whole point is that it spans groups.
+ */
+function mapFetchObjects(codecObjects: FetchObjectResult[]): StreamObject[] {
+  return mapObjects(codecObjects).map((mapped, i) => {
+    const obj = codecObjects[i] as FetchObjectResult
+    return {
+      ...mapped,
+      ...(obj.groupId !== undefined ? { groupId: Number(obj.groupId) } : {}),
+      ...(obj.subgroupId !== undefined ? { subgroupId: Number(obj.subgroupId) } : {}),
+      ...(obj.publisherPriority !== undefined
+        ? { publisherPriority: obj.publisherPriority }
+        : {}),
+    }
+  })
 }

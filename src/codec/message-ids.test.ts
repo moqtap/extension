@@ -34,6 +34,7 @@ const DRAFTS: SupportedDraft[] = [
   '18',
   '19',
   '20',
+  '21',
 ]
 
 /**
@@ -45,7 +46,7 @@ const UNASSIGNED = 'unknown'
 
 /**
  * Corpus names that are a second name for a wire ID another name already
- * holds. Drafts 18 and 19 folded PUBLISH_OK into REQUEST_OK, and the corpus
+ * holds. From draft-18 PUBLISH_OK is folded into REQUEST_OK, and the corpus
  * keeps a `publish-ok.json` at REQUEST_OK's 0x07 — its vectors say "PUBLISH_OK
  * (REQUEST_OK alias, Type 0x07)". One ID can only be displayed under one name,
  * so the codec's table carries the canonical one alone; the alias still has to
@@ -55,6 +56,7 @@ const ALIASES: Partial<Record<SupportedDraft, Record<string, string>>> = {
   '18': { publish_ok: 'request_ok' },
   '19': { publish_ok: 'request_ok' },
   '20': { publish_ok: 'request_ok' },
+  '21': { publish_ok: 'request_ok' },
 }
 
 /** The `message_type` / `message_type_id` header every vector file carries. */

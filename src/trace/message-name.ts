@@ -46,9 +46,9 @@ export function controlMessageName(
   draft: string | undefined,
   message?: Record<string, unknown>,
 ): string {
-  // Narrow before the lookup: `getMessageTypeMap` is keyed by draft 07-20 and
-  // answers undefined for anything else, including the draft a trace newer
-  // than this build carries.
+  // Narrow before the lookup: `getMessageTypeMap` is keyed by the drafts in
+  // `SUPPORTED_DRAFTS` and answers undefined for anything else, including the
+  // draft a trace newer than this build carries.
   if (
     messageType != null &&
     Number.isInteger(messageType) &&

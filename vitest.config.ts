@@ -16,6 +16,7 @@ const DRAFTS = [
   '18',
   '19',
   '20',
+  '21',
 ]
 
 /**
@@ -60,18 +61,25 @@ const codecAliases = [
 export default defineConfig({
   resolve: {
     alias: [
-      { find: '@', replacement: resolve(__dirname, 'src') },
+      // wxt maps `@` to the project root (`.wxt/tsconfig.json`), and every one
+      // of the 34 `@/...` imports in this repo is written against that --
+      // `@/src/codec/...`, `@/entrypoints/...`. Pointing it at `src` here meant
+      // test resolution and build resolution disagreed, and anything under
+      // `entrypoints/` could not be imported by a test at all.
+      { find: '@', replacement: resolve(__dirname, '.') },
       ...codecAliases,
     ],
   },
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // `entrypoints/` was outside the suite entirely, which is how an export
+    // path that wrote `objectId: 0` for every object shipped unnoticed.
+    include: ['src/**/*.test.ts', 'entrypoints/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/**/*.d.ts'],
+      include: ['src/**/*.ts', 'entrypoints/**/*.ts'],
+      exclude: ['**/*.test.ts', '**/*.d.ts'],
     },
   },
 })

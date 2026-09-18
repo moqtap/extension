@@ -16,6 +16,7 @@
  */
 
 import { opensUniControlStream } from '@/src/detect/uni-control-prefix'
+import { classifyConnection } from '@/src/intercept/collector-presence'
 import { installWebTransportHook } from '@/src/intercept/webtransport-hook'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 
@@ -153,6 +154,10 @@ function bootstrap() {
         url: session.url,
         createdAt: session.createdAt,
         options: session.options,
+        // Read now rather than in the panel: we share the page's global (MAIN
+        // world) and the panel does not, and the answer is only true as of the
+        // moment the connection opened -- `init()` may be called later.
+        collector: classifyConnection(session.createdAt),
       })
     },
     {
@@ -607,7 +612,8 @@ function wrapWorkerScript(
   // Heartbeat: signals the hook loaded successfully.
   // Classic workers: importScripts is synchronous — if it throws, the heartbeat never fires.
   // Module workers: static import failure prevents module evaluation, so we use dynamic import.
-  const heartbeat = `try{self.postMessage({source:"moqtap-hook-ready"})}catch(e){}`
+  const heartbeat =
+    'try{(self.__moqtapPost||function(m){self.postMessage(m)})({source:"moqtap-hook-ready"})}catch(e){}'
 
   if (isModule) {
     const wrapper = `${locationShim}${hookSource}\nimport("${resolvedUrl}").then(function(){${heartbeat}},function(){});`
@@ -648,9 +654,49 @@ function attachSharedWorkerListener(worker: SharedWorker) {
  * Self-contained IIFE — patches WebTransport inside the worker and sends
  * intercepted data back via self.postMessage with a discriminator.
  */
-function buildWorkerHookSource(): string {
+export function buildWorkerHookSource(): string {
   return `(function(){
 "use strict";
+// A SharedWorkerGlobalScope has no postMessage -- its connections are the
+// ports handed over by the connect event -- so posting through self works in
+// a dedicated Worker and throws in a shared one. Registering the listener here
+// is safe because this hook is evaluated before the worker's own script, so no
+// connection can arrive before it is watching.
+var __moqtapIsShared = (typeof SharedWorkerGlobalScope !== "undefined") && (self instanceof SharedWorkerGlobalScope);
+var __moqtapPorts = [];
+var __moqtapPending = [];
+var __moqtapPendingMax = 512;
+if (__moqtapIsShared) {
+  self.addEventListener("connect", function(e) {
+    try {
+      var p = e.ports && e.ports[0];
+      if (!p) return;
+      __moqtapPorts.push(p);
+      if (__moqtapPorts.length === 1) {
+        var q = __moqtapPending;
+        __moqtapPending = [];
+        for (var i = 0; i < q.length; i++) { try { p.postMessage(q[i]); } catch(_) {} }
+      }
+    } catch(_) {}
+  });
+}
+function __moqtapPost(payload, transfers) {
+  if (!__moqtapIsShared) { self.postMessage(payload, transfers || []); return; }
+  if (__moqtapPorts.length === 0) {
+    // Nothing has connected yet. Hold a bounded backlog rather than drop it:
+    // the heartbeat is posted at script evaluation, before any page can be
+    // attached, and dropping it makes a working hook look like a failed one.
+    if (__moqtapPending.length < __moqtapPendingMax) __moqtapPending.push(payload);
+    return;
+  }
+  if (__moqtapPorts.length === 1) { __moqtapPorts[0].postMessage(payload, transfers || []); return; }
+  // More than one connection: a transfer detaches the buffer, so every post
+  // after the first would throw. Copy to each instead.
+  for (var i = 0; i < __moqtapPorts.length; i++) {
+    try { __moqtapPorts[i].postMessage(payload); } catch(_) {}
+  }
+}
+self.__moqtapPost = __moqtapPost;
 var __moqtapInstanceId = Math.random().toString(36).slice(2, 10);
 var __moqtapSessionCounter = 0;
 function __moqtapGenId() { return "wt-w-" + __moqtapInstanceId + "-" + (++__moqtapSessionCounter); }
@@ -683,7 +729,7 @@ function __moqtapSend(msg) {
   try {
     var transfers = [];
     if (msg.data instanceof ArrayBuffer) transfers.push(msg.data);
-    self.postMessage({ source: "moqtap-worker", payload: msg }, transfers);
+    __moqtapPost({ source: "moqtap-worker", payload: msg }, transfers);
   } catch(e) {
     // Surface unserializable payloads — silently dropping them hides the
     // event from the panel with no trace (see forward() on the main thread).

@@ -63,6 +63,47 @@ function protocolBadge(session: SessionEntry): {
   }
 }
 
+/**
+ * The `@moqtap/collector` badge, or null when there is nothing to say.
+ *
+ * `none` renders nothing: most pages have no SDK, and a badge on every row
+ * saying so would be noise. The two problem states are the point of this --
+ * "the SDK is here but sending nothing" and "the SDK attached after this
+ * connection opened" are both invisible everywhere else.
+ */
+function collectorBadge(session: SessionEntry): {
+  label: string
+  class: string
+  title: string
+} | null {
+  const c = session.collector
+  if (!c || c.state === 'none') return null
+  switch (c.state) {
+    case 'collected':
+      return {
+        label: 'collected',
+        class: 'badge-collected',
+        title: `@moqtap/collector ${c.version} is instrumenting this connection`,
+      }
+    case 'dormant':
+      return {
+        label: 'SDK idle',
+        class: 'badge-dormant',
+        title:
+          `@moqtap/collector ${c.version} is on the page but not transmitting — ` +
+          'init() has not been given a key, so nothing is being collected',
+      }
+    case 'predates':
+      return {
+        label: 'SDK late',
+        class: 'badge-dormant',
+        title:
+          `This connection opened before @moqtap/collector ${c.version} attached, ` +
+          'so the SDK never saw it. Call init() before opening the transport.',
+      }
+  }
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -122,6 +163,14 @@ const sessionStats = computed(() => {
           {{ protocolBadge(session).label }}
         </span>
         <span v-if="session.frameId" class="badge badge-iframe"> iframe </span>
+        <span
+          v-if="collectorBadge(session)"
+          class="badge"
+          :class="collectorBadge(session)!.class"
+          :title="collectorBadge(session)!.title"
+        >
+          {{ collectorBadge(session)!.label }}
+        </span>
         <span v-if="session.imported" class="badge badge-imported">
           imported
         </span>

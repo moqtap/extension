@@ -22,6 +22,7 @@ export const SUPPORTED_DRAFTS = [
   '18',
   '19',
   '20',
+  '21',
 ] as const
 
 export type SupportedDraft = (typeof SUPPORTED_DRAFTS)[number]
