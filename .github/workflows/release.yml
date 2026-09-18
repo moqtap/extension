@@ -15,8 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The release notes are the tag's own message, so the tag object
-          # itself has to come down with the checkout, not just the commit.
           fetch-depth: 0
 
       # This repo keeps no CHANGELOG.md. What changed in a release is written
@@ -30,6 +28,11 @@ jobs:
           tag='${{ github.ref_name }}'
           notes='${{ runner.temp }}/NOTES.md'
           message='${{ runner.temp }}/TAG_MESSAGE.md'
+
+          # actions/checkout leaves refs/tags/<tag> pointing at the commit, so
+          # the annotated object the notes live in is not in the workspace at
+          # all. Fetch the ref as the remote holds it before asking its type.
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
 
           if [ "$(git cat-file -t "$tag")" != 'tag' ]; then
             echo "::error::$tag is a lightweight tag and carries no message." \
