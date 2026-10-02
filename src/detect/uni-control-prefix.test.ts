@@ -11,7 +11,7 @@ const require_ = createRequire(import.meta.url)
 const VECTORS_BASE = dirname(require_.resolve('@moqtap/test-vectors/manifest'))
 
 /** Drafts whose control stream is a pair of unidirectional streams. */
-const UNI_CONTROL_DRAFTS = ['17', '18', '19', '20', '21'] as const
+const UNI_CONTROL_DRAFTS = ['17', '18', '19', '20', '21', '22'] as const
 
 function setupVectors(draft: string): { id: string; hex: string }[] {
   const path = join(

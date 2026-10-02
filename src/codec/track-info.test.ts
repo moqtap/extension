@@ -33,6 +33,7 @@ const ALL_DRAFTS: SupportedDraft[] = [
   '19',
   '20',
   '21',
+  '22',
 ]
 
 /**

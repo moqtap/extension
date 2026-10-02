@@ -31,6 +31,12 @@ import { SUPPORTED_DRAFTS } from '../types/common'
 import { encodeVarint, concat } from '../codec/test-helpers'
 import { encodeMoqtVarint } from '../codec/varint'
 
+// The draft after the last supported one, unsupported by construction. A
+// literal here would name a supported draft the day that draft is added.
+const BEYOND = String(
+  Number(SUPPORTED_DRAFTS[SUPPORTED_DRAFTS.length - 1]) + 1,
+).padStart(2, '0')
+
 // ═══════════════════════════════════════════════════════════════════════
 // Helpers: build raw wire bytes
 // ═══════════════════════════════════════════════════════════════════════
@@ -85,6 +91,7 @@ describe('draftFromProtocolString', () => {
     expect(draftFromProtocolString('moqt-19')).toBe('19')
     expect(draftFromProtocolString('moqt-20')).toBe('20')
     expect(draftFromProtocolString('moqt-21')).toBe('21')
+    expect(draftFromProtocolString('moqt-22')).toBe('22')
   })
 
   it('normalises a single-digit draft to the two-digit form the tables use', () => {
@@ -92,8 +99,9 @@ describe('draftFromProtocolString', () => {
   })
 
   it('reads a draft number past what this build supports', () => {
-    // Knowing it is draft-25 is what stops it being decoded as draft-21.
-    expect(draftFromProtocolString('moqt-25')).toBe('25')
+    // Knowing it is a newer draft is what stops it being decoded as the
+    // newest one this build has tables for.
+    expect(draftFromProtocolString(`moqt-${BEYOND}`)).toBe(BEYOND)
   })
 
   it('names no draft for the final-version ALPN or another dialect', () => {
@@ -128,8 +136,8 @@ describe('resolveNegotiatedProtocol', () => {
   })
 
   it('reports a supported-draft-less protocol as ok with no draft', () => {
-    const r = resolveNegotiatedProtocol({ offered: ['moqt-25'] })
-    expect(r).toMatchObject({ ok: true, protocol: 'moqt-25' })
+    const r = resolveNegotiatedProtocol({ offered: [`moqt-${BEYOND}`] })
+    expect(r).toMatchObject({ ok: true, protocol: `moqt-${BEYOND}` })
     expect(r.ok && r.draft).toBeUndefined()
   })
 
@@ -287,11 +295,13 @@ describe('detectFromControlStream — negotiated protocol (drafts 15+)', () => {
     expect(isDraftAssumed(result)).toBe(false)
   })
 
-  it('tells draft-21 from draft-20 by the protocol string alone', () => {
-    // Nothing else can. Draft-21 restructures draft-20 and moves no byte of
-    // the wire, so a draft-20 and a draft-21 peer open with the identical
-    // SETUP and the negotiated string is the whole of the difference.
-    for (const draft of ['20', '21'] as const) {
+  it('tells drafts 20, 21 and 22 apart by the protocol string alone', () => {
+    // Nothing else on the control stream can. Draft-21 restructures
+    // draft-20 and moves no byte of the wire, and draft-22's one wire change
+    // is to LOCATION_FILTER, which SETUP never carries. Peers of all three
+    // open with the identical SETUP, so the negotiated string is the whole
+    // of the difference.
+    for (const draft of ['20', '21', '22'] as const) {
       const result = detectFromControlStream(SETUP_BYTES, {
         selected: `moqt-${draft}`,
       })
@@ -343,13 +353,13 @@ describe('detectFromControlStream — negotiated protocol (drafts 15+)', () => {
 
   it('refuses to decode a draft it has no tables for', () => {
     const result = detectFromControlStream(SETUP_BYTES, {
-      selected: 'moqt-25',
+      selected: `moqt-${BEYOND}`,
     })
     expect(result.protocol).toBe('moqt-unknown-draft')
     if (result.protocol === 'moqt-unknown-draft') {
       expect(result.evidence).toEqual({
         via: 'negotiated-protocol',
-        protocol: 'moqt-25',
+        protocol: `moqt-${BEYOND}`,
         source: 'selected',
       })
     }
@@ -435,7 +445,7 @@ describe('detectFromControlStream — versionless CLIENT_SETUP (drafts 15-16)', 
 
   it('does not fall back to a draft that has no CLIENT_SETUP to send', () => {
     // The draft-17+ path assumes the newest supported draft when nothing names
-    // one. Doing that here would report draft-21 for bytes draft-21 cannot
+    // one. Doing that here would report draft-22 for bytes draft-22 cannot
     // have written: it has no CLIENT_SETUP at all.
     const result = detectFromControlStream(buildVersionlessClientSetupBytes(), {
       offered: ['moq-lite'],

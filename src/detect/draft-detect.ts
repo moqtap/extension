@@ -109,7 +109,7 @@ export function couldBeControlStream(leadingBytes: Uint8Array): boolean {
  * The draft assumed when nothing named one. Only ever reached through
  * `{ via: 'unidentified' }` evidence, which says so.
  */
-export const NEWEST_SUPPORTED_DRAFT: SupportedDraft = '21'
+export const NEWEST_SUPPORTED_DRAFT: SupportedDraft = '22'
 
 /**
  * Wire version numbers → draft, for the drafts that negotiate a version in
@@ -382,16 +382,17 @@ export function detectFromControlStream(
   // Draft-17+: SETUP (0x2F00) on a unidirectional control stream, written with
   // MoQT's own varint — `af 00`, not the `6f 00` RFC 9000 would produce.
   //
-  // The type ID alone does not separate drafts 17 through 21: all five write
+  // The type ID alone does not separate drafts 17 through 22: all six write
   // SETUP as 0x2F00. That is a claim about the message type varint and
   // nothing more — the bodies are not identical (draft-19 added Setup Options
   // 0x06 MAX_FILTER_RANGES and 0x08 MAX_REQUEST_UPDATES, so either one present
   // rules out 17 and 18) — but every option is optional and unknown ones must
   // be ignored, so their absence proves nothing and no body read here could
-  // settle it either way. Drafts 20 and 21 are past settling by any read at
-  // all: 21 restructures 20 and changes nothing a decoder can observe. None of
-  // that matters here: the type ID says MoQT, and the negotiated protocol
-  // string says which draft.
+  // settle it either way. Drafts 20, 21 and 22 are past settling by any read
+  // of SETUP at all: 21 restructures 20 and changes nothing a decoder can
+  // observe, and 22's one wire change is to LOCATION_FILTER, a request
+  // parameter SETUP never carries. None of that matters here: the type ID
+  // says MoQT, and the negotiated protocol string says which draft.
   try {
     const [msgType] = decodeMoqtVarint(bytes, 0)
     if (msgType === SETUP_DRAFT17_PLUS) return identifyFromProtocol(resolution)

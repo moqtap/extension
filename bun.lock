@@ -5,12 +5,12 @@
     "": {
       "name": "@moqtap/extension",
       "dependencies": {
-        "@moqtap/codec": "^0.12.0",
+        "@moqtap/codec": "^0.13.0",
         "@moqtap/trace": "^0.4.1",
         "vue": "^3.5.42",
       },
       "devDependencies": {
-        "@moqtap/test-vectors": "0.17.0",
+        "@moqtap/test-vectors": "0.18.0",
         "@types/chrome": "^0.0.280",
         "@wxt-dev/module-vue": "^1.0.3",
         "typescript": "^5.9.3",
@@ -117,9 +117,9 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@moqtap/codec": ["@moqtap/codec@0.12.0", "", {}, "sha512-djWdKi+j0I0JDGyo1fc14gquYks/QtfVrdoDaGKUpoCQnqFu5v3Tp5idEKqYTBCuVa0GmN2/tG73OEMV35HsGQ=="],
+    "@moqtap/codec": ["@moqtap/codec@0.13.0", "", {}, "sha512-NA1DjwL8I21Ut/c9jKsvrisVrKZ9rMACwCeJoMXKdbY7Lfw8KaHZ+uUAmOXGDqa3rRdwkZYNIDJH/bYRutIh0w=="],
 
-    "@moqtap/test-vectors": ["@moqtap/test-vectors@0.17.0", "", {}, "sha512-nSKAgInzFXIJaAnQShv/LVmvpfurGMqOWUQ8pSbq8VN+ocGKFOnoKPuROBgjI1Zx9YJWZYN1pJBi+0VLPidksA=="],
+    "@moqtap/test-vectors": ["@moqtap/test-vectors@0.18.0", "", {}, "sha512-V6b+ZxdLXmgmlPzDbFff6p7YeqIdjxQx1rRSzK7vuPBQmTLrwY7V1Y/gU8/KT4HKPudrr7vYNQgnt1Of2M5BQQ=="],
 
     "@moqtap/trace": ["@moqtap/trace@0.4.1", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": "*" } }, "sha512-n/Upk3wf1n8pJztkgNR683Sazu7NgtV1u10SAx8a98w1BbA0HlHKZs7pV7TEwOW9O+7ZqNnovHfl1F8oXA1+lg=="],
 

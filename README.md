@@ -54,7 +54,7 @@ drafts 15 and later put **no version number on the wire at all**.
 
 So: a version number for drafts 07–14, the `moqt-NN` string for 15 and up. When
 neither is available the newest supported draft is assumed, and every surface
-that shows it says so — `MoQT draft-21 (assumed)` in the details pane, a
+that shows it says so — `MoQT draft-22 (assumed)` in the details pane, a
 trailing `?` on the connection badge, and a "Draft From" row giving the reason.
 
 ## Adding a New MoQT Draft
@@ -78,7 +78,7 @@ from the new draft subpath and register both.
 
 **`src/codec/varint.ts`** — Add the draft to `VARINT_ENCODINGS`. Read the
 draft's own integer section rather than assuming it inherits — §8.1 in
-draft-21, §1.4.1 in drafts 17–20: draft-17 replaced the RFC 9000 integer and
+drafts 21 and 22, §1.4.1 in drafts 17–20: draft-17 replaced the RFC 9000 integer and
 draft-18 revised the replacement.
 
 **`entrypoints/devtools-panel/stream-framing/index.ts`** — Register a parser
@@ -126,11 +126,16 @@ bun run test         # All tests pass
 bun run build        # Bundle includes new draft support
 ```
 
-Currently supported drafts: **07 through 21**.
+Currently supported drafts: **07 through 22**.
 
 Draft-21 needed no step 3: it restructures draft-20 and changes nothing a
 decoder can observe, so its tables, framing and varint are draft-20's and the
 negotiated `moqt-21` string is the only thing that tells the two apart.
+
+Draft-22 needed none either. Its one wire change is LOCATION_FILTER, which now
+carries an explicit Location Filter Type, and the panel decodes control
+messages through `@moqtap/codec`, so the codec's draft-22 module is the whole
+of the change; its tables, framing and varint are draft-21's.
 
 ## Architecture
 

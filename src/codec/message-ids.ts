@@ -66,6 +66,10 @@ import {
   MESSAGE_ID_MAP as ID_MAP_21,
   MESSAGE_TYPE_MAP as TYPE_MAP_21,
 } from '@moqtap/codec/draft21'
+import {
+  MESSAGE_ID_MAP as ID_MAP_22,
+  MESSAGE_TYPE_MAP as TYPE_MAP_22,
+} from '@moqtap/codec/draft22'
 import type { SupportedDraft } from '../types/common'
 
 type MessageIdMap = ReadonlyMap<string, bigint>
@@ -87,6 +91,7 @@ const idMaps: Record<SupportedDraft, MessageIdMap> = {
   '19': ID_MAP_19,
   '20': ID_MAP_20,
   '21': ID_MAP_21,
+  '22': ID_MAP_22,
 }
 
 const typeMaps: Record<SupportedDraft, MessageTypeMap> = {
@@ -105,6 +110,7 @@ const typeMaps: Record<SupportedDraft, MessageTypeMap> = {
   '19': TYPE_MAP_19,
   '20': TYPE_MAP_20,
   '21': TYPE_MAP_21,
+  '22': TYPE_MAP_22,
 }
 
 /** Get the MESSAGE_ID_MAP for a given draft. */

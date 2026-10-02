@@ -3,6 +3,12 @@ import { isSupportedDraft } from '../codec/message-ids'
 import { SUPPORTED_DRAFTS } from '../types/common'
 import { controlMessageName, draftFromProtocol } from './message-name'
 
+/** The draft after the last supported one, unsupported by construction. */
+function beyondNewest(): string {
+  const newest = SUPPORTED_DRAFTS[SUPPORTED_DRAFTS.length - 1]
+  return String(Number(newest) + 1).padStart(2, '0')
+}
+
 /**
  * The wire IDs asserted here are the shared corpus's, which
  * `src/codec/message-ids.test.ts` holds the tables to for every draft; this
@@ -70,9 +76,9 @@ describe('controlMessageName', () => {
 
   it('falls back rather than crashing on a draft outside the tables', () => {
     // A trace from a draft this build has no table for still has to open.
-    expect(controlMessageName(0x03, '21', { type: 'subscribe' })).toBe(
-      'subscribe',
-    )
+    expect(
+      controlMessageName(0x03, beyondNewest(), { type: 'subscribe' }),
+    ).toBe('subscribe')
     expect(controlMessageName(0x03, '06', {})).toBe('0x3')
     expect(controlMessageName(0x03, 'rfc9999', {})).toBe('0x3')
   })
@@ -96,8 +102,7 @@ describe('controlMessageName', () => {
     // day that draft is added, and the case then asserts the fallback about
     // a table that exists -- it passes for the wrong reason or fails for no
     // real one. The draft after the last is unsupported by construction.
-    const newest = SUPPORTED_DRAFTS[SUPPORTED_DRAFTS.length - 1]
-    const beyond = String(Number(newest) + 1).padStart(2, '0')
+    const beyond = beyondNewest()
     expect(isSupportedDraft(beyond)).toBe(false)
     expect(controlMessageName(0x22, beyond, {})).toBe('0x22')
   })
