@@ -32,25 +32,25 @@ watch(viewMode, (mode) => {
 
 <template>
   <div class="payload-viewer">
-    <div class="payload-tabs">
+    <div class="payload-modes" role="group" aria-label="Show message as">
       <button
-        class="ptab"
-        :class="{ active: viewMode === 'decoded' }"
+        class="mq-btn mq-btn--quiet"
+        :aria-pressed="viewMode === 'decoded'"
         @click="viewMode = 'decoded'"
       >
         Decoded
       </button>
       <button
-        class="ptab"
-        :class="{ active: viewMode === 'hex' }"
+        class="mq-btn mq-btn--quiet"
+        :aria-pressed="viewMode === 'hex'"
         @click="viewMode = 'hex'"
       >
         Hex
       </button>
       <button
         v-if="stack"
-        class="ptab"
-        :class="{ active: viewMode === 'stack' }"
+        class="mq-btn mq-btn--quiet"
+        :aria-pressed="viewMode === 'stack'"
         @click="viewMode = 'stack'"
       >
         Stack
@@ -59,7 +59,9 @@ watch(viewMode, (mode) => {
     <div class="payload-content">
       <template v-if="viewMode === 'decoded'">
         <JsonTree v-if="data" :data="data" :initial-expanded="true" />
-        <span v-else class="decode-failed">Decode failed</span>
+        <p v-else class="mq-muted">
+          This message didn't decode. Switch to Hex to see its bytes.
+        </p>
       </template>
       <StackViewer v-else-if="viewMode === 'stack' && stack" :stack="stack" />
       <HexViewer v-else :data="raw" />
@@ -71,41 +73,16 @@ watch(viewMode, (mode) => {
 .payload-viewer {
   display: flex;
   flex-direction: column;
+  gap: var(--space-1);
 }
 
-.payload-tabs {
+.payload-modes {
   display: flex;
-  gap: 2px;
-  margin-bottom: 6px;
-}
-
-.ptab {
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  color: var(--text-secondary);
-  padding: 2px 8px;
-  cursor: pointer;
-  font-size: 10px;
-  font-family: inherit;
-}
-.ptab:hover {
-  color: var(--text-primary);
-}
-.ptab.active {
-  background: var(--bg-selected);
-  color: var(--text-primary);
-  border-color: var(--text-accent);
+  gap: var(--space-1);
 }
 
 .payload-content {
   max-height: 300px;
   overflow: auto;
-}
-
-.decode-failed {
-  color: var(--text-secondary);
-  font-style: italic;
-  font-size: 11px;
 }
 </style>

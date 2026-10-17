@@ -1,5 +1,13 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
+import {
+  formatBitrate,
+  formatBytes,
+  formatClock,
+  isoTitle,
+  plural,
+  shortSessionId,
+} from '../format'
 import { computeRecentBitrate, type SessionEntry } from '../use-inspector'
 
 /* Reactive tick that drives the bitrate decay animation.
@@ -15,6 +23,8 @@ onBeforeUnmount(() => clearInterval(bitrateTickInterval))
 const props = defineProps<{
   sessions: SessionEntry[]
   selectedId: string | null
+  /** The narrow sidebar: a status glyph and the short ID per connection. */
+  compact?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -32,34 +42,38 @@ function formatUrl(url: string): { host: string; path: string } {
   }
 }
 
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
 function protocolBadge(session: SessionEntry): {
   label: string
   class: string
+  title: string
 } {
   switch (session.protocol) {
     case 'moqt':
       // Trailing "?" marks a draft nothing on the connection named — the
       // details pane spells out why.
-      return {
-        label: session.draft
-          ? `MoQT d${session.draft}${session.draftAssumed ? '?' : ''}`
-          : 'MoQT',
-        class: 'badge-moqt',
-      }
+      return session.draft
+        ? {
+            label: `draft-${session.draft}${session.draftAssumed ? '?' : ''}`,
+            class: 'mq-badge--draft',
+            title: session.draftAssumed
+              ? `MoQT draft-${session.draft}, assumed`
+              : `MoQT draft-${session.draft}`,
+          }
+        : { label: 'MoQT', class: 'mq-badge--mono', title: 'MoQT' }
     case 'moqt-unknown-draft':
-      return { label: 'MoQT ?', class: 'badge-moqt' }
+      return {
+        label: 'MoQT ?',
+        class: 'mq-badge--mono',
+        title: 'MoQT, draft not identified',
+      }
     case 'detecting':
-      return { label: '...', class: 'badge-unknown' }
+      return {
+        label: 'detecting',
+        class: '',
+        title: 'Reading the first bytes to identify the protocol',
+      }
     default:
-      return { label: 'WT', class: 'badge-unknown' }
+      return { label: 'WT', class: 'mq-badge--mono', title: 'WebTransport, not MoQT' }
   }
 }
 
@@ -81,22 +95,22 @@ function collectorBadge(session: SessionEntry): {
   switch (c.state) {
     case 'collected':
       return {
-        label: 'collected',
-        class: 'badge-collected',
+        label: '✓ collected',
+        class: 'mq-badge--ok',
         title: `@moqtap/collector ${c.version} is instrumenting this connection`,
       }
     case 'dormant':
       return {
-        label: 'SDK idle',
-        class: 'badge-dormant',
+        label: '▲ SDK idle',
+        class: 'mq-badge--check',
         title:
-          `@moqtap/collector ${c.version} is on the page but not transmitting — ` +
-          'init() has not been given a key, so nothing is being collected',
+          `@moqtap/collector ${c.version} is on the page but not transmitting. ` +
+          'init() has no key, so nothing is collected.',
       }
     case 'predates':
       return {
-        label: 'SDK late',
-        class: 'badge-dormant',
+        label: '▲ SDK late',
+        class: 'mq-badge--check',
         title:
           `This connection opened before @moqtap/collector ${c.version} attached, ` +
           'so the SDK never saw it. Call init() before opening the transport.',
@@ -104,15 +118,21 @@ function collectorBadge(session: SessionEntry): {
   }
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+function statusOf(session: SessionEntry): {
+  word: string
+  glyph: string
+  class: string
+} {
+  if (session.imported) return { word: 'imported', glyph: '◆', class: 'st-imported' }
+  if (session.closed) return { word: 'closed', glyph: '○', class: 'st-closed' }
+  return { word: 'open', glyph: '●', class: 'st-open' }
 }
 
 interface SessionStats {
   totalBytes: number
   bitrate: string | null
+  /** The same rate in four characters or so, for the 56px sidebar. */
+  shortRate: string | null
   urlHost: string
   urlPath: string
 }
@@ -127,12 +147,17 @@ const sessionStats = computed(() => {
     for (const stream of session.streams.values()) bytes += stream.byteCount
 
     let bitrate: string | null = null
+    let shortRate: string | null = null
     if (!session.closed && !session.imported) {
       const bps = computeRecentBitrate(session, now)
-      if (bps != null) {
-        if (bps >= 1_000_000) bitrate = `${(bps / 1_000_000).toFixed(1)} Mbps`
-        else if (bps >= 1_000) bitrate = `${(bps / 1_000).toFixed(0)} kbps`
-        else if (bps >= 1) bitrate = `${Math.round(bps)} bps`
+      if (bps != null && bps >= 1) {
+        bitrate = formatBitrate(bps)
+        shortRate =
+          bps >= 1_000_000
+            ? `${(bps / 1_000_000).toFixed(1)}M`
+            : bps >= 1_000
+              ? `${(bps / 1_000).toFixed(0)}k`
+              : `${Math.round(bps)}`
       }
     }
 
@@ -140,78 +165,111 @@ const sessionStats = computed(() => {
     map.set(session.sessionId, {
       totalBytes: bytes,
       bitrate,
+      shortRate,
       urlHost,
       urlPath,
     })
   }
   return map
 })
+
+function compactLabel(session: SessionEntry): string {
+  const s = sessionStats.value.get(session.sessionId)
+  const rate = s?.bitrate ? ` · ${s.bitrate}` : ''
+  return `${s?.urlHost ?? session.url} ${shortSessionId(session.sessionId)} · ${protocolBadge(session).title} · ${statusOf(session).word}${rate}`
+}
 </script>
 
 <template>
-  <div class="connection-list">
-    <div v-if="sessions.length === 0" class="empty-list">No connections</div>
-    <div
-      v-for="session in sessions"
-      :key="session.sessionId"
-      class="connection-item"
-      :class="{ selected: session.sessionId === selectedId }"
-      @click="emit('select', session.sessionId)"
-    >
-      <div class="connection-header">
-        <span class="badge" :class="protocolBadge(session).class">
-          {{ protocolBadge(session).label }}
-        </span>
-        <span v-if="session.frameId" class="badge badge-iframe"> iframe </span>
-        <span
-          v-if="collectorBadge(session)"
-          class="badge"
-          :class="collectorBadge(session)!.class"
-          :title="collectorBadge(session)!.title"
+  <div class="connection-list" :class="{ compact }">
+    <p v-if="sessions.length === 0 && !compact" class="empty-list">
+      No connections yet.
+    </p>
+    <ul v-else-if="sessions.length > 0" class="connection-items">
+      <li v-for="session in sessions" :key="session.sessionId">
+        <button
+          v-if="compact"
+          class="connection-item compact-item"
+          :aria-current="session.sessionId === selectedId ? 'true' : undefined"
+          :aria-label="compactLabel(session)"
+          :title="compactLabel(session)"
+          @click="emit('select', session.sessionId)"
         >
-          {{ collectorBadge(session)!.label }}
-        </span>
-        <span v-if="session.imported" class="badge badge-imported">
-          imported
-        </span>
-        <span
+          <span class="status-glyph" :class="statusOf(session).class" aria-hidden="true">{{
+            statusOf(session).glyph
+          }}</span>
+          <span class="compact-id">{{ shortSessionId(session.sessionId) }}</span>
+          <span
+            v-if="sessionStats.get(session.sessionId)?.shortRate"
+            class="compact-rate"
+            >{{ sessionStats.get(session.sessionId)!.shortRate }}</span
+          >
+        </button>
+        <button
           v-else
-          class="badge"
-          :class="session.closed ? 'badge-closed' : 'badge-open'"
+          class="connection-item"
+          :aria-current="session.sessionId === selectedId ? 'true' : undefined"
+          @click="emit('select', session.sessionId)"
         >
-          {{ session.closed ? 'closed' : 'open' }}
-        </span>
-        <span
-          v-if="sessionStats.get(session.sessionId)?.bitrate"
-          class="data-stat bitrate"
-          >{{ sessionStats.get(session.sessionId)!.bitrate }}</span
-        >
-        <span
-          v-else-if="
-            (session.closed || session.imported) &&
-            sessionStats.get(session.sessionId)!.totalBytes > 0
-          "
-          class="data-stat total-data"
-          >{{
-            formatBytes(sessionStats.get(session.sessionId)!.totalBytes)
-          }}</span
-        >
-      </div>
-      <div class="connection-url mono" :title="session.url">
-        <span class="url-host">{{
-          sessionStats.get(session.sessionId)!.urlHost
-        }}</span
-        ><span
-          v-if="sessionStats.get(session.sessionId)!.urlPath"
-          class="url-path"
-          >{{ sessionStats.get(session.sessionId)!.urlPath }}</span
-        >
-      </div>
-      <div class="connection-meta">
-        <span>{{ formatTime(session.createdAt) }}</span>
-        <span>{{ session.streams.size }} streams</span>
-      </div>
-    </div>
+          <span class="connection-header">
+            <span
+              class="mq-badge"
+              :class="protocolBadge(session).class"
+              :title="protocolBadge(session).title"
+            >
+              {{ protocolBadge(session).label }}
+            </span>
+            <span class="mq-badge" :class="statusOf(session).class">
+              <span aria-hidden="true">{{ statusOf(session).glyph }}</span>
+              {{ statusOf(session).word }}
+            </span>
+            <span v-if="session.frameId" class="mq-badge">iframe</span>
+            <span
+              v-if="collectorBadge(session)"
+              class="mq-badge"
+              :class="collectorBadge(session)!.class"
+              :title="collectorBadge(session)!.title"
+            >
+              {{ collectorBadge(session)!.label }}
+            </span>
+            <span
+              v-if="sessionStats.get(session.sessionId)?.bitrate"
+              class="data-stat"
+              >{{ sessionStats.get(session.sessionId)!.bitrate }}</span
+            >
+            <span
+              v-else-if="
+                (session.closed || session.imported) &&
+                sessionStats.get(session.sessionId)!.totalBytes > 0
+              "
+              class="data-stat"
+              >{{
+                formatBytes(sessionStats.get(session.sessionId)!.totalBytes)
+              }}</span
+            >
+          </span>
+          <span class="connection-url">
+            <span class="url-text" :title="session.url">
+              <span class="url-host">{{
+                sessionStats.get(session.sessionId)!.urlHost
+              }}</span
+              ><span
+                v-if="sessionStats.get(session.sessionId)!.urlPath"
+                class="url-path"
+                >{{ sessionStats.get(session.sessionId)!.urlPath }}</span
+              >
+            </span>
+            <span class="url-id" :title="session.sessionId">{{ shortSessionId(session.sessionId) }}</span>
+          </span>
+          <span class="connection-meta">
+            <span :title="isoTitle(session.createdAt)">{{
+              formatClock(session.createdAt)
+            }}</span>
+            <span>{{ plural(session.streams.size, 'stream') }}</span>
+          </span>
+        </button>
+      </li>
+    </ul>
   </div>
 </template>
 
@@ -222,37 +280,67 @@ const sessionStats = computed(() => {
 }
 
 .empty-list {
-  padding: 20px;
+  padding: var(--space-4) var(--space-2);
   text-align: center;
-  color: var(--text-secondary);
-  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.connection-items {
+  list-style: none;
+  padding: 0;
 }
 
 .connection-item {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-2);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background-color 120ms;
 }
 .connection-item:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
 }
-.connection-item.selected {
-  background: var(--bg-selected);
+.connection-item[aria-current='true'] {
+  background: var(--tap-soft);
 }
 
 .connection-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  margin-bottom: 4px;
+  gap: var(--space-1);
+}
+
+.st-open {
+  color: var(--success);
+}
+.st-closed,
+.st-imported {
+  color: var(--ink-muted);
+}
+.mq-badge.st-open {
+  background: var(--success-soft);
+  border-color: transparent;
 }
 
 .connection-url {
-  color: var(--text-url);
   display: flex;
+  gap: var(--space-2);
   min-width: 0;
-  margin-bottom: 2px;
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+
+.url-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 
 .url-host {
@@ -274,28 +362,50 @@ const sessionStats = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: calc(100% - 3ch);
+  color: var(--ink-muted);
+}
+
+.url-id {
+  flex-shrink: 0;
+  color: var(--ink-muted);
 }
 
 .connection-meta {
   display: flex;
   justify-content: space-between;
-  font-size: 10px;
-  color: var(--text-secondary);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .data-stat {
   margin-left: auto;
-  font-size: 10px;
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
 }
 
-.bitrate {
-  color: var(--text-success);
-}
+/* ── Compact: glyph and short ID ─────────────────────────────── */
 
-.total-data {
-  color: var(--text-secondary);
+.compact-item {
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-2) var(--space-1);
+  font: 400 11px/16px var(--font-mono);
+  text-align: center;
+}
+.status-glyph {
+  line-height: 1;
+}
+.compact-id {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.compact-rate {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 </style>

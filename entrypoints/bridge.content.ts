@@ -7,9 +7,15 @@
  * 2. Listens for activation signal from background (when a DevTools panel
  *    connects) and forwards it to the MAIN world content script.
  *
- * Also reads the worker origin exclusion list from browser.storage.local
- * at startup and relays it to the MAIN world so the content script can
- * skip worker wrapping for known-bad origins.
+ * On exactly APP_ORIGIN it also relays the sign-in callback and the
+ * signed-in / signed-out hint to the background (src/account/bridge-relay.ts
+ * says what passes). It never receives anything back: tokens stay in the
+ * background and the DevTools panel.
+ *
+ * Also tells the MAIN world, at startup, when this document's own origin is
+ * on the worker exclusion list, so the content script can skip worker
+ * wrapping there. Only that verdict is posted, never the list: every script
+ * in the window can read what is posted to it (src/storage/worker-exclusions.ts).
  *
  * Uses runtime.connect (persistent port) rather than sendMessage (one-shot)
  * so that high-frequency stream data doesn't create per-message channel
@@ -17,11 +23,11 @@
  * message channels.
  */
 
+import { APP_ORIGIN } from '@/src/account/config'
+import { accountRelay } from '@/src/account/bridge-relay'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 import { bytesToBase64 } from '@/src/messaging/types'
-
-/** Storage key for the global worker origin exclusion list */
-const EXCLUSIONS_KEY = 'moqtap-worker-exclusions'
+import { EXCLUSIONS_KEY, exclusionNotice } from '@/src/storage/worker-exclusions'
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -30,23 +36,17 @@ export default defineContentScript({
   runAt: 'document_start',
 
   main() {
-    // ── Relay exclusion list to MAIN world ───────────────────────────
-    // Read from browser.storage.local and post to MAIN world so it can
-    // skip worker wrapping for known-bad origins. This is async, but the
-    // MAIN world Proxy safety net handles Workers created before it arrives.
+    // ── Relay this origin's exclusion verdict to MAIN world ──────────
+    // Async, but the MAIN world Proxy safety net handles Workers created
+    // before it arrives. Nothing is posted for an origin that is not listed,
+    // so most pages see no message at all.
     try {
+      const origin = location.origin
       browser.storage.local
         .get(EXCLUSIONS_KEY)
         .then((result) => {
-          const exclusions = result[EXCLUSIONS_KEY] as
-            | Record<string, unknown>
-            | undefined
-          if (exclusions) {
-            const origins = Object.keys(exclusions)
-            if (origins.length > 0) {
-              window.postMessage({ source: 'moqtap-exclusions', origins }, '*')
-            }
-          }
+          const notice = exclusionNotice(result[EXCLUSIONS_KEY], origin)
+          if (notice !== null) window.postMessage(notice, origin)
         })
         .catch(() => {
           /* storage not available */
@@ -128,6 +128,26 @@ export default defineContentScript({
         connect()
       }
     })
+
+    // ── Account messages from app. → background ──────────────────────
+    if (location.origin === APP_ORIGIN && window === window.top) {
+      window.addEventListener('message', (event) => {
+        const relay = accountRelay(event, {
+          selfOrigin: location.origin,
+          isTop: window === window.top,
+          self: window,
+          appOrigin: APP_ORIGIN,
+        })
+        if (relay === null) return
+        try {
+          browser.runtime.sendMessage(relay).catch(() => {
+            /* background unavailable */
+          })
+        } catch {
+          /* extension context invalidated */
+        }
+      })
+    }
 
     // ── Forward intercepted events: MAIN world → background ──────────
     window.addEventListener('message', (event) => {

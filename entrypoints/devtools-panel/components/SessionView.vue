@@ -1,12 +1,14 @@
 <script lang="ts" setup>
 import type { StreamContentType } from '@/src/detect/content-detect'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { formatBytes, formatClock, formatCount, isoTitle } from '../format'
 import type { SessionEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
 import StreamDataViewer from './StreamDataViewer.vue'
 import StreamList from './StreamList.vue'
 import TrackList from './TrackList.vue'
 import TracksTab from './TracksTab.vue'
+import Icon from './Icon.vue'
 
 const props = defineProps<{
   session: SessionEntry
@@ -24,6 +26,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   exportTrace: [sessionId: string]
+  shareTrace: [sessionId: string]
 }>()
 
 type Tab = 'messages' | 'streams' | 'details' | 'tracks'
@@ -38,6 +41,39 @@ watch(
     }
   },
 )
+
+const tabs = computed(() => {
+  const s = props.session
+  const list: { id: Tab; label: string; count: number | null }[] = [
+    { id: 'messages', label: 'Messages', count: s.messages.length },
+    {
+      id: 'streams',
+      label: 'Streams',
+      count: s.streams.size + s.datagramGroups.size,
+    },
+  ]
+  if (s.protocol === 'moqt') {
+    list.push({ id: 'tracks', label: 'Tracks', count: s.tracks.size })
+  }
+  list.push({ id: 'details', label: 'Details', count: null })
+  return list
+})
+
+const tabEls = ref<HTMLButtonElement[]>([])
+
+/** Arrow keys move between tabs. */
+function onTabKey(e: KeyboardEvent, index: number) {
+  const n = tabs.value.length
+  let next = -1
+  if (e.key === 'ArrowRight') next = (index + 1) % n
+  else if (e.key === 'ArrowLeft') next = (index - 1 + n) % n
+  else if (e.key === 'Home') next = 0
+  else if (e.key === 'End') next = n - 1
+  if (next < 0) return
+  e.preventDefault()
+  activeTab.value = tabs.value[next].id
+  void nextTick(() => tabEls.value[next]?.focus())
+}
 
 const selectedStreamId = ref<number | null>(null)
 const selectedStreamData = ref<Uint8Array | null>(null)
@@ -133,7 +169,7 @@ function protocolLabel(session: SessionEntry): string {
         ? `MoQT ${session.draftFromProtocol} (draft not supported)`
         : 'MoQT (unknown draft)'
     case 'detecting':
-      return 'Detecting...'
+      return 'Detecting…'
     default:
       return 'WebTransport (non-MoQT)'
   }
@@ -154,11 +190,17 @@ function draftSourceLabel(session: SessionEntry): string | null {
   return 'version number in SETUP'
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
+const totalBytes = computed(
+  () =>
+    Array.from(props.session.streams.values()).reduce(
+      (s, st) => s + st.byteCount,
+      0,
+    ) +
+    Array.from(props.session.datagramGroups.values()).reduce(
+      (s, dg) => s + dg.byteCount,
+      0,
+    ),
+)
 
 async function showStreamData(streamId: number) {
   selectedStreamId.value = streamId
@@ -231,65 +273,56 @@ const collectorDetail = computed((): string | null => {
 <template>
   <div class="session-view">
     <div class="session-header">
-      <div class="tabs">
+      <div class="mq-tabs session-tabs" role="tablist" aria-label="Session views">
         <button
-          class="tab"
-          :class="{ active: activeTab === 'messages' }"
-          @click="activeTab = 'messages'"
+          v-for="(tab, i) in tabs"
+          :id="`tab-${tab.id}`"
+          :key="tab.id"
+          ref="tabEls"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="activeTab === tab.id"
+          aria-controls="session-panel"
+          :tabindex="activeTab === tab.id ? 0 : -1"
+          @click="activeTab = tab.id"
+          @keydown="onTabKey($event, i)"
         >
-          Messages ({{ session.messages.length }})
+          {{ tab.label
+          }}<span v-if="tab.count !== null" class="mq-tab__count">{{
+            formatCount(tab.count)
+          }}</span>
         </button>
+      </div>
+      <div
+        v-if="session.protocol === 'moqt' && !session.imported"
+        class="session-actions"
+      >
         <button
-          class="tab"
-          :class="{ active: activeTab === 'streams' }"
-          @click="activeTab = 'streams'"
-        >
-          Streams ({{ session.streams.size + session.datagramGroups.size }})
-        </button>
-        <button
-          v-if="session.protocol === 'moqt'"
-          class="tab"
-          :class="{ active: activeTab === 'tracks' }"
-          @click="activeTab = 'tracks'"
-        >
-          Tracks ({{ session.tracks.size }})
-        </button>
-        <button
-          class="tab"
-          :class="{ active: activeTab === 'details' }"
-          @click="activeTab = 'details'"
-        >
-          Details
-        </button>
-        <button
-          v-if="session.protocol === 'moqt' && !session.imported"
-          class="export-btn"
+          class="mq-btn mq-btn--quiet export-btn"
+          aria-label="Export .moqtrace"
           title="Export .moqtrace"
           @click="emit('exportTrace', session.sessionId)"
         >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M8 1v9M8 10L5 7M8 10l3-3"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.3"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-            <path
-              d="M3 12v2h10v-2"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.3"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          <span class="export-label">.moqtrace</span>
+          <Icon name="download" />
+          <span class="action-label" aria-hidden="true">.moqtrace</span>
+        </button>
+        <button
+          class="mq-btn mq-btn--secondary share-btn"
+          aria-label="Share"
+          title="Upload to moqtap and share"
+          @click="emit('shareTrace', session.sessionId)"
+        >
+          <Icon name="share" />
+          <span class="action-label">Share</span>
         </button>
       </div>
     </div>
-    <div class="session-body">
+    <div
+      id="session-panel"
+      class="session-body"
+      role="tabpanel"
+      :aria-labelledby="`tab-${activeTab}`"
+    >
       <TrackList
         v-if="hasTracks && activeTab === 'messages'"
         :tracks="trackList"
@@ -299,6 +332,7 @@ const collectorDetail = computed((): string | null => {
       <ControlMessageLog
         v-if="activeTab === 'messages'"
         :messages="filteredMessages"
+        :started-at="session.createdAt"
       />
       <div
         v-else-if="activeTab === 'streams'"
@@ -318,65 +352,67 @@ const collectorDetail = computed((): string | null => {
           "
           @clear="props.clearStreams(session.sessionId)"
         />
-        <div v-if="selectedStreamId != null" class="stream-detail">
-          <div class="detail-header">
-            <span class="detail-title mono">
+        <section
+          v-if="selectedStreamId != null"
+          class="stream-detail"
+          aria-labelledby="stream-detail-title"
+        >
+          <div class="tool-bar detail-header">
+            <h2 id="stream-detail-title" class="detail-title">
               <template v-if="selectedStream?.datagramGroupKey"
-                >DG g:{{ selectedStream.groupId }}</template
+                >Datagram group g:{{ selectedStream.groupId }}</template
               >
-              <template v-else>Stream #{{ selectedStreamId }}</template>
-            </span>
+              <template v-else>Stream {{ selectedStreamId }}</template>
+            </h2>
             <span v-if="selectedStream" class="detail-meta">
-              {{ selectedStream.direction === 'tx' ? 'TX' : 'RX' }}
+              <span
+                class="dir"
+                :class="selectedStream.direction === 'tx' ? 'dir-c2s' : 'dir-s2c'"
+                :title="
+                  selectedStream.direction === 'tx'
+                    ? 'client to server'
+                    : 'server to client'
+                "
+                >{{ selectedStream.direction === 'tx' ? '→' : '←' }}</span
+              >
               <template
                 v-if="
                   !selectedStream.datagramGroupKey &&
                   selectedStream.bidi !== undefined
                 "
               >
-                ·
-                {{
-                  selectedStream.bidi ? 'bidirectional' : 'unidirectional'
-                }}</template
+                {{ selectedStream.bidi ? 'bidirectional' : 'unidirectional' }}
+                ·</template
               >
-              · {{ formatBytes(selectedStream.byteCount) }}
+              {{ formatBytes(selectedStream.byteCount) }}
               <template v-if="selectedStream.datagramGroupKey">
-                · {{ selectedStream.datagramCount }} datagrams</template
+                · {{ formatCount(selectedStream.datagramCount ?? 0) }}
+                datagrams</template
               >
               <template v-else-if="selectedStream.chunkCount > 0">
-                · {{ selectedStream.chunkCount }} chunks</template
+                · {{ formatCount(selectedStream.chunkCount) }} chunks</template
               >
               · {{ selectedStream.closed ? 'closed' : 'open' }}
             </span>
             <button
               v-if="hasNewData"
-              class="detail-refresh"
-              title="New data available — click to refresh"
+              class="mq-btn mq-btn--secondary detail-refresh"
+              title="New data arrived. Reload this stream."
               @click="refreshStreamData"
             >
-              <span class="refresh-dot"></span>
+              <span class="mq-dot refresh-dot" aria-hidden="true"></span>
               Refresh
             </button>
-            <button class="detail-close" title="Close" @click="closeStreamData">
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-              >
-                <path
-                  d="M3.5 3.5l9 9m0-9l-9 9"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  fill="none"
-                  stroke-linecap="round"
-                />
-              </svg>
+            <button
+              class="mq-btn mq-btn--quiet mq-btn--icon"
+              aria-label="Close stream"
+              title="Close stream"
+              @click="closeStreamData"
+            >
+              <Icon name="x" />
             </button>
           </div>
-          <div v-if="loadingStream" class="detail-loading">
-            Loading stream data...
-          </div>
+          <p v-if="loadingStream" class="pane-message">Loading stream data…</p>
           <StreamDataViewer
             v-else-if="selectedStreamData"
             :data="selectedStreamData"
@@ -389,106 +425,78 @@ const collectorDetail = computed((): string | null => {
             :is-datagram-group="!!selectedStream?.datagramGroupKey"
             class="detail-viewer"
           />
-          <div v-else class="detail-empty">No data available</div>
-        </div>
+          <p v-else class="pane-message">
+            No data recorded for this stream.
+          </p>
+        </section>
       </div>
       <TracksTab v-else-if="activeTab === 'tracks'" :session="session" />
       <div v-else-if="activeTab === 'details'" class="details-panel">
-        <table class="details-table mono">
-          <tbody>
-            <tr>
-              <td class="details-label">URL</td>
-              <td>{{ session.url }}</td>
-            </tr>
-            <tr v-if="collectorDetail">
-              <td class="details-label">Collector</td>
-              <td>{{ collectorDetail }}</td>
-            </tr>
-            <tr>
-              <td class="details-label">Protocol</td>
-              <td>{{ protocolLabel(session) }}</td>
-            </tr>
-            <tr v-if="draftSourceLabel(session)">
-              <td class="details-label">Draft From</td>
-              <td>{{ draftSourceLabel(session) }}</td>
-            </tr>
-            <tr v-if="session.clientImplementation">
-              <td class="details-label">Client</td>
-              <td>{{ session.clientImplementation }}</td>
-            </tr>
-            <tr v-if="session.serverImplementation">
-              <td class="details-label">Relay</td>
-              <td>{{ session.serverImplementation }}</td>
-            </tr>
-            <tr v-if="session.options?.protocols?.length">
-              <td class="details-label">Offered Protocols</td>
-              <td>{{ session.options.protocols.join(', ') }}</td>
-            </tr>
-            <tr v-if="session.negotiatedProtocol">
-              <td class="details-label">Selected Protocol</td>
-              <td>{{ session.negotiatedProtocol }}</td>
-            </tr>
-            <tr v-if="session.options?.congestionControl">
-              <td class="details-label">Congestion Control</td>
-              <td>{{ session.options.congestionControl }}</td>
-            </tr>
-            <tr v-if="session.options?.allowPooling !== undefined">
-              <td class="details-label">Pooling</td>
-              <td>
-                {{ session.options.allowPooling ? 'Allowed' : 'Disabled' }}
-              </td>
-            </tr>
-            <tr v-if="session.options?.requireUnreliable !== undefined">
-              <td class="details-label">Require Unreliable</td>
-              <td>{{ session.options.requireUnreliable ? 'Yes' : 'No' }}</td>
-            </tr>
-            <tr v-if="session.options?.serverCertificateHashes">
-              <td class="details-label">Pinned Certificates</td>
-              <td>{{ session.options.serverCertificateHashes }}</td>
-            </tr>
-            <tr>
-              <td class="details-label">Session ID</td>
-              <td>{{ session.sessionId }}</td>
-            </tr>
-            <tr>
-              <td class="details-label">Created</td>
-              <td>{{ new Date(session.createdAt).toISOString() }}</td>
-            </tr>
-            <tr>
-              <td class="details-label">Status</td>
-              <td>{{ session.closed ? 'Closed' : 'Open' }}</td>
-            </tr>
-            <tr v-if="session.frameId">
-              <td class="details-label">Source</td>
-              <td>iframe (frame {{ session.frameId }})</td>
-            </tr>
-            <tr>
-              <td class="details-label">Streams</td>
-              <td>{{ session.streams.size }}</td>
-            </tr>
-            <tr>
-              <td class="details-label">Messages</td>
-              <td>{{ session.messages.length }}</td>
-            </tr>
-            <tr>
-              <td class="details-label">Total Data</td>
-              <td>
-                {{
-                  formatBytes(
-                    Array.from(session.streams.values()).reduce(
-                      (s, st) => s + st.byteCount,
-                      0,
-                    ) +
-                      Array.from(session.datagramGroups.values()).reduce(
-                        (s, dg) => s + dg.byteCount,
-                        0,
-                      ),
-                  )
-                }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <dl class="mq-kv details-list">
+          <dt>URL</dt>
+          <dd class="mq-mono">{{ session.url }}</dd>
+          <template v-if="collectorDetail">
+            <dt>Collector</dt>
+            <dd>{{ collectorDetail }}</dd>
+          </template>
+          <dt>Protocol</dt>
+          <dd>{{ protocolLabel(session) }}</dd>
+          <template v-if="draftSourceLabel(session)">
+            <dt>Draft from</dt>
+            <dd>{{ draftSourceLabel(session) }}</dd>
+          </template>
+          <template v-if="session.clientImplementation">
+            <dt>Client</dt>
+            <dd class="mq-mono">{{ session.clientImplementation }}</dd>
+          </template>
+          <template v-if="session.serverImplementation">
+            <dt>Relay</dt>
+            <dd class="mq-mono">{{ session.serverImplementation }}</dd>
+          </template>
+          <template v-if="session.options?.protocols?.length">
+            <dt>Offered protocols</dt>
+            <dd class="mq-mono">{{ session.options.protocols.join(', ') }}</dd>
+          </template>
+          <template v-if="session.negotiatedProtocol">
+            <dt>Selected protocol</dt>
+            <dd class="mq-mono">{{ session.negotiatedProtocol }}</dd>
+          </template>
+          <template v-if="session.options?.congestionControl">
+            <dt>Congestion control</dt>
+            <dd class="mq-mono">{{ session.options.congestionControl }}</dd>
+          </template>
+          <template v-if="session.options?.allowPooling !== undefined">
+            <dt>Pooling</dt>
+            <dd>{{ session.options.allowPooling ? 'Allowed' : 'Disabled' }}</dd>
+          </template>
+          <template v-if="session.options?.requireUnreliable !== undefined">
+            <dt>Require unreliable</dt>
+            <dd>{{ session.options.requireUnreliable ? 'Yes' : 'No' }}</dd>
+          </template>
+          <template v-if="session.options?.serverCertificateHashes">
+            <dt>Pinned certificates</dt>
+            <dd class="mq-mono">{{ session.options.serverCertificateHashes }}</dd>
+          </template>
+          <dt>Session ID</dt>
+          <dd class="mq-mono">{{ session.sessionId }}</dd>
+          <dt>Created</dt>
+          <dd :title="isoTitle(session.createdAt)">
+            {{ new Date(session.createdAt).toLocaleDateString() }}
+            {{ formatClock(session.createdAt) }}
+          </dd>
+          <dt>Status</dt>
+          <dd>{{ session.closed ? 'Closed' : 'Open' }}</dd>
+          <template v-if="session.frameId">
+            <dt>Source</dt>
+            <dd>iframe (frame {{ session.frameId }})</dd>
+          </template>
+          <dt>Streams</dt>
+          <dd class="mq-num">{{ formatCount(session.streams.size) }}</dd>
+          <dt>Messages</dt>
+          <dd class="mq-num">{{ formatCount(session.messages.length) }}</dd>
+          <dt>Total data</dt>
+          <dd class="mq-mono mq-num">{{ formatBytes(totalBytes) }}</dd>
+        </dl>
       </div>
     </div>
   </div>
@@ -499,67 +507,51 @@ const collectorDetail = computed((): string | null => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
+  flex: 1;
 }
 
 .session-header {
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  display: flex;
+  align-items: stretch;
+  background: var(--surface);
+  flex-shrink: 0;
 }
 
-.export-btn {
-  margin-left: auto;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-accent);
-  padding: 6px 10px;
-  cursor: pointer;
-  font-size: 11px;
-  font-family: inherit;
-  white-space: nowrap;
-  display: inline-flex;
+.session-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-actions {
+  display: flex;
   align-items: center;
-  gap: 4px;
-}
-.export-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--line);
 }
 
-@media (max-width: 450px) {
-  .export-label {
+/* Docked narrow, the actions go icon-only so the four tabs keep their room. */
+@media (max-width: 460px) {
+  .action-label {
     display: none;
   }
-}
-
-.tabs {
-  display: flex;
-}
-
-.tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
-  padding: 6px 14px;
-  cursor: pointer;
-  font-size: 11px;
-  font-family: inherit;
-}
-.tab:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-.tab.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--text-accent);
+  .session-actions {
+    padding: 0 var(--space-1);
+  }
+  .session-actions .mq-btn {
+    width: var(--mq-ctl);
+    padding: 0;
+  }
 }
 
 .session-body {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
 
 /* ── Streams split panel ───────────────────────────────────────── */
@@ -579,86 +571,60 @@ const collectorDetail = computed((): string | null => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* Too narrow for the list's minimum width and a readable detail side by
+   side: the detail goes under the list instead of being squeezed to a sliver. */
+@container (max-width: 600px) {
+  .streams-panel.has-detail {
+    flex-direction: column;
+  }
+  .streams-panel.has-detail :deep(.stream-list-wrapper) {
+    flex: 0 1 40%;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    overflow: auto;
+  }
+  .streams-panel.has-detail .stream-detail {
+    flex: 1 1 60%;
+    min-height: 0;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
 }
 
 .detail-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 8px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .detail-title {
-  font-size: 12px;
-  color: var(--text-primary);
-  font-weight: 600;
+  font: 500 12px/16px var(--font-mono);
+  color: var(--ink);
+  white-space: nowrap;
 }
 
 .detail-meta {
-  font-size: 11px;
-  color: var(--text-secondary);
   flex: 1;
+  min-width: 0;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.detail-meta .dir {
+  margin-right: var(--space-1);
 }
 
-.detail-refresh {
-  background: none;
-  border: 1px solid var(--text-accent);
-  color: var(--text-accent);
-  cursor: pointer;
-  padding: 1px 8px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-family: inherit;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-.detail-refresh:hover {
-  background: var(--bg-selected);
-}
 .refresh-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-accent);
+  color: var(--info);
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
 @keyframes pulse-dot {
-  0%,
-  100% {
-    opacity: 1;
-  }
   50% {
     opacity: 0.3;
   }
-}
-
-.detail-close {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 3px;
-  display: flex;
-  align-items: center;
-}
-.detail-close:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.detail-loading {
-  padding: 20px;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 12px;
 }
 
 .detail-viewer {
@@ -667,33 +633,16 @@ const collectorDetail = computed((): string | null => {
   overflow: hidden;
 }
 
-.detail-empty {
-  padding: 20px;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
 /* ── Details ────────────────────────────────────────────────────── */
 
 .details-panel {
-  padding: 12px;
+  padding: var(--space-3);
   overflow-y: auto;
   flex: 1;
   min-height: 0;
 }
 
-.details-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-.details-table td {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
-}
-.details-label {
-  color: var(--text-secondary);
-  width: 100px;
-  white-space: nowrap;
+.details-list {
+  max-width: 900px;
 }
 </style>

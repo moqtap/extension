@@ -18,7 +18,7 @@ function openSource(frame: StackFrame) {
 
 <template>
   <div class="stack-viewer">
-    <div v-if="groups.length === 0" class="empty">No stack trace available</div>
+    <p v-if="groups.length === 0" class="empty">No stack trace for this message.</p>
     <template v-for="(group, gi) in groups" :key="gi">
       <div v-if="group.isAsync" class="async-separator">
         <span class="async-label">(async)</span>
@@ -37,11 +37,15 @@ function openSource(frame: StackFrame) {
           <template v-if="frame.url">
             <span class="at"> @ </span>
             <a
+              v-if="!frame.isNative"
+              href="#"
               class="file-link"
-              :class="{ clickable: !frame.isNative }"
               :title="frame.url + ':' + frame.line + ':' + frame.column"
               @click.prevent="openSource(frame)"
               >{{ shortUrl(frame.url) }}:{{ frame.line }}</a
+            >
+            <span v-else class="file-native" :title="frame.url"
+              >{{ shortUrl(frame.url) }}:{{ frame.line }}</span
             >
           </template>
         </template>
@@ -52,64 +56,49 @@ function openSource(frame: StackFrame) {
 
 <style scoped>
 .stack-viewer {
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
-  font-size: 11px;
-  line-height: 1.8;
-  padding: 4px 0;
+  font: 400 12px/20px var(--font-mono);
+  padding: var(--space-1) 0;
 }
 
 .empty {
-  color: var(--text-secondary);
-  padding: 8px 0;
+  color: var(--ink-muted);
+  padding: var(--space-2) 0;
+  font-family: var(--font-sans);
 }
 
 .stack-frame {
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   white-space: nowrap;
 }
 
 .stack-frame:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
 }
 
-.stack-frame.native {
-  opacity: 0.5;
+.stack-frame.native,
+.fn-raw,
+.at,
+.file-native {
+  color: var(--ink-muted);
 }
 
 .fn-name {
-  color: var(--text-warning);
-}
-
-.fn-raw {
-  color: var(--text-secondary);
-}
-
-.at {
-  color: var(--text-secondary);
+  color: var(--ink);
+  font-weight: 500;
 }
 
 .file-link {
-  color: var(--text-url);
-  text-decoration: none;
-}
-
-.file-link.clickable {
-  cursor: pointer;
-}
-
-.file-link.clickable:hover {
+  color: var(--link);
   text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .async-separator {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 2px 4px;
-  color: var(--text-secondary);
-  opacity: 0.7;
+  gap: var(--space-2);
+  padding: 2px var(--space-1);
+  color: var(--ink-muted);
 }
 
 .async-separator::before,
@@ -117,11 +106,10 @@ function openSource(frame: StackFrame) {
   content: '';
   flex: 1;
   height: 1px;
-  background: var(--border);
+  background: var(--line);
 }
 
 .async-label {
   font-style: italic;
-  font-size: 10px;
 }
 </style>

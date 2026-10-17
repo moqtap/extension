@@ -12,10 +12,12 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 - Stream content detection: JSON, CBOR, MessagePack, and ISO BMFF media (CMAF, LOC, fMP4)
 - Hex viewer with inline object boundary annotations and object navigation
 - Live bitrate display for active connections
-- Filter toolbar for messages (active only, group by namespace, TX/RX direction) and streams (text search)
+- Filter toolbar for messages (active only, group by namespace, outgoing/incoming direction) and streams (text search)
+- Follows the DevTools light or dark theme
 - Recording toggle and clear controls for stream data
 - Stack traces for control messages and stream creation
 - Export/import `.moqtrace` trace files
+- Optional moqtap account: upload a session to your library and share it by link or with a team
 - Graceful handling of non-MoQT WebTransport connections
 
 ## Development
@@ -137,6 +139,27 @@ carries an explicit Location Filter Type, and the panel decodes control
 messages through `@moqtap/codec`, so the codec's draft-22 module is the whole
 of the change; its tables, framing and varint are draft-21's.
 
+## Account and sharing
+
+Sharing is the only feature that sends anything off the machine, and only
+when you click **Upload and share**. The panel builds the session's
+`.moqtrace`, removes object payloads and authorization tokens (Authorization
+Token parameters in control messages, the query of a SETUP path, and the query
+and fragment of the session URL) unless you include them, and uploads it to
+`api.moqtap.com`. Firefox asks for data collection consent the first time
+you share, and again the first time you include authorization.
+
+Sign-in goes through `app.moqtap.com` with an OAuth authorization code and
+PKCE. The bridge content script relays the result only from
+`app.moqtap.com`; the refresh token stays in the extension's IndexedDB and
+the access token in `storage.session`, and neither reaches a web page.
+While you are signed in on `app.moqtap.com`, opening it signs the extension
+in through a background tab, and signing out there signs it out.
+**Disconnect this browser** stops that until you sign in again.
+
+A development build signs in to production unless `MOQTAP_APP_ORIGIN` and
+`MOQTAP_API_ORIGIN` name another deployment.
+
 ## Architecture
 
 ```
@@ -155,6 +178,7 @@ Key modules:
 - `src/storage/` — Memory-first stream and datagram payload stores, with
   IndexedDB as overflow
 - `src/intercept/` — WebTransport constructor monkey-patching
+- `src/account/` — Sign-in, tokens and the trace library client used for sharing
 
 ## Releasing
 
@@ -207,3 +231,5 @@ submission time. Mozilla wants sources for the minified bundle:
 ## License
 
 MIT
+
+Interface icons are from [Lucide](https://lucide.dev) (`lucide-static`, ISC License, copyright Lucide Icons and Contributors; icons derived from Feather are MIT, copyright Cole Bemis). The fonts are IBM Plex, under the SIL Open Font License 1.1: the `latin` woff2 files from npm `@fontsource/ibm-plex-sans` 5.1.1 and `@fontsource/ibm-plex-mono` 5.2.6, unmodified, with IBM's licence text from `@ibm/plex-sans` 1.1.0 (`entrypoints/devtools-panel/design-system/licenses/IBM-Plex-OFL.txt`).

@@ -2,9 +2,11 @@
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { formatBytes, messageTypeName, plural } from '../format'
 import type { MessageEntry, StreamEntry, TrackEntry } from '../use-inspector'
+import Icon from './Icon.vue'
 
-const ROW_HEIGHT = 24 // px — must match CSS .stream-row height
+const ROW_HEIGHT = 22 // px — must match CSS .stream-row height (--row-tool)
 const OVERSCAN = 10 // extra rows rendered above/below viewport
 
 const props = defineProps<{
@@ -75,9 +77,9 @@ function controlLabel(stream: StreamEntry): string | null {
   if (!stream.isControl) return null
   if (stream.controlRole === 'request') {
     const type = firstMessageByStream.value.get(stream.streamId)
-    return type ? type.toUpperCase().replace(/_/g, ' ') : 'Request'
+    return type ? messageTypeName(type) : 'Request'
   }
-  return 'MoQT Control'
+  return 'MoQT control'
 }
 
 // ── Filter ────────────────────────────────────────────────────────
@@ -183,16 +185,6 @@ function sumBytes(list: StreamEntry[], dir?: 'tx' | 'rx'): number {
   return total
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function streamCount(list: StreamEntry[]): string {
-  return `${list.length} stream${list.length !== 1 ? 's' : ''}`
-}
-
 const VARIANT_LABELS: Record<string, string> = {
   cmaf: 'CMAF',
   loc: 'LOC',
@@ -200,12 +192,40 @@ const VARIANT_LABELS: Record<string, string> = {
 }
 
 function mediaLabel(info: PayloadMediaInfo): string {
-  const label = VARIANT_LABELS[info.variant] ?? 'fMP4'
-  return `${label}(${info.boxes.length})`
+  return VARIANT_LABELS[info.variant] ?? 'fMP4'
 }
 
 function codecLabel(contentType: StreamContentType): string {
   return contentType === 'h265' ? 'H.265' : 'H.264'
+}
+
+/** The short content type shown in the Type column, or null. */
+function contentLabel(stream: StreamEntry): string | null {
+  switch (stream.contentType) {
+    case 'fmp4':
+      return stream.mediaInfo ? mediaLabel(stream.mediaInfo) : 'fMP4'
+    case 'h264':
+    case 'h265':
+      return codecLabel(stream.contentType)
+    case 'json':
+      return 'JSON'
+    case 'cbor':
+      return 'CBOR'
+    case 'msgpack':
+      return 'MsgPack'
+    default:
+      return null
+  }
+}
+
+function contentTitle(stream: StreamEntry): string | undefined {
+  if (stream.contentType === 'fmp4' && stream.mediaInfo) {
+    return stream.mediaInfo.boxes.join(' · ')
+  }
+  if (stream.contentType === 'h264' || stream.contentType === 'h265') {
+    return stream.codecString ?? codecLabel(stream.contentType)
+  }
+  return undefined
 }
 
 /**
@@ -218,7 +238,8 @@ function codecLabel(contentType: StreamContentType): string {
  * traces, which carry no stream class.
  */
 function kindGlyph(stream: StreamEntry): string {
-  return stream.bidi ? '⇄' : '→'
+  // Not →, which the direction column uses.
+  return stream.bidi ? '⇄' : '↦'
 }
 
 function kindTitle(stream: StreamEntry): string {
@@ -227,252 +248,200 @@ function kindTitle(stream: StreamEntry): string {
     : 'Unidirectional stream — objects'
 }
 
-function transferSummary(list: StreamEntry[]): string {
+function transferParts(
+  list: StreamEntry[],
+): { dir: 'tx' | 'rx'; bytes: string }[] {
+  const parts: { dir: 'tx' | 'rx'; bytes: string }[] = []
   const tx = sumBytes(list, 'tx')
   const rx = sumBytes(list, 'rx')
-  const parts: string[] = []
-  if (tx > 0) parts.push(`↑ ${formatBytes(tx)}`)
-  if (rx > 0) parts.push(`↓ ${formatBytes(rx)}`)
-  return parts.join('  ')
+  if (tx > 0) parts.push({ dir: 'tx', bytes: formatBytes(tx) })
+  if (rx > 0) parts.push({ dir: 'rx', bytes: formatBytes(rx) })
+  return parts
 }
 </script>
 
 <template>
   <div class="stream-list-wrapper">
-    <div class="stream-toolbar">
+    <div class="tool-bar stream-toolbar">
       <button
-        class="toolbar-btn record-btn"
+        class="mq-btn mq-btn--quiet mq-btn--icon record-btn"
         :class="{ recording: props.recording }"
+        :aria-pressed="props.recording"
+        :aria-label="
+          props.recording ? 'Stop recording stream data' : 'Record stream data'
+        "
         :title="
-          props.recording
-            ? 'Stop recording stream data'
-            : 'Resume recording stream data'
+          props.recording ? 'Stop recording stream data' : 'Record stream data'
         "
         @click="emit('toggleRecording', !props.recording)"
       >
-        <span class="record-dot" />
+        <span class="record-dot" aria-hidden="true" />
       </button>
       <button
-        class="toolbar-btn clear-btn"
+        class="mq-btn mq-btn--quiet mq-btn--icon clear-btn"
+        aria-label="Clear stream data"
         title="Clear stream data"
         @click="emit('clear')"
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.3"
-        >
-          <circle cx="8" cy="8" r="6.5" />
-          <line x1="3.5" y1="12.5" x2="12.5" y2="3.5" />
-        </svg>
+        <Icon name="ban" />
       </button>
       <div class="filter-field">
         <input
           v-model="filterText"
-          class="filter-input mono"
-          type="text"
-          placeholder="Filter by track name..."
+          class="mq-input mq-input--mono filter-input"
+          type="search"
+          aria-label="Filter streams by track name"
+          placeholder="Filter by track name"
           spellcheck="false"
         />
         <button
           v-if="filterText"
-          class="filter-clear"
+          class="mq-btn mq-btn--quiet mq-btn--icon filter-clear"
+          aria-label="Clear filter"
           title="Clear filter"
           @click="filterText = ''"
         >
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M3.5 3.5l9 9m0-9l-9 9"
-              stroke="currentColor"
-              stroke-width="1.8"
-              fill="none"
-              stroke-linecap="round"
-            />
-          </svg>
+          <Icon name="x" />
         </button>
       </div>
     </div>
 
     <!-- Sticky header row (outside scroll container) -->
-    <div v-if="streams.length > 0" class="stream-header-row">
-      <span v-if="!compact" class="col-id">#</span>
+    <div v-if="streams.length > 0" class="stream-header-row" aria-hidden="true">
+      <span v-if="!compact" class="col-id">ID</span>
       <span v-if="!compact" class="col-dir">Dir</span>
       <span v-if="!compact" class="col-type">Type</span>
       <span class="col-track">Track</span>
       <span v-if="!compact" class="col-status">Status</span>
-      <span v-if="!compact" class="col-bytes">Bytes</span>
+      <span v-if="!compact" class="col-bytes">Size</span>
     </div>
 
     <div ref="scrollContainer" class="stream-scroll" @scroll.passive="onScroll">
-      <div v-if="streams.length === 0" class="empty-state">No streams yet</div>
-      <div v-else-if="filteredStreams.length === 0" class="empty-state">
-        No streams match filter
-      </div>
+      <p v-if="streams.length === 0" class="pane-message">No streams yet.</p>
+      <p v-else-if="filteredStreams.length === 0" class="pane-message">
+        No streams match this filter.
+      </p>
       <template v-else>
         <!-- Spacer div sets total scrollable height -->
         <div class="virtual-spacer" :style="{ height: totalHeight + 'px' }">
           <!-- Visible rows, offset to their correct position -->
-          <div
+          <ul
             class="virtual-window"
+            aria-label="Streams"
             :style="{ transform: `translateY(${offsetY}px)` }"
           >
-            <div
-              v-for="stream in visibleStreams"
-              :key="stream.streamId"
-              class="stream-row"
-              :class="{ selected: stream.streamId === props.selectedId }"
-              @click="emit('inspect', stream.streamId)"
-            >
-              <span v-if="!compact" class="col-id mono">
-                <span
-                  v-if="stream.datagramGroupKey"
-                  class="dg-badge"
-                  title="Datagram group"
-                  >DG</span
-                >
-                <template v-else>
+            <li v-for="stream in visibleStreams" :key="stream.streamId">
+              <button
+                class="stream-row"
+                :aria-current="
+                  stream.streamId === props.selectedId ? 'true' : undefined
+                "
+                @click="emit('inspect', stream.streamId)"
+              >
+                <span v-if="!compact" class="col-id">
                   <span
-                    v-if="stream.bidi !== undefined"
-                    class="stream-kind"
-                    :title="kindTitle(stream)"
-                    >{{ kindGlyph(stream) }}</span
-                  >{{ stream.streamId }}
-                </template>
-              </span>
-              <span
-                v-if="!compact"
-                class="col-dir"
-                :class="
-                  stream.direction === 'tx' ? 'direction-tx' : 'direction-rx'
-                "
-              >
-                {{ stream.direction === 'tx' ? 'TX' : 'RX' }}
-              </span>
-              <span v-if="!compact" class="col-type">
-                <span
-                  v-if="stream.contentType === 'fmp4' && stream.mediaInfo"
-                  class="content-badge content-fmp4"
-                  :title="stream.mediaInfo.boxes.join(' · ')"
-                >
-                  {{ mediaLabel(stream.mediaInfo) }}
-                </span>
-                <span
-                  v-else-if="stream.contentType === 'fmp4'"
-                  class="content-badge content-fmp4"
-                >
-                  fMP4
-                </span>
-                <span
-                  v-else-if="
-                    stream.contentType === 'h264' ||
-                    stream.contentType === 'h265'
-                  "
-                  class="content-badge content-codec"
-                  :title="stream.codecString ?? codecLabel(stream.contentType)"
-                >
-                  {{ codecLabel(stream.contentType) }}
-                </span>
-                <span
-                  v-else-if="stream.contentType === 'json'"
-                  class="content-badge content-json"
-                >
-                  JSON
-                </span>
-                <span
-                  v-else-if="stream.contentType === 'cbor'"
-                  class="content-badge content-cbor"
-                >
-                  CBOR
-                </span>
-                <span
-                  v-else-if="stream.contentType === 'msgpack'"
-                  class="content-badge content-msgpack"
-                >
-                  MPK
-                </span>
-              </span>
-              <span
-                class="col-track"
-                :title="
-                  controlLabel(stream)
-                    ? stream.controlRole === 'request'
-                      ? 'Request stream — one request and its responses'
-                      : 'MoQT control stream'
-                    : resolveTrack(stream)?.fullName
-                "
-              >
-                <span v-if="controlLabel(stream)" class="track-control">{{
-                  controlLabel(stream)
-                }}</span>
-                <span v-else-if="resolveTrack(stream)" class="track-tag">
-                  {{ resolveTrack(stream)!.fullName }}
-                  <span v-if="stream.datagramGroupKey" class="group-tag mono"
-                    >g:{{ stream.groupId }}</span
+                    v-if="stream.datagramGroupKey"
+                    class="mq-badge mq-badge--mono row-badge"
+                    title="Datagram group"
+                    >DG</span
                   >
+                  <template v-else>
+                    <span
+                      v-if="stream.bidi !== undefined"
+                      class="stream-kind"
+                      :title="kindTitle(stream)"
+                      >{{ kindGlyph(stream) }}</span
+                    >{{ stream.streamId }}
+                  </template>
+                </span>
+                <span
+                  v-if="!compact"
+                  class="col-dir dir"
+                  :class="stream.direction === 'tx' ? 'dir-c2s' : 'dir-s2c'"
+                  :title="
+                    stream.direction === 'tx'
+                      ? 'client to server'
+                      : 'server to client'
+                  "
+                >
+                  {{ stream.direction === 'tx' ? '→' : '←' }}
+                </span>
+                <span v-if="!compact" class="col-type">
+                  <span
+                    v-if="contentLabel(stream)"
+                    class="mq-badge mq-badge--mono row-badge"
+                    :title="contentTitle(stream)"
+                    >{{ contentLabel(stream) }}</span
+                  >
+                </span>
+                <span
+                  class="col-track"
+                  :title="
+                    controlLabel(stream)
+                      ? stream.controlRole === 'request'
+                        ? 'Request stream — one request and its responses'
+                        : 'MoQT control stream'
+                      : resolveTrack(stream)?.fullName
+                  "
+                >
+                  <span v-if="controlLabel(stream)" class="track-control">{{
+                    controlLabel(stream)
+                  }}</span>
+                  <span v-else-if="resolveTrack(stream)" class="track-name">
+                    {{ resolveTrack(stream)!.fullName }}
+                    <span v-if="stream.datagramGroupKey" class="group-tag"
+                      >g:{{ stream.groupId }}</span
+                    >
+                    <span
+                      v-else-if="stream.fetchRequestId != null"
+                      class="group-tag"
+                      >fetch</span
+                    >
+                  </span>
+                  <span v-else-if="stream.trackAlias != null" class="track-alias">
+                    alias:{{ stream.trackAlias }}
+                    <span v-if="stream.datagramGroupKey" class="group-tag"
+                      >g:{{ stream.groupId }}</span
+                    >
+                  </span>
                   <span
                     v-else-if="stream.fetchRequestId != null"
-                    class="group-tag"
-                    >fetch</span
+                    class="track-alias"
                   >
+                    fetch:{{ stream.fetchRequestId }}
+                  </span>
+                  <span v-else class="track-alias">#{{ stream.streamId }}</span>
                 </span>
-                <span
-                  v-else-if="stream.trackAlias != null"
-                  class="track-alias mono"
-                >
-                  alias:{{ stream.trackAlias }}
-                  <span v-if="stream.datagramGroupKey" class="group-tag"
-                    >g:{{ stream.groupId }}</span
-                  >
+                <span v-if="!compact" class="col-status">
+                  <template v-if="stream.datagramGroupKey">{{
+                    plural(stream.datagramCount ?? 0, 'datagram')
+                  }}</template>
+                  <template v-else>{{ stream.closed ? 'closed' : 'open' }}</template>
                 </span>
-                <span
-                  v-else-if="stream.fetchRequestId != null"
-                  class="track-alias mono"
-                >
-                  fetch:{{ stream.fetchRequestId }}
-                </span>
-                <span v-else class="track-alias mono"
-                  >#{{ stream.streamId }}</span
-                >
-              </span>
-              <span v-if="!compact" class="col-status">
-                <span
-                  v-if="stream.datagramGroupKey"
-                  class="badge badge-dg"
-                  :title="`${stream.datagramCount} datagrams`"
-                >
-                  {{ stream.datagramCount }} dg
-                </span>
-                <span
-                  v-else
-                  class="badge"
-                  :class="stream.closed ? 'badge-closed' : 'badge-open'"
-                >
-                  {{ stream.closed ? 'closed' : 'open' }}
-                </span>
-              </span>
-              <span v-if="!compact" class="col-bytes mono">{{
-                formatBytes(stream.byteCount)
-              }}</span>
-            </div>
-          </div>
+                <span v-if="!compact" class="col-bytes">{{
+                  formatBytes(stream.byteCount)
+                }}</span>
+              </button>
+            </li>
+          </ul>
         </div>
       </template>
     </div>
 
     <div v-if="streams.length > 0" class="stream-footer">
-      <template v-if="isFiltered">
-        <span class="footer-value">{{ streamCount(filteredStreams) }}</span>
-        <span class="footer-transfer">{{
-          transferSummary(filteredStreams)
+      <span class="footer-value">{{
+        plural(isFiltered ? filteredStreams.length : streams.length, 'stream')
+      }}</span>
+      <span
+        v-for="part in transferParts(isFiltered ? filteredStreams : streams)"
+        :key="part.dir"
+        class="footer-transfer"
+        :title="part.dir === 'tx' ? 'client to server' : 'server to client'"
+        ><span class="dir" :class="part.dir === 'tx' ? 'dir-c2s' : 'dir-s2c'">{{
+          part.dir === 'tx' ? '→' : '←'
         }}</span>
-      </template>
-      <template v-else>
-        <span class="footer-value">{{ streamCount(streams) }}</span>
-        <span class="footer-transfer">{{ transferSummary(streams) }}</span>
-      </template>
+        {{ part.bytes }}</span
+      >
     </div>
   </div>
 </template>
@@ -484,48 +453,18 @@ function transferSummary(list: StreamEntry[]): string {
   min-width: 280px;
   flex: 1;
   height: 100%;
-}
-
-.stream-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px 2px 4px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.toolbar-btn {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 3px;
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-.toolbar-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.clear-btn {
-  padding: 4px;
+  background: var(--surface);
 }
 
 .record-dot {
   width: 10px;
   height: 10px;
-  border-radius: 50%;
-  background: var(--text-secondary);
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--ink-muted);
 }
 .record-btn.recording .record-dot {
-  background: #e06c75;
-}
-.record-btn.recording:hover .record-dot {
-  background: #c75050;
+  background: var(--danger);
+  border-color: var(--danger);
 }
 
 .filter-field {
@@ -534,55 +473,30 @@ function transferSummary(list: StreamEntry[]): string {
   align-items: center;
   flex: 1;
   min-width: 0;
+  margin-left: var(--space-1);
 }
 
 .filter-input {
-  width: 100%;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  color: var(--text-primary);
-  font-size: 11px;
-  padding: 3px 6px;
-  padding-right: 22px;
-  outline: none;
-  box-sizing: border-box;
+  padding-right: var(--control-tool);
 }
-.filter-input:focus {
-  border-color: var(--text-accent);
-}
-.filter-input::placeholder {
-  color: var(--text-secondary);
+.filter-input::-webkit-search-cancel-button {
+  display: none;
 }
 
 .filter-clear {
   position: absolute;
-  right: 2px;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 3px;
-  display: flex;
-  align-items: center;
-  line-height: 1;
-}
-.filter-clear:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+  right: 0;
 }
 
 .stream-header-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-weight: 600;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font: 500 12px/16px var(--font-sans);
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-sunken);
   flex-shrink: 0;
 }
 
@@ -598,45 +512,51 @@ function transferSummary(list: StreamEntry[]): string {
 
 .virtual-window {
   will-change: transform;
+  list-style: none;
+  padding: 0;
 }
 
+/* One MessageLog-style row: 22px, data type. */
 .stream-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  font-size: 11px;
-  height: 24px;
-  box-sizing: border-box;
+  gap: var(--space-1);
+  width: 100%;
+  height: var(--row-tool);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font: 400 12px/18px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: left;
   cursor: pointer;
-  border-bottom: 1px solid var(--border);
 }
 .stream-row:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
 }
-.stream-row.selected {
-  background: var(--bg-selected);
-  color: var(--text-primary);
+.stream-row[aria-current='true'] {
+  background: var(--surface-selected);
 }
 
 .col-id {
-  width: 44px;
+  width: 52px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
-
 .stream-kind {
-  color: var(--text-secondary);
+  color: var(--ink-muted);
   margin-right: 3px;
-  cursor: default;
 }
 .col-dir {
-  width: 30px;
+  width: 28px;
+  flex-shrink: 0;
   text-align: center;
-  font-weight: 600;
-  font-size: 10px;
 }
 .col-type {
-  width: 56px;
-  text-align: center;
+  width: 64px;
+  flex-shrink: 0;
 }
 .col-track {
   flex: 1;
@@ -646,87 +566,33 @@ function transferSummary(list: StreamEntry[]): string {
   white-space: nowrap;
 }
 .col-status {
-  width: 50px;
+  width: 84px;
+  flex-shrink: 0;
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  white-space: nowrap;
 }
 .col-bytes {
-  width: 70px;
+  width: 76px;
+  flex-shrink: 0;
   text-align: right;
+  white-space: nowrap;
 }
 
-.content-badge {
-  display: inline-block;
-  font-size: 9px;
-  font-weight: 600;
+.row-badge {
+  height: 16px;
   padding: 0 4px;
-  border-radius: 3px;
-  line-height: 1.5;
-  letter-spacing: 0.3px;
-}
-.content-json {
-  background: var(--content-json-bg);
-  color: var(--content-json-color);
-}
-.content-fmp4 {
-  background: var(--content-fmp4-bg);
-  color: var(--content-fmp4-color);
-  cursor: default;
-}
-.content-cbor {
-  background: var(--content-cbor-bg);
-  color: var(--content-cbor-color);
-}
-.content-codec {
-  background: var(--content-codec-bg);
-  color: var(--content-codec-color);
-  cursor: default;
-}
-.content-msgpack {
-  background: var(--content-msgpack-bg);
-  color: var(--content-msgpack-color);
-}
-
-.dg-badge {
-  display: inline-block;
-  font-size: 8px;
-  font-weight: 700;
-  padding: 0 3px;
-  border-radius: 2px;
-  background: var(--content-cbor-bg, #3d3d50);
-  color: var(--content-cbor-color, #c0a0ff);
-  letter-spacing: 0.3px;
-  line-height: 1.5;
-}
-
-.group-tag {
-  font-size: 9px;
-  color: var(--text-secondary);
-  margin-left: 3px;
-}
-
-.badge-dg {
-  background: var(--content-cbor-bg, #3d3d50);
-  color: var(--content-cbor-color, #c0a0ff);
 }
 
 .track-control {
-  font-size: 10px;
-  color: var(--text-accent);
-  font-weight: 600;
+  font-weight: 500;
 }
-.track-tag {
-  font-size: 10px;
-  color: var(--text-warning);
+.track-alias,
+.group-tag {
+  color: var(--ink-muted);
 }
-.track-alias {
-  font-size: 10px;
-  color: var(--text-secondary);
-}
-
-.empty-state {
-  padding: 20px;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 12px;
+.group-tag {
+  margin-left: 3px;
 }
 
 /* ── Footer ───────────────────────────────────────────────────── */
@@ -734,40 +600,18 @@ function transferSummary(list: StreamEntry[]): string {
 .stream-footer {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-  border-top: 1px solid var(--border);
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
   flex-shrink: 0;
   white-space: nowrap;
   overflow: hidden;
-}
-
-.footer-label {
-  color: var(--text-secondary);
-}
-
-.footer-value {
-  color: var(--text-primary);
-  font-weight: 500;
-  font-feature-settings: 'tnum';
   font-variant-numeric: tabular-nums;
 }
 
 .footer-transfer {
-  color: var(--text-primary);
-}
-
-.footer-muted {
-  color: var(--text-secondary);
-}
-
-.footer-divider {
-  width: 1px;
-  height: 10px;
-  background: var(--border);
-  margin: 0 3px;
+  font-family: var(--font-mono);
 }
 </style>

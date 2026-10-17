@@ -65,6 +65,15 @@ import {
   getDatagramGroups,
   loadDatagramGroupData,
 } from '@/src/storage/datagram-store'
+import { startAccount } from '@/src/account/browser-account'
+import {
+  acceptAutoExclusion,
+  bareOrigin,
+  EXCLUSIONS_KEY,
+  type ExclusionSender,
+  readExclusions,
+  withExclusion,
+} from '@/src/storage/worker-exclusions'
 import { createExtensionRecorder } from '@/src/trace/index'
 import type { SupportedDraft } from '@/src/types/common'
 import type { TraceRecorder } from '@moqtap/trace'
@@ -867,6 +876,7 @@ function handleContentMessage(
   message: ContentToBackgroundMsg,
   tabId: number,
   frameId: number,
+  sender: ExclusionSender | undefined,
 ) {
   // bridge:ready is handled by the port connection itself; this guard keeps it
   // out of the switch below.
@@ -1430,11 +1440,15 @@ function handleContentMessage(
     }
 
     case 'worker:csp-recovered': {
-      // Persist auto-exclusion to global storage
-      persistExclusion(message.origin, 'auto', message.error)
+      // The page can post this message itself, so nothing in it is trusted:
+      // only the sending frame's own origin, as the browser reports it, is
+      // ever written.
+      const accepted = acceptAutoExclusion(message, sender)
+      if (accepted === null) break
+      persistExclusion(accepted.origin, 'auto', accepted.error)
       sendToPanel(tabId, {
         type: 'panel:worker-csp-warning',
-        workerUrl: message.workerUrl || message.origin,
+        workerUrl: accepted.origin,
       })
       break
     }
@@ -1443,12 +1457,10 @@ function handleContentMessage(
 
 // ─── Worker origin exclusion list (browser.storage.local) ────────────
 
-const EXCLUSIONS_KEY = 'moqtap-worker-exclusions'
-
 async function loadExclusions(): Promise<Record<string, ExclusionEntry>> {
   try {
     const result = await browser.storage.local.get(EXCLUSIONS_KEY)
-    return (result[EXCLUSIONS_KEY] as Record<string, ExclusionEntry>) ?? {}
+    return readExclusions(result[EXCLUSIONS_KEY])
   } catch {
     return {}
   }
@@ -1469,9 +1481,12 @@ async function persistExclusion(
   source: 'auto' | 'manual',
   error?: string,
 ): Promise<void> {
+  const bare = bareOrigin(origin)
+  if (bare === null) return
   const exclusions = await loadExclusions()
-  exclusions[origin] = { blockedAt: Date.now(), source, error }
-  await saveExclusions(exclusions)
+  await saveExclusions(
+    withExclusion(exclusions, bare, { blockedAt: Date.now(), source, error }),
+  )
 }
 
 async function removeExclusion(origin: string): Promise<void> {
@@ -1540,11 +1555,21 @@ export default defineBackground(() => {
   setAdditionalEvictionFn(evictStaleDatagramPages)
   startEvictionTimer()
 
+  // Sign-in, tokens and the panel's account port (src/account). Registered
+  // synchronously with the other listeners, so the bridge's sign-in callback
+  // can wake a stopped worker.
+  startAccount()
+
   // Handle long-lived connections from bridge content scripts and DevTools panels
   browser.runtime.onConnect.addListener((port) => {
     // ── Bridge port (content script ISOLATED world → background) ─────
     if (port.name === 'moqtap-bridge') {
-      const sender = port.sender as { tab?: { id?: number }; frameId?: number }
+      const sender = port.sender as {
+        tab?: { id?: number }
+        frameId?: number
+        url?: string
+        origin?: string
+      }
       const tabId = sender?.tab?.id
       if (!tabId) return
       const frameId = sender?.frameId ?? 0
@@ -1561,7 +1586,7 @@ export default defineBackground(() => {
       handleBridgeReady(tabId, frameId)
 
       port.onMessage.addListener((message: ContentToBackgroundMsg) => {
-        handleContentMessage(message, tabId, frameId)
+        handleContentMessage(message, tabId, frameId, sender)
       })
 
       port.onDisconnect.addListener(() => {

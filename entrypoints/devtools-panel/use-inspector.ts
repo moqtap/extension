@@ -1088,6 +1088,13 @@ export function useInspector() {
     port.postMessage({ type: 'panel:clear-streams', tabId, sessionId })
   }
 
+  /** The session as a `.moqtrace` Trace, for export or sharing. */
+  async function buildSessionTrace(sessionId: string) {
+    const session = sessions.value.get(sessionId)
+    if (!session || session.protocol !== 'moqt') return null
+    return buildTrace(session, getStreamData, getDatagramGroupData)
+  }
+
   async function exportTrace(sessionId: string) {
     const session = sessions.value.get(sessionId)
     if (!session || session.protocol !== 'moqt') return
@@ -1410,6 +1417,7 @@ export function useInspector() {
     getStreamData,
     getDatagramGroupData,
     exportTrace,
+    buildSessionTrace,
     importTrace,
     setStreamRecording,
     clearStreams,

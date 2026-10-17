@@ -1,19 +1,17 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  formatBitrate,
+  formatBytes,
+  formatDuration,
+  formatOffset,
+  isoTitle,
+  plural,
+} from '../format'
 import type { DirectionFilter } from '../prefs'
 import { getCachedPref, loadPrefs, savePref } from '../prefs'
+import { trackColourClass } from '../track-colour'
 import type { SessionEntry, TrackEntry } from '../use-inspector'
-
-const TRACK_COLORS = [
-  '#e06c75',
-  '#61afef',
-  '#98c379',
-  '#d19a66',
-  '#c678dd',
-  '#56b6c2',
-  '#e5c07b',
-  '#be5046',
-]
 
 const DECAY_WINDOW_MS = 5_000
 
@@ -223,18 +221,14 @@ function toggleGroup(ns: string) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
-function trackColor(track: TrackEntry): string {
-  return TRACK_COLORS[track.colorIndex % TRACK_COLORS.length]
-}
-
 function statusIcon(status: string): string {
   switch (status) {
     case 'pending':
-      return '⏳'
+      return '◌'
     case 'active':
       return '●'
     case 'error':
-      return '✖'
+      return '✕'
     case 'done':
       return '○'
     default:
@@ -242,33 +236,17 @@ function statusIcon(status: string): string {
   }
 }
 
-function formatTime(ts: number | undefined): string {
-  if (ts == null) return '—'
-  return new Date(ts).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    fractionalSecondDigits: 3,
-  } as Intl.DateTimeFormatOptions)
+/** Data-pane times count from the session start. */
+function relTime(ts: number | undefined): string {
+  return ts == null ? '—' : formatOffset(ts, props.session.createdAt)
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+function absTitle(ts: number | undefined): string | undefined {
+  return ts == null ? undefined : isoTitle(ts)
 }
 
-function formatBitrate(bps: number): string {
-  if (bps <= 0) return '—'
-  if (bps < 1_000) return `${bps.toFixed(0)} bps`
-  if (bps < 1_000_000) return `${(bps / 1_000).toFixed(1)} Kbps`
-  return `${(bps / 1_000_000).toFixed(1)} Mbps`
-}
-
-function formatDuration(
-  track: TrackEntry,
-  stats: TrackStats | undefined,
-): string {
+/** How long the track has carried data, or did until it ended. */
+function activeFor(track: TrackEntry, stats: TrackStats | undefined): string {
   const start = stats?.firstDataAt ?? track.subscribedAt
   if (start == null) return '—'
   const end =
@@ -278,18 +256,18 @@ function formatDuration(
         stats?.lastDataAt ??
         start)
       : Date.now()
-  const sec = Math.max(0, (end - start) / 1000)
-  if (sec < 60) return `${sec.toFixed(1)}s`
-  const min = Math.floor(sec / 60)
-  const remSec = Math.floor(sec % 60)
-  return `${min}m ${remSec}s`
+  return formatDuration(end - start)
 }
 
 function formatLatency(track: TrackEntry): string {
   if (track.subscribedAt == null || track.subscribeOkAt == null) return '—'
-  const ms = track.subscribeOkAt - track.subscribedAt
-  return `${ms}ms`
+  return formatDuration(track.subscribeOkAt - track.subscribedAt)
 }
+
+/** Rows as namespace groups, or as one unnamed group when not grouping. */
+const visibleGroups = computed((): NsGroup[] =>
+  groupByNs.value ? groups.value : [{ ns: '', rows: trackRows.value }],
+)
 
 const headerCount = computed(() => {
   const shown = filteredTracks.value.length
@@ -300,193 +278,140 @@ const headerCount = computed(() => {
 
 <template>
   <div class="tracks-tab">
-    <!-- Toolbar -->
-    <div class="tracks-toolbar">
-      <span class="toolbar-title">Tracks ({{ headerCount }})</span>
+    <div class="filter-bar tracks-toolbar">
+      <h2 class="toolbar-title">
+        Tracks <span class="mq-tab__count">{{ headerCount }}</span>
+      </h2>
       <button
-        class="toolbar-btn"
-        :class="{ 'toolbar-active': activeOnly }"
+        class="mq-btn mq-btn--quiet"
+        :aria-pressed="activeOnly"
         title="Show only active and pending tracks"
         @click="activeOnly = !activeOnly"
       >
         Active only
       </button>
       <button
-        class="toolbar-btn"
-        :class="{ 'toolbar-active': groupByNs }"
+        class="mq-btn mq-btn--quiet"
+        :aria-pressed="groupByNs"
         title="Group tracks by namespace"
         @click="groupByNs = !groupByNs"
       >
-        Group by NS
+        Group by namespace
       </button>
-      <span class="toolbar-sep" />
+      <span class="bar-sep" aria-hidden="true" />
       <button
-        class="toolbar-btn toolbar-dir"
-        :class="{ 'toolbar-active': directionFilter === 'tx' }"
-        title="Show only outgoing subscriptions"
+        class="mq-btn mq-btn--quiet"
+        :aria-pressed="directionFilter === 'tx'"
+        title="Show only subscriptions this page sent"
         @click="toggleDirection('tx')"
       >
-        &#x2191; TX
+        <span class="dir dir-c2s" aria-hidden="true">→</span> Outgoing
       </button>
       <button
-        class="toolbar-btn toolbar-dir"
-        :class="{ 'toolbar-active': directionFilter === 'rx' }"
-        title="Show only incoming subscriptions"
+        class="mq-btn mq-btn--quiet"
+        :aria-pressed="directionFilter === 'rx'"
+        title="Show only subscriptions this page received"
         @click="toggleDirection('rx')"
       >
-        &#x2193; RX
+        <span class="dir dir-s2c" aria-hidden="true">←</span> Incoming
       </button>
     </div>
 
-    <div v-if="filteredTracks.length === 0" class="empty-hint">
+    <p v-if="filteredTracks.length === 0" class="pane-message">
       {{
         allTracks.length === 0
-          ? 'No track subscriptions yet'
-          : 'No tracks match current filters'
+          ? 'No track subscriptions yet.'
+          : 'No tracks match these filters.'
       }}
-    </div>
+    </p>
 
-    <!-- Table -->
     <div v-else class="tracks-table-wrap">
-      <table class="tracks-table">
+      <table class="mq-table tracks-table">
         <thead>
           <tr>
-            <th class="col-color"></th>
-            <th class="col-dir">Dir</th>
-            <th class="col-status">Status</th>
+            <th class="col-color"><span class="mq-sr">Colour</span></th>
+            <th class="col-dir"><span class="mq-sr">Direction</span></th>
+            <th class="col-status"><span class="mq-sr">Status</span></th>
             <th class="col-name">Track</th>
-            <th class="col-time">Sub Sent</th>
-            <th class="col-time">Sub OK</th>
-            <th class="col-latency">Latency</th>
-            <th class="col-time">First Byte</th>
-            <th class="col-bytes">Total</th>
-            <th class="col-bitrate">Bitrate</th>
-            <th class="col-duration">Active</th>
+            <th class="mq-r" title="SUBSCRIBE sent, from session start">Subscribed</th>
+            <th class="mq-r" title="SUBSCRIBE_OK received, from session start">OK</th>
+            <th class="mq-r">Latency</th>
+            <th class="mq-r" title="First object byte, from session start">First byte</th>
+            <th class="mq-r">Total</th>
+            <th class="mq-r">Bitrate</th>
+            <th class="mq-r">Active</th>
             <th class="col-error">Error</th>
           </tr>
         </thead>
         <tbody>
-          <!-- Grouped view -->
-          <template v-if="groupByNs">
-            <template v-for="g in groups" :key="g.ns">
-              <tr class="ns-group-row" @click="toggleGroup(g.ns)">
-                <td :colspan="12">
-                  <span class="ns-chevron">{{
-                    collapsedGroups.has(g.ns) ? '▶' : '▼'
-                  }}</span>
-                  <span class="ns-name mono">{{ g.ns }}</span>
-                  <span class="ns-count">({{ g.rows.length }})</span>
-                </td>
-              </tr>
-              <template v-if="!collapsedGroups.has(g.ns)">
-                <tr
-                  v-for="row in g.rows"
-                  :key="row.track.subscribeId"
-                  class="track-row"
+          <template v-for="g in visibleGroups" :key="g.ns">
+            <tr v-if="groupByNs" class="ns-group-row">
+              <td colspan="12">
+                <button
+                  class="ns-toggle"
+                  :aria-expanded="!collapsedGroups.has(g.ns)"
+                  @click="toggleGroup(g.ns)"
                 >
-                  <td class="col-color">
-                    <span
-                      class="color-dot"
-                      :style="{ background: trackColor(row.track) }"
-                    />
-                  </td>
-                  <td
-                    class="col-dir"
-                    :class="
-                      row.track.direction === 'tx'
-                        ? 'direction-tx'
-                        : 'direction-rx'
-                    "
-                  >
-                    {{ row.track.direction === 'tx' ? '↑' : '↓' }}
-                  </td>
-                  <td class="col-status" :class="`status-${row.track.status}`">
-                    {{ statusIcon(row.track.status) }}
-                  </td>
-                  <td class="col-name mono" :title="row.track.fullName">
-                    {{ row.track.trackName }}
-                  </td>
-                  <td class="col-time mono">
-                    {{ formatTime(row.track.subscribedAt) }}
-                  </td>
-                  <td class="col-time mono">
-                    {{ formatTime(row.track.subscribeOkAt) }}
-                  </td>
-                  <td class="col-latency mono">
-                    {{ formatLatency(row.track) }}
-                  </td>
-                  <td class="col-time mono">
-                    {{ formatTime(row.stats?.firstDataAt) }}
-                  </td>
-                  <td class="col-bytes mono">
-                    {{ row.stats ? formatBytes(row.stats.totalBytes) : '—' }}
-                  </td>
-                  <td class="col-bitrate mono">
-                    {{ formatBitrate(row.bitrate) }}
-                  </td>
-                  <td class="col-duration mono">
-                    {{ formatDuration(row.track, row.stats) }}
-                  </td>
-                  <td class="col-error" :title="row.track.errorReason ?? ''">
-                    {{ row.track.errorReason ?? '' }}
-                  </td>
-                </tr>
-              </template>
-            </template>
-          </template>
-
-          <!-- Flat view -->
-          <template v-else>
-            <tr
-              v-for="row in trackRows"
-              :key="row.track.subscribeId"
-              class="track-row"
-            >
-              <td class="col-color">
-                <span
-                  class="color-dot"
-                  :style="{ background: trackColor(row.track) }"
-                />
-              </td>
-              <td
-                class="col-dir"
-                :class="
-                  row.track.direction === 'tx' ? 'direction-tx' : 'direction-rx'
-                "
-              >
-                {{ row.track.direction === 'tx' ? '↑' : '↓' }}
-              </td>
-              <td class="col-status" :class="`status-${row.track.status}`">
-                {{ statusIcon(row.track.status) }}
-              </td>
-              <td class="col-name mono" :title="row.track.fullName">
-                <span
-                  v-if="row.track.trackNamespace.length > 0"
-                  class="track-ns"
-                  >{{ row.track.trackNamespace.join('/') }}/</span
-                >{{ row.track.trackName }}
-              </td>
-              <td class="col-time mono">
-                {{ formatTime(row.track.subscribedAt) }}
-              </td>
-              <td class="col-time mono">
-                {{ formatTime(row.track.subscribeOkAt) }}
-              </td>
-              <td class="col-latency mono">{{ formatLatency(row.track) }}</td>
-              <td class="col-time mono">
-                {{ formatTime(row.stats?.firstDataAt) }}
-              </td>
-              <td class="col-bytes mono">
-                {{ row.stats ? formatBytes(row.stats.totalBytes) : '—' }}
-              </td>
-              <td class="col-bitrate mono">{{ formatBitrate(row.bitrate) }}</td>
-              <td class="col-duration mono">
-                {{ formatDuration(row.track, row.stats) }}
-              </td>
-              <td class="col-error" :title="row.track.errorReason ?? ''">
-                {{ row.track.errorReason ?? '' }}
+                  <span class="ns-chevron" aria-hidden="true">{{
+                    collapsedGroups.has(g.ns) ? '▸' : '▾'
+                  }}</span>
+                  <span class="ns-name">{{ g.ns }}</span>
+                  <span class="ns-count">{{ plural(g.rows.length, 'track') }}</span>
+                </button>
               </td>
             </tr>
+            <template v-if="!groupByNs || !collapsedGroups.has(g.ns)">
+              <tr v-for="row in g.rows" :key="row.track.subscribeId">
+                <td class="col-color">
+                  <span :class="trackColourClass(row.track.colorIndex)" />
+                </td>
+                <td
+                  class="col-dir dir"
+                  :class="row.track.direction === 'tx' ? 'dir-c2s' : 'dir-s2c'"
+                  :title="row.track.direction === 'tx' ? 'outgoing' : 'incoming'"
+                >
+                  {{ row.track.direction === 'tx' ? '→' : '←' }}
+                </td>
+                <td
+                  class="col-status"
+                  :class="`status-${row.track.status}`"
+                  :title="row.track.status"
+                >
+                  {{ statusIcon(row.track.status) }}
+                </td>
+                <td class="col-name mono" :title="row.track.fullName">
+                  <span
+                    v-if="!groupByNs && row.track.trackNamespace.length > 0"
+                    class="track-ns"
+                    >{{ row.track.trackNamespace.join('/') }}/</span
+                  >{{ row.track.trackName }}
+                </td>
+                <td class="mono mq-r" :title="absTitle(row.track.subscribedAt)">
+                  {{ relTime(row.track.subscribedAt) }}
+                </td>
+                <td class="mono mq-r" :title="absTitle(row.track.subscribeOkAt)">
+                  {{ relTime(row.track.subscribeOkAt) }}
+                </td>
+                <td class="mono mq-r">{{ formatLatency(row.track) }}</td>
+                <td class="mono mq-r" :title="absTitle(row.stats?.firstDataAt)">
+                  {{ relTime(row.stats?.firstDataAt) }}
+                </td>
+                <td class="mono mq-r">
+                  {{ row.stats ? formatBytes(row.stats.totalBytes) : '—' }}
+                </td>
+                <td class="mono mq-r">
+                  {{ row.bitrate > 0 ? formatBitrate(row.bitrate) : '—' }}
+                </td>
+                <td class="mono mq-r">
+                  {{ activeFor(row.track, row.stats) }}
+                </td>
+                <td class="col-error" :title="row.track.errorReason ?? ''">
+                  <template v-if="row.track.errorReason"
+                    >✕ {{ row.track.errorReason }}</template
+                  >
+                </td>
+              </tr>
+            </template>
           </template>
         </tbody>
       </table>
@@ -502,215 +427,86 @@ const headerCount = computed(() => {
   overflow: hidden;
 }
 
-/* ── Toolbar ──────────────────────────────────────────────────── */
-
-.tracks-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
 .toolbar-title {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  font: 500 12px/16px var(--font-sans);
+  color: var(--ink-muted);
   margin-right: auto;
 }
-
-.toolbar-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  color: var(--text-secondary);
-  padding: 1px 7px;
-  cursor: pointer;
-  font-size: 10px;
-  font-family: inherit;
-  white-space: nowrap;
-  line-height: 16px;
-}
-.toolbar-btn:hover {
-  background: var(--bg-selected);
-  color: var(--text-accent);
-  border-color: var(--border);
-}
-.toolbar-active {
-  background: var(--bg-selected);
-  color: var(--text-accent);
-  border-color: var(--text-accent);
-}
-.toolbar-btn.toolbar-active:hover {
-  background: var(--bg-hover);
-  color: var(--text-accent);
-  border-color: var(--text-accent);
-}
-
-.toolbar-sep {
-  width: 1px;
-  height: 14px;
-  background: var(--border);
-  margin: 0 2px;
-}
-
-.empty-hint {
-  padding: 16px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-style: italic;
-  text-align: center;
-}
-
-/* ── Table ───────────────────────────────────────────────────── */
 
 .tracks-table-wrap {
   flex: 1;
   overflow: auto;
+  background: var(--surface);
 }
 
 .tracks-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-  table-layout: auto;
+  font-size: 12px;
 }
-
 .tracks-table thead {
   position: sticky;
   top: 0;
   z-index: 2;
 }
-
-.tracks-table th {
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
-  padding: 3px 8px;
-  text-align: left;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  white-space: nowrap;
-  user-select: none;
-}
-
+.tracks-table th,
 .tracks-table td {
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--border);
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
   white-space: nowrap;
+}
+.tracks-table th {
+  padding-top: var(--space-1);
+  padding-bottom: var(--space-1);
+}
+.tracks-table td {
+  max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.track-row:hover {
-  background: var(--bg-hover);
+.mono {
+  font-family: var(--font-mono);
 }
 
-/* ── Column sizing ────────────────────────────────────────────── */
-
-.col-color {
-  width: 16px;
-  text-align: center;
-}
-.col-dir {
-  width: 24px;
-  text-align: center;
-  font-weight: bold;
-}
+.col-color,
+.col-dir,
 .col-status {
-  width: 24px;
+  width: 20px;
   text-align: center;
-}
-.col-name {
-  max-width: 200px;
-}
-.col-time {
-  width: 90px;
-}
-.col-latency {
-  width: 60px;
-}
-.col-bytes {
-  width: 70px;
-  text-align: right;
-}
-.col-bitrate {
-  width: 80px;
-  text-align: right;
-}
-.col-duration {
-  width: 65px;
-  text-align: right;
 }
 .col-error {
-  max-width: 120px;
-  color: var(--text-error);
-  font-size: 10px;
+  color: var(--danger);
 }
-
-.color-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
 .track-ns {
-  color: var(--text-secondary);
+  color: var(--ink-muted);
 }
 
-/* ── Status colors ────────────────────────────────────────────── */
-
-.status-active {
-  color: var(--text-success);
-}
-.status-pending {
-  color: var(--text-secondary);
-}
-.status-error {
-  color: var(--text-error);
-}
-.status-done {
-  color: var(--text-secondary);
-}
-
-/* ── Namespace group rows ─────────────────────────────────────── */
-
-.ns-group-row {
-  cursor: pointer;
-  user-select: none;
-}
 .ns-group-row td {
-  background: var(--bg-secondary, var(--bg-tertiary));
-  padding: 3px 10px;
-  font-size: 11px;
+  padding: 0;
+  background: var(--surface-sunken);
 }
-.ns-group-row:hover td {
-  background: var(--bg-hover);
+.ns-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: var(--row-tool);
+  padding: 0 var(--space-2);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
-
+.ns-toggle:hover {
+  background: var(--surface-hover);
+}
 .ns-chevron {
-  font-size: 8px;
   width: 10px;
-  display: inline-block;
-  color: var(--text-secondary);
+  color: var(--ink-muted);
 }
-
 .ns-name {
-  color: var(--text-primary);
-  font-weight: 500;
-  margin-left: 4px;
+  font: 500 12px/18px var(--font-mono);
 }
-
 .ns-count {
-  color: var(--text-secondary);
-  font-size: 10px;
-  margin-left: 4px;
+  color: var(--ink-muted);
 }
 </style>

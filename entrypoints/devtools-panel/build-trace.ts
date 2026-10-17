@@ -14,9 +14,10 @@
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
-import type { DetailLevel, Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
+import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
 import { arrivalAt } from '@/src/trace/arrivals'
+import { fitDetail } from '@/src/trace/detail'
 import {
   DECODE_ERROR_CODE,
   decodeErrorReason,
@@ -114,6 +115,21 @@ export async function buildTrace(
     })
   }
 
+  // The control stream and each draft-17+ request stream carry SETUP,
+  // SUBSCRIBE and the rest in clear, Authorization Tokens included, and their
+  // messages are already the control events above. Their bytes are not
+  // objects, so they are never written as object events: a reader that keeps
+  // payloads but drops tokens would otherwise ship every token. The panel's
+  // marker covers the streams the background identified; a message's own
+  // stream id covers a request stream it did not.
+  const controlStreams = new Set<number>()
+  for (const stream of session.streams.values()) {
+    if (stream.isControl) controlStreams.add(stream.streamId)
+  }
+  for (const msg of session.messages) {
+    if (msg.streamId != null) controlStreams.add(Number(msg.streamId))
+  }
+
   // Streams — open events, payload data, close events
   for (const stream of session.streams.values()) {
     // Nothing records when a stream opened, so the first chunk's arrival is
@@ -136,7 +152,7 @@ export async function buildTrace(
     })
 
     // Load stream data via callback (background serves from memory + IDB)
-    if (stream.byteCount > 0) {
+    if (stream.byteCount > 0 && !controlStreams.has(stream.streamId)) {
       try {
         const data = await getStreamData(session.sessionId, stream.streamId)
         if (data) {
@@ -270,7 +286,9 @@ export async function buildTrace(
                 seq: 0,
                 timestamp: 0,
                 streamId: 0n,
-                groupId: BigInt(dg.groupId),
+                // The same group as the header above: a reader pairs a payload
+                // with its header by stream, group and object.
+                groupId: BigInt(obj.groupId ?? dg.groupId),
                 objectId: BigInt(obj.objectId),
                 size: payload.length,
                 payload: toBytes(payload),
@@ -288,7 +306,7 @@ export async function buildTrace(
   // precedes the payload it shares a timestamp with, as the format requires.
   pending.sort((a, b) => a.at - b.at)
 
-  const events: TraceEvent[] = pending.map(
+  const numbered: TraceEvent[] = pending.map(
     ({ at, event }, seq) =>
       ({
         ...event,
@@ -297,21 +315,12 @@ export async function buildTrace(
       }) as TraceEvent,
   )
 
-  // `detail` describes what this trace actually carries, so it is derived
-  // rather than declared. Payload capture can be off -- `streamRecording ===
-  // false` makes `getStreamData` return null -- and then no object-header and
-  // no object-payload event is built at all. A constant 'headers+data' claims
-  // bytes that are absent, and a reader trusting the header would conclude the
-  // session carried no objects rather than that they were not recorded.
-  const carriesPayload = events.some(
-    (e) => e.type === 'object-payload' && (e as { payload?: unknown }).payload !== undefined,
-  )
-  const carriesObjects = carriesPayload || events.some((e) => e.type === 'object-header')
-  const detail: DetailLevel = carriesPayload
-    ? 'headers+data'
-    : carriesObjects
-      ? 'headers'
-      : 'control'
+  // `detail` describes what this trace actually carries (src/trace/detail.ts).
+  // Payload capture can be off -- `streamRecording === false` makes
+  // `getStreamData` return null -- and then no object-header and no
+  // object-payload event is built at all, and the trace is `control`.
+  const { detail, events: kept } = fitDetail(numbered)
+  const events = kept.map((e, seq) => ({ ...e, seq }) as TraceEvent)
 
   const header: TraceHeader = {
     protocol: `moq-transport-${draft}`,

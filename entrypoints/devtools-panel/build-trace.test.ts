@@ -11,6 +11,7 @@
  * enable by default" is there to prevent.
  */
 
+import { writeMoqtrace } from '@moqtap/trace'
 import { describe, expect, it } from 'vitest'
 import { buildTrace } from './build-trace'
 import type { SessionEntry } from './use-inspector'
@@ -60,6 +61,8 @@ describe('the exported trace declares the capture level it actually has', () => 
 
     expect(trace.header.detail).toBe('control')
     expect(trace.events.some((e) => e.type === 'object-payload')).toBe(false)
+    // `control` admits no data stream events; the stream it knows of goes too.
+    expect(trace.events.some((e) => e.type === 'stream-opened')).toBe(false)
   })
 
   it('says "headers+data" when payloads are present', async () => {
@@ -93,5 +96,69 @@ describe('the exported trace declares the capture level it actually has', () => 
   it('says "control" for a session with only control messages', async () => {
     const trace = await buildTrace(session(), noData)
     expect(trace.header.detail).toBe('control')
+  })
+})
+
+describe('the exported trace never carries control-plane bytes as objects', () => {
+  const SECRET = 'SECRET-TOKEN-0123456789'
+  const enc = new TextEncoder()
+  const contains = (hay: Uint8Array, needle: string) => {
+    const n = enc.encode(needle)
+    outer: for (let i = 0; i + n.length <= hay.length; i++) {
+      for (let j = 0; j < n.length; j++) if (hay[i + j] !== n[j]) continue outer
+      return true
+    }
+    return false
+  }
+  /** A draft-14 subgroup stream with one object holding `payload`. */
+  const subgroup = (payload: string) => {
+    const p = enc.encode(payload)
+    return new Uint8Array([0x10, 0x01, 0x00, 0x00, 0x80, 0x00, p.length, ...p])
+  }
+  const stream = (streamId: number, byteCount: number, extra: Record<string, unknown> = {}) => ({
+    streamId,
+    byteCount,
+    closed: true,
+    direction: 'tx',
+    firstDataAt: 1010,
+    lastDataAt: 1020,
+    arrivals: [],
+    ...extra,
+  })
+
+  it('leaves out the control stream and a request stream, keeping their messages and a media stream', async () => {
+    // The control stream as captured: a CLIENT_SETUP whose token is in clear.
+    const setupBytes = enc.encode(`CLIENT_SETUP ${SECRET}`)
+    // A request stream the panel never marked, whose SUBSCRIBE happens to
+    // read as subgroup framing; only its message's stream id names it.
+    const requestBytes = subgroup(`SUBSCRIBE ${SECRET}`)
+    const mediaBytes = subgroup('media')
+    const data = new Map<number, Uint8Array>([
+      [0, setupBytes],
+      [4, requestBytes],
+      [6, mediaBytes],
+    ])
+    const trace = await buildTrace(
+      session({
+        messages: [
+          { messageType: 'client_setup', direction: 'tx', timestamp: 1005, decoded: {}, raw: new Uint8Array() },
+          { messageType: 'subscribe', direction: 'tx', timestamp: 1011, decoded: {}, raw: new Uint8Array(), streamId: 4 },
+        ],
+        streams: [
+          stream(0, setupBytes.length, { isControl: true, controlRole: 'control' }),
+          stream(4, requestBytes.length),
+          stream(6, mediaBytes.length),
+        ],
+      }),
+      async (_s, id) => data.get(id) ?? null,
+    )
+
+    const objectStreams = trace.events
+      .filter((e) => e.type === 'object-payload' || e.type === 'object-header')
+      .map((e) => (e as { streamId: bigint }).streamId)
+    expect(new Set(objectStreams)).toEqual(new Set([6n]))
+    expect(trace.events.filter((e) => e.type === 'control')).toHaveLength(2)
+    expect(contains(writeMoqtrace(trace), SECRET)).toBe(false)
+    expect(contains(writeMoqtrace(trace), 'media')).toBe(true)
   })
 })

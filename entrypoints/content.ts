@@ -113,14 +113,13 @@ export default defineContentScript({
   world: 'MAIN',
 
   main() {
-    // Listen for exclusion list from bridge (relayed from browser.storage.local).
+    // The bridge's verdict for this origin (from browser.storage.local).
     // This arrives async but merges into the set used by the fast-path check.
     // Workers created before it arrives still go through the Proxy safety net.
     window.addEventListener('message', (event) => {
       if (event.source !== window) return
-      if (event.data?.source === 'moqtap-exclusions') {
-        const origins = event.data.origins as string[]
-        for (const o of origins) excludedOrigins.add(o)
+      if (event.data?.source === 'moqtap-exclusions' && event.data.excluded === true) {
+        if (currentOrigin) excludedOrigins.add(currentOrigin)
       }
     })
 

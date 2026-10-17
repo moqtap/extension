@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { detectMediaInfo } from '@/src/detect/bmff-boxes'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { formatBytes, formatCount, plural } from '../format'
 import type { StreamObject } from '../stream-framing'
 
 const props = withDefaults(
@@ -63,12 +64,6 @@ const objectAnnotations = computed((): ObjectAnnotation[] => {
   })
 })
 
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
-
 const VARIANT_LABELS: Record<string, string> = {
   cmaf: 'CMAF',
   loc: 'LOC',
@@ -86,7 +81,7 @@ function formatBannerContent(ann: ObjectAnnotation): string {
         : ann.boxes.join(' + '),
     )
   }
-  parts.push(formatSize(ann.payloadSize))
+  parts.push(formatBytes(ann.payloadSize))
   return parts.join(' · ')
 }
 
@@ -312,7 +307,7 @@ const visibleEntries = computed<VisibleEntry[]>(() => {
       entries.push({
         type: 'banner',
         objectIdx: pos.objectIdx,
-        content: ann ? formatBannerContent(ann) : formatSize(obj.payloadLength),
+        content: ann ? formatBannerContent(ann) : formatBytes(obj.payloadLength),
         label: ann ? formatBannerLabel(ann) : `obj ${obj.objectId}`,
         byteColumn: obj.offset % BYTES_PER_ROW,
       })
@@ -462,7 +457,9 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
       <div v-if="stickyInfo" class="hex-sticky">
         <span class="sticky-nav">
           <button
-            class="sticky-nav-btn"
+            class="mq-btn mq-btn--quiet mq-btn--icon sticky-nav-btn"
+            aria-label="Previous object"
+            title="Previous object"
             :disabled="stickyInfo.bannerIdx < 0"
             @click="
               scrollToObject(
@@ -474,11 +471,13 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
           </button>
           <span class="sticky-nav-pos"
             >{{ stickyInfo.bannerIdx >= 0 ? stickyInfo.bannerIdx + 1 : '–' }}/{{
-              stickyInfo.totalObjects
+              formatCount(stickyInfo.totalObjects)
             }}</span
           >
           <button
-            class="sticky-nav-btn"
+            class="mq-btn mq-btn--quiet mq-btn--icon sticky-nav-btn"
+            aria-label="Next object"
+            title="Next object"
             :disabled="stickyInfo.bannerIdx >= stickyInfo.totalObjects - 1"
             @click="scrollToObject(stickyInfo.bannerIdx + 1)"
           >
@@ -528,11 +527,10 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
       </div>
     </div>
     <div class="hex-footer">
-      {{ data.length }} bytes<template v-if="headerSize > 0">
-        ({{ headerSize }}B header<template v-if="objects && objects.length > 0"
-          >, {{ objects.length }} obj{{
-            objects.length !== 1 ? 's' : ''
-          }}</template
+      {{ plural(data.length, 'byte') }}<template v-if="headerSize > 0">
+        ({{ formatBytes(headerSize) }} header<template
+          v-if="objects && objects.length > 0"
+          >, {{ plural(objects.length, 'object') }}</template
         >)</template
       >
     </div>
@@ -540,14 +538,16 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 </template>
 
 <style scoped>
+/* HexView in data-xs: 11px mono on the sunken ground. Rows stay 20px tall,
+   the height the virtual scroll above is computed with. */
 .hex-viewer {
   display: flex;
   flex-direction: column;
   height: 100%;
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
-  font-size: 11px;
+  font: 400 11px/16px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--surface-sunken);
   overflow-x: auto;
   min-width: max-content;
 }
@@ -555,11 +555,11 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 .hex-header-row {
   display: flex;
   gap: 12px;
-  padding: 4px 10px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-weight: 600;
+  padding: var(--space-1) 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-weight: 500;
   position: sticky;
   top: 0;
   min-width: fit-content;
@@ -591,7 +591,7 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   box-sizing: border-box;
 }
 .hex-row:hover {
-  background: var(--bg-hover);
+  background: var(--surface-hover);
 }
 
 /* ── Object boundary banner ───────────────────────────────────── */
@@ -600,15 +600,13 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   position: relative;
   display: flex;
   align-items: center;
-  /* 8px + 2px border-left = 10px, matching .hex-row padding-left;
-     then 72px offset column + 12px gap to align content with hex bytes */
-  padding: 0 10px 0 calc(8px + 72px + 12px);
+  /* 10px matches .hex-row padding-left; then the 72px offset column and
+     12px gap align the text with the hex bytes */
+  padding: 0 10px 0 calc(10px + 72px + 12px);
   height: 20px;
   box-sizing: border-box;
-  background: var(--bg-tertiary);
-  color: var(--content-fmp4-color);
-  font-size: 10px;
-  border-left: 2px solid var(--content-fmp4-color);
+  background: var(--info-soft);
+  color: var(--ink);
   user-select: none;
   min-width: fit-content;
 }
@@ -623,7 +621,7 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   position: absolute;
   bottom: -6px;
   /* Align with hex-bytes: padding-left already accounts for offset column */
-  left: calc(8px + 2px + 72px + 12px);
+  left: calc(10px + 72px + 12px);
   display: flex;
   gap: 4px;
   font-size: 9px;
@@ -634,7 +632,7 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   color: transparent;
 }
 .banner-indicator .indicator-visible {
-  color: var(--content-fmp4-color);
+  color: var(--info);
   position: relative;
   left: -1.7px;
 }
@@ -644,14 +642,12 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 .hex-sticky {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 10px;
-  line-height: 1.6;
-  background: var(--bg-tertiary);
-  color: var(--content-fmp4-color);
-  font-size: 10px;
-  border-left: 2px solid var(--content-fmp4-color);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-1);
+  padding: 0 10px;
+  min-height: 24px;
+  background: var(--info-soft);
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
   flex-shrink: 0;
   user-select: none;
   min-width: fit-content;
@@ -666,36 +662,23 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 }
 
 .sticky-nav-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  color: var(--content-fmp4-color);
-  cursor: pointer;
-  padding: 0 4px;
-  font-size: 12px;
-  line-height: 1.3;
-  font-family: inherit;
-}
-.sticky-nav-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.sticky-nav-btn:disabled {
-  opacity: 0.3;
-  cursor: default;
+  height: 20px;
+  width: 20px;
+  font: 500 14px/1 var(--font-mono);
 }
 
 .sticky-nav-pos {
-  font-size: 10px;
-  color: var(--text-secondary);
+  color: var(--ink-muted);
   min-width: 28px;
   text-align: center;
 }
 
 /* ── Hex content ──────────────────────────────────────────────── */
 
+/* ink-muted rather than the hex-offset token: hex-offset is under 4.5:1 on
+   the sunken ground in the light theme. */
 .hex-offset {
-  color: var(--text-secondary);
+  color: var(--ink-muted);
   min-width: 72px;
 }
 
@@ -713,35 +696,28 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   margin-right: 6px;
 }
 
-/** Protocol header & per-object framing bytes are dimmed */
+/* Stream header and per-object framing bytes */
 .hex-proto {
-  color: var(--text-secondary);
-  opacity: 0.5;
+  color: var(--ink-muted);
 }
 
-/** Even-indexed object payloads — default color (no extra styling) */
-.hex-obj-even {
-  /* default text color — no modification needed */
-}
-
-/** Odd-indexed object payloads — subtle tint to distinguish from even */
+/* Odd-indexed object payloads sit on a tint so neighbouring objects part. */
 .hex-obj-odd {
-  color: var(--hex-obj-odd);
+  background: var(--surface-hover);
+  border-radius: var(--radius-xs);
 }
 
 .hex-ascii {
-  color: var(--text-success);
+  color: var(--ink-muted);
   white-space: pre;
   letter-spacing: 1px;
 }
 
 .hex-footer {
-  padding: 4px 10px;
-  border-top: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 16.8px;
-  background: var(--bg-tertiary);
+  padding: var(--space-1) 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+  background: var(--surface);
   flex-shrink: 0;
 }
 </style>

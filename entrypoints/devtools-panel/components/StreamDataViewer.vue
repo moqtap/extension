@@ -4,6 +4,7 @@ import { decodeCbor } from '@/src/detect/cbor-decode'
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { decodeMsgpack } from '@/src/detect/msgpack-decode'
 import { computed, ref, watch } from 'vue'
+import { formatBytes, plural } from '../format'
 import { getCachedPref, savePref } from '../prefs'
 import type { HeaderTag } from '../stream-framing'
 import {
@@ -276,55 +277,56 @@ if (preferredMode === 'json' && hasStructuredContent.value) {
 
 <template>
   <div class="stream-data-viewer">
-    <div class="viewer-toolbar">
-      <button
-        class="vtab"
-        :class="{ active: viewMode === 'hex' }"
-        @click="switchToHex"
-      >
-        Hex
-      </button>
-      <button
-        v-if="hasStructuredContent"
-        class="vtab"
-        :class="{ active: viewMode === 'json' }"
-        @click="switchToJson"
-      >
-        {{ structuredTabLabel }}
-      </button>
+    <div class="filter-bar viewer-toolbar">
+      <div class="view-modes" role="group" aria-label="Show stream as">
+        <button
+          class="mq-btn mq-btn--quiet"
+          :aria-pressed="viewMode === 'hex'"
+          @click="switchToHex"
+        >
+          Hex
+        </button>
+        <button
+          v-if="hasStructuredContent"
+          class="mq-btn mq-btn--quiet"
+          :aria-pressed="viewMode === 'json'"
+          @click="switchToJson"
+        >
+          {{ structuredTabLabel }}
+        </button>
+      </div>
       <span
         v-if="effectiveMediaInfo"
-        class="content-tag fmp4-tag"
+        class="mq-badge mq-badge--mono"
         :title="effectiveMediaInfo.boxes.join(' · ')"
-        >{{ VARIANT_LABELS[effectiveMediaInfo.variant] ?? 'fMP4' }}({{
-          effectiveMediaInfo.boxes.length
-        }})</span
+        >{{ VARIANT_LABELS[effectiveMediaInfo.variant] ?? 'fMP4' }} ·
+        {{ effectiveMediaInfo.boxes.length }} boxes</span
       >
-      <span v-else-if="contentType === 'fmp4'" class="content-tag fmp4-tag"
+      <span v-else-if="contentType === 'fmp4'" class="mq-badge mq-badge--mono"
         >fMP4</span
       >
       <span
         v-else-if="contentType === 'h264' || contentType === 'h265'"
-        class="content-tag codec-tag"
+        class="mq-badge mq-badge--mono"
         :title="codecString ?? undefined"
         >{{ codecString ?? (contentType === 'h265' ? 'H.265' : 'H.264') }}</span
       >
-      <span v-if="resolvedTrack" class="content-tag track-tag">{{
-        resolvedTrack.fullName
-      }}</span>
+      <span
+        v-if="resolvedTrack"
+        class="mq-badge mq-badge--mono track-badge"
+        :title="resolvedTrack.fullName"
+        >{{ resolvedTrack.fullName }}</span
+      >
       <span
         v-for="tag in framingTags"
         :key="tag.label"
-        class="content-tag"
-        :class="`tag-${tag.kind ?? 'info'}`"
+        class="mq-badge mq-badge--mono"
         >{{ tag.label }}={{ tag.value }}</span
       >
-      <span v-if="framing" class="content-tag framing-tag"
-        >{{ framing.objects.length }} obj{{
-          framing.objects.length !== 1 ? 's' : ''
-        }}</span
-      >
-      <span class="viewer-size mono">{{ data.length }} bytes</span>
+      <span v-if="framing" class="mq-badge mq-badge--mono">{{
+        plural(framing.objects.length, 'object')
+      }}</span>
+      <span class="viewer-size">{{ formatBytes(data.length) }}</span>
     </div>
     <div class="viewer-body">
       <HexViewer
@@ -347,95 +349,23 @@ if (preferredMode === 'json' && hasStructuredContent.value) {
   height: 100%;
 }
 
-.viewer-toolbar {
+.view-modes {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-1);
+  margin-right: var(--space-1);
 }
 
-.vtab {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  color: var(--text-secondary);
-  padding: 1px 8px;
-  cursor: pointer;
-  font-size: 10px;
-  font-family: inherit;
-}
-.vtab:hover {
-  color: var(--text-primary);
-}
-.vtab.active {
-  background: var(--bg-selected);
-  color: var(--text-primary);
-  border-color: var(--text-accent);
-}
-
-.content-tag {
-  font-size: 9px;
-  font-weight: 600;
-  padding: 1px 5px;
-  border-radius: 3px;
-}
-.fmp4-tag {
-  background: var(--content-fmp4-bg);
-  color: var(--content-fmp4-color);
-  cursor: default;
-}
-.codec-tag {
-  background: var(--content-codec-bg);
-  color: var(--content-codec-color);
-  cursor: default;
-}
-.framing-tag {
-  background: var(--tag-neutral-bg);
-  color: var(--text-secondary);
-  font-weight: 400;
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
-}
-.track-tag {
-  background: var(--tag-track-bg);
-  color: var(--text-warning);
-}
-.tag-track {
-  background: var(--tag-track-bg);
-  color: var(--text-warning);
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
-}
-.tag-group {
-  background: var(--tag-group-bg);
-  color: var(--tag-group-color);
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
-}
-.tag-priority {
-  background: var(--tag-neutral-bg);
-  color: var(--text-secondary);
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
-}
-.tag-info {
-  background: var(--tag-neutral-bg);
-  color: var(--text-secondary);
-  font-family:
-    'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New',
-    monospace;
+.track-badge {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .viewer-size {
   margin-left: auto;
-  color: var(--text-secondary);
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
 }
 
 .viewer-body {
@@ -444,6 +374,6 @@ if (preferredMode === 'json' && hasStructuredContent.value) {
 }
 
 .json-container {
-  padding: 8px;
+  padding: var(--space-2);
 }
 </style>
