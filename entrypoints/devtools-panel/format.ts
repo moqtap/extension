@@ -69,6 +69,16 @@ export function formatBitrate(bps: number): string {
 }
 
 /**
+ * An ID or hash in a data pane: whole when it is 20 characters or fewer,
+ * otherwise its first and last eight around an ellipsis. Pair it with the
+ * full value as a tooltip and a copy control.
+ */
+export function shortId(value: string): string {
+  if (value.length <= 20) return value
+  return `${value.slice(0, 8)}…${value.slice(-8)}`
+}
+
+/**
  * The short ID a connection goes by in the sidebar: the per-page counter of a
  * captured session (`wt-<time>-<n>`), or the random tail of an imported one.
  */

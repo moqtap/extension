@@ -1,9 +1,10 @@
 <script lang="ts" setup>
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, ref, watch } from 'vue'
-import { formatBytes, formatClock, formatCount, isoTitle } from '../format'
+import { formatBytes, formatClock, formatCount, isoTitle, shortId } from '../format'
 import type { SessionEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
+import CopyButton from './CopyButton.vue'
 import StreamDataViewer from './StreamDataViewer.vue'
 import StreamList from './StreamList.vue'
 import TrackList from './TrackList.vue'
@@ -434,7 +435,10 @@ const collectorDetail = computed((): string | null => {
       <div v-else-if="activeTab === 'details'" class="details-panel">
         <dl class="mq-kv details-list">
           <dt>URL</dt>
-          <dd class="mq-mono">{{ session.url }}</dd>
+          <dd class="detail-copy">
+            <span class="mq-addr">{{ session.url }}</span>
+            <CopyButton :value="session.url" what="URL" />
+          </dd>
           <template v-if="collectorDetail">
             <dt>Collector</dt>
             <dd>{{ collectorDetail }}</dd>
@@ -478,7 +482,12 @@ const collectorDetail = computed((): string | null => {
             <dd class="mq-mono">{{ session.options.serverCertificateHashes }}</dd>
           </template>
           <dt>Session ID</dt>
-          <dd class="mq-mono">{{ session.sessionId }}</dd>
+          <dd class="detail-copy">
+            <span class="mq-mono" :title="session.sessionId">{{
+              shortId(session.sessionId)
+            }}</span>
+            <CopyButton :value="session.sessionId" what="session ID" />
+          </dd>
           <dt>Created</dt>
           <dd :title="isoTitle(session.createdAt)">
             {{ new Date(session.createdAt).toLocaleDateString() }}
@@ -647,5 +656,15 @@ const collectorDetail = computed((): string | null => {
 
 .details-list {
   max-width: 900px;
+}
+
+/* A value with its copy control beside it, the control on the first line. */
+.detail-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+.detail-copy > span:first-child {
+  min-width: 0;
 }
 </style>

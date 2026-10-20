@@ -7,6 +7,7 @@ import {
   formatOffset,
   messageTypeName,
   plural,
+  shortId,
   shortSessionId,
 } from './format'
 
@@ -55,5 +56,11 @@ describe('messageTypeName', () => {
   it('writes message types in the draft spelling', () => {
     expect(messageTypeName('subscribe_ok')).toBe('SUBSCRIBE_OK')
     expect(messageTypeName('0x40')).toBe('0x40')
+  })
+
+  it('shows IDs of 20 characters or fewer whole, longer ones as 8…8', () => {
+    expect(shortId('wt-1729000000000-3')).toBe('wt-1729000000000-3')
+    expect(shortId('7f3a91c0d2e4b6a8e2b4')).toBe('7f3a91c0d2e4b6a8e2b4')
+    expect(shortId('7f3a91c0d2e4b6a8e2b4c91e')).toBe('7f3a91c0…e2b4c91e')
   })
 })
