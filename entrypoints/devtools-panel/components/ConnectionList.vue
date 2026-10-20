@@ -343,25 +343,25 @@ function compactLabel(session: SessionEntry): string {
   min-width: 0;
 }
 
+/* An address in a one-line slot keeps its host and port: the path is cut
+   from its end first, and the host only once no path is left. The full URL
+   is the tooltip. */
 .url-host {
-  flex: 1 1000 auto;
-  min-width: 2ch;
+  /* Shrinks at 1/10000 of the path's rate rather than not at all: a zero
+     shrink would push the short ID out of a narrow sidebar instead. */
+  flex: 0 0.0001 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .url-path {
-  /* flex-shrink is 1/10000 of the host's, so the host ellipsizes essentially
-     to completion before the path begins to shrink. A very small but non-zero
-     value avoids a Chromium quirk where shrink:1 + overflow:hidden + ellipsis
-     triggers a phantom ellipsis even when the content fits. */
-  flex: 1 0.1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: calc(100% - 3ch);
   color: var(--ink-muted);
 }
 
