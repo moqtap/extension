@@ -162,6 +162,12 @@ function disconnect() {
   background: var(--surface-hover);
 }
 
+/* The small avatar's initials at the panel's smallest type size rather than
+   the component's 10px: nothing in the panel goes below data-xs. */
+.account-chip .mq-avatar--sm {
+  font-size: var(--type-data-xs-size);
+}
+
 .account-label {
   overflow: hidden;
   text-overflow: ellipsis;

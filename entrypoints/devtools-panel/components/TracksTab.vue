@@ -363,7 +363,7 @@ const headerCount = computed(() => {
             <template v-if="!groupByNs || !collapsedGroups.has(g.ns)">
               <tr v-for="row in g.rows" :key="row.track.subscribeId">
                 <td class="col-color">
-                  <span :class="trackColourClass(row.track.colorIndex)" />
+                  <span :class="trackColourClass(row.track.colorIndex)" aria-hidden="true" />
                 </td>
                 <td
                   class="col-dir dir"
@@ -428,7 +428,10 @@ const headerCount = computed(() => {
 }
 
 .toolbar-title {
-  font: 500 12px/16px var(--font-sans);
+  font-family: var(--type-tool-label-family);
+  font-size: var(--type-tool-label-size);
+  line-height: var(--type-tool-label-line);
+  font-weight: var(--type-tool-label-weight);
   color: var(--ink-muted);
   margin-right: auto;
 }
@@ -440,7 +443,7 @@ const headerCount = computed(() => {
 }
 
 .tracks-table {
-  font-size: 12px;
+  font-size: var(--type-data-size);
 }
 .tracks-table thead {
   position: sticky;
@@ -473,7 +476,7 @@ const headerCount = computed(() => {
   width: 20px;
   text-align: center;
 }
-.col-error {
+td.col-error {
   color: var(--danger);
 }
 .track-ns {
@@ -504,7 +507,10 @@ const headerCount = computed(() => {
   color: var(--ink-muted);
 }
 .ns-name {
-  font: 500 12px/18px var(--font-mono);
+  font-family: var(--type-data-strong-family);
+  font-size: var(--type-data-strong-size);
+  line-height: var(--type-data-strong-line);
+  font-weight: var(--type-data-strong-weight);
 }
 .ns-count {
   color: var(--ink-muted);

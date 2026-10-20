@@ -602,7 +602,10 @@ const collectorDetail = computed((): string | null => {
 }
 
 .detail-title {
-  font: 500 12px/16px var(--font-mono);
+  font-family: var(--type-data-strong-family);
+  font-size: var(--type-data-strong-size);
+  line-height: var(--type-data-strong-line);
+  font-weight: var(--type-data-strong-weight);
   color: var(--ink);
   white-space: nowrap;
 }

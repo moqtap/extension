@@ -390,7 +390,9 @@ function compactLabel(session: SessionEntry): string {
   align-items: center;
   gap: 2px;
   padding: var(--space-2) var(--space-1);
-  font: 400 11px/16px var(--font-mono);
+  font-family: var(--type-data-xs-family);
+  font-size: var(--type-data-xs-size);
+  line-height: var(--type-data-xs-line);
   text-align: center;
 }
 .status-glyph {

@@ -286,7 +286,10 @@ const headerCount = computed(() => {
 }
 
 .header-title {
-  font: 500 12px/16px var(--font-sans);
+  font-family: var(--type-tool-label-family);
+  font-size: var(--type-tool-label-size);
+  line-height: var(--type-tool-label-line);
+  font-weight: var(--type-tool-label-weight);
   color: var(--ink-muted);
   margin-right: auto;
 }
@@ -321,7 +324,10 @@ const headerCount = computed(() => {
 }
 
 .ns-name {
-  font: 500 12px/18px var(--font-mono);
+  font-family: var(--type-data-strong-family);
+  font-size: var(--type-data-strong-size);
+  line-height: var(--type-data-strong-line);
+  font-weight: var(--type-data-strong-weight);
 }
 
 .ns-summary {
@@ -369,7 +375,9 @@ const headerCount = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 400 12px/18px var(--font-mono);
+  font-family: var(--type-data-family);
+  font-size: var(--type-data-size);
+  line-height: var(--type-data-line);
 }
 
 .track-ns {

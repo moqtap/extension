@@ -56,7 +56,9 @@ function openSource(frame: StackFrame) {
 
 <style scoped>
 .stack-viewer {
-  font: 400 12px/20px var(--font-mono);
+  font-family: var(--type-data-family);
+  font-size: var(--type-data-size);
+  line-height: var(--type-data-line);
   padding: var(--space-1) 0;
 }
 

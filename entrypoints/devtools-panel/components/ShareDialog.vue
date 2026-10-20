@@ -266,7 +266,7 @@ const busyText = computed(
             :disabled="busy"
           />
         </div>
-        <fieldset class="mq-field share-fieldset" :disabled="busy">
+        <fieldset class="mq-fieldset" :disabled="busy">
           <legend class="mq-label">Who can open it</legend>
           <div class="share-choice">
             <label class="mq-check">
@@ -284,7 +284,7 @@ const busyText = computed(
               </option>
             </select>
           </div>
-          <label class="mq-check" :class="{ 'is-disabled': org?.kind !== 'team' }">
+          <label class="mq-check">
             <input
               v-model="audience"
               type="radio"
@@ -293,13 +293,13 @@ const busyText = computed(
             />
             <span>
               Members of this library
-              <span v-if="org?.kind !== 'team'" class="mq-help">
+              <span v-if="org?.kind !== 'team'" class="mq-check__desc">
                 Only for team libraries.</span
               >
             </span>
           </label>
         </fieldset>
-        <fieldset class="mq-field share-fieldset" :disabled="busy">
+        <fieldset class="mq-fieldset" :disabled="busy">
           <legend class="mq-label">Include</legend>
           <label class="mq-toggle">
             <span>
@@ -377,18 +377,6 @@ const busyText = computed(
   gap: var(--space-3);
 }
 
-.share-fieldset {
-  border: 0;
-  margin: 0;
-  padding: 0;
-  min-width: 0;
-  gap: var(--space-2);
-}
-.share-fieldset legend {
-  padding: 0;
-  margin-bottom: var(--space-1);
-}
-
 .share-choice {
   display: flex;
   flex-wrap: wrap;
@@ -397,27 +385,6 @@ const busyText = computed(
 }
 .share-days {
   width: auto;
-}
-
-/* bundle.css draws checkboxes; a radio is the same control, round. */
-.mq-check input[type='radio'] {
-  border-radius: var(--radius-full);
-}
-.mq-check input[type='radio']:checked::after {
-  width: 6px;
-  height: 6px;
-  border: 0;
-  border-radius: var(--radius-full);
-  background: var(--on-tap);
-  transform: none;
-}
-.mq-check input:disabled {
-  background: var(--surface-sunken);
-  border-color: var(--line);
-}
-.mq-check.is-disabled {
-  color: var(--ink-disabled);
-  cursor: not-allowed;
 }
 
 .mq-toggle > span {

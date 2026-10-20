@@ -538,13 +538,15 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 </template>
 
 <style scoped>
-/* HexView in data-xs: 11px mono on the sunken ground. Rows stay 20px tall,
-   the height the virtual scroll above is computed with. */
+/* HexView in data-xs on the sunken ground. Rows stay 20px tall, the height
+   the virtual scroll above is computed with. */
 .hex-viewer {
   display: flex;
   flex-direction: column;
   height: 100%;
-  font: 400 11px/16px var(--font-mono);
+  font-family: var(--type-data-xs-family);
+  font-size: var(--type-data-xs-size);
+  line-height: var(--type-data-xs-line);
   font-variant-numeric: tabular-nums;
   color: var(--ink);
   background: var(--surface-sunken);
@@ -675,10 +677,8 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 
 /* ── Hex content ──────────────────────────────────────────────── */
 
-/* ink-muted rather than the hex-offset token: hex-offset is under 4.5:1 on
-   the sunken ground in the light theme. */
 .hex-offset {
-  color: var(--ink-muted);
+  color: var(--hex-offset);
   min-width: 72px;
 }
 

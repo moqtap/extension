@@ -2,18 +2,6 @@
    Colours, type and controls come from those files; this holds only what is
    particular to the panel. */
 
-:root {
-  color-scheme: light;
-}
-:root[data-theme='dark'] {
-  color-scheme: dark;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    color-scheme: dark;
-  }
-}
-
 *,
 *::before,
 *::after {
@@ -41,16 +29,6 @@ input,
 select {
   font: inherit;
   color: inherit;
-}
-
-/* bundle.css grows fields to 44px and 16px type under 640px for phones. The
-   panel is docked, not a phone page, so it keeps compact fields at any width. */
-@media (max-width: 640px) {
-  .mq-compact .mq-input,
-  .mq-compact .mq-select {
-    min-height: 0;
-    font-size: var(--mq-fs);
-  }
 }
 
 /* A 32px bar at the top of a pane, in compact density. */
@@ -113,31 +91,9 @@ select {
   text-align: center;
 }
 
-/* Track identity colours, cycled by a track's colour index. */
-.track-colour {
-  display: inline-block;
+/* A track's series swatch keeps its size in a flex row. */
+.mq-swatch {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-xs);
-}
-.track-colour--0 {
-  background: var(--chart-1);
-}
-.track-colour--1 {
-  background: var(--chart-2);
-}
-.track-colour--2 {
-  background: var(--chart-3);
-}
-.track-colour--3 {
-  background: var(--team);
-}
-.track-colour--4 {
-  background: var(--warning);
-}
-.track-colour--5 {
-  background: var(--ink-muted);
 }
 
 .status-active {

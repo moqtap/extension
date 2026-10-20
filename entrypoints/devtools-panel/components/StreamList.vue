@@ -493,7 +493,10 @@ function transferParts(
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
-  font: 500 12px/16px var(--font-sans);
+  font-family: var(--type-tool-label-family);
+  font-size: var(--type-tool-label-size);
+  line-height: var(--type-tool-label-line);
+  font-weight: var(--type-tool-label-weight);
   color: var(--ink-muted);
   border-bottom: 1px solid var(--line);
   background: var(--surface-sunken);
@@ -528,7 +531,9 @@ function transferParts(
   border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--ink);
-  font: 400 12px/18px var(--font-mono);
+  font-family: var(--type-data-family);
+  font-size: var(--type-data-size);
+  line-height: var(--type-data-line);
   font-variant-numeric: tabular-nums;
   text-align: left;
   cursor: pointer;
