@@ -1,5 +1,7 @@
 import {
   Ban,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Download,
   Import,
@@ -22,6 +24,8 @@ function sized(svg: string): string {
 
 export const icons = {
   ban: sized(Ban),
+  chevronLeft: sized(ChevronLeft),
+  chevronRight: sized(ChevronRight),
   copy: sized(Copy),
   download: sized(Download),
   import: sized(Import),

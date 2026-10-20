@@ -3,6 +3,7 @@ import { detectMediaInfo } from '@/src/detect/bmff-boxes'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes, formatCount, plural } from '../format'
 import type { StreamObject } from '../stream-framing'
+import Icon from './Icon.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -467,7 +468,7 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
               )
             "
           >
-            &lsaquo;
+            <Icon name="chevronLeft" />
           </button>
           <span class="sticky-nav-pos"
             >{{ stickyInfo.bannerIdx >= 0 ? stickyInfo.bannerIdx + 1 : '–' }}/{{
@@ -481,7 +482,7 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
             :disabled="stickyInfo.bannerIdx >= stickyInfo.totalObjects - 1"
             @click="scrollToObject(stickyInfo.bannerIdx + 1)"
           >
-            &rsaquo;
+            <Icon name="chevronRight" />
           </button>
         </span>
         <span v-if="stickyInfo.label" class="banner-text">{{
@@ -505,8 +506,7 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
                   'hex-gap': col - 1 === 7,
                   'indicator-visible': col - 1 === entry.byteColumn,
                 }"
-                >{{ col - 1 === entry.byteColumn ? '▾' : '' }}</span
-              >
+              />
             </span>
           </div>
           <div v-else class="hex-row">
@@ -619,24 +619,27 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   text-overflow: ellipsis;
 }
 
+/* A small triangle under the banner, over the byte where the object starts.
+   Drawn, not a text glyph, so it stays this small. */
 .banner-indicator {
   position: absolute;
-  bottom: -6px;
+  bottom: -4px;
   /* Align with hex-bytes: padding-left already accounts for offset column */
   left: calc(10px + 72px + 12px);
   display: flex;
   gap: 4px;
-  font-size: 9px;
-  line-height: 1;
+  height: 4px;
   pointer-events: none;
 }
-.banner-indicator .hex-byte {
-  color: transparent;
-}
-.banner-indicator .indicator-visible {
-  color: var(--info);
-  position: relative;
-  left: -1.7px;
+.banner-indicator .indicator-visible::before {
+  content: '';
+  display: block;
+  width: 0;
+  height: 0;
+  margin: 0 auto;
+  border: 4px solid transparent;
+  border-bottom: 0;
+  border-top-color: var(--info);
 }
 
 /* ── Sticky object overlay ────────────────────────────────────── */
@@ -666,7 +669,6 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 .sticky-nav-btn {
   height: 20px;
   width: 20px;
-  font: 500 14px/1 var(--font-mono);
 }
 
 .sticky-nav-pos {
