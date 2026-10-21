@@ -18,8 +18,8 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
-    "@moqtap/codec": "^0.13.1",
-    "@moqtap/inspect": "^0.1.0",
+    "@moqtap/codec": "^0.13.2",
+    "@moqtap/inspect": "^0.2.0",
     "@moqtap/trace": "^0.4.1",
     "lucide-static": "1.50.0",
     "vue": "^3.5.42"
