@@ -1,8 +1,8 @@
 /**
  * A session's control messages read as requests: which request each message
- * belongs to, how long each took to answer and what each error code means.
- * The reading itself is `@moqtap/inspect`'s; this file only feeds it the
- * panel's message entries and shapes the answers for the views.
+ * belongs to, how long each took to answer, what each error code means, and
+ * what went wrong. The reading itself is `@moqtap/inspect`'s; this file only
+ * feeds it the panel's message entries and shapes the answers for the views.
  */
 
 import {
@@ -10,14 +10,27 @@ import {
   type InspectEvent,
   messageAliases,
   pairRequests,
+  problemDetail,
   problems,
+  problemSeverity,
+  problemTitle,
   requestIdOf,
 } from '@moqtap/inspect'
 import { decodeErrorReason, isDecodeError } from '@/src/trace/decode-error'
 import type { MessageEntry, SessionEntry, TrackEntry } from './use-inspector'
 
+/** A request with no response this long after it was sent is a problem. */
+export const PENDING_MS = 5_000
+
 /** A message entry as `@moqtap/inspect` reads it, with the entry it came from. */
 export type MessageEvent = InspectEvent & { readonly entry: MessageEntry }
+
+export interface SessionProblem {
+  title: string
+  detail: string | null
+  severity: 'error' | 'warning'
+  atMs: number | null
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -125,6 +138,45 @@ export function errorCodeLabels(
     if (label !== '') labels.set(problem.event.entry, label)
   }
   return labels
+}
+
+/**
+ * What went wrong in the session, worded by `@moqtap/inspect`. `endMs` is
+ * the time up to which a missing response counts as missing; the latest
+ * message's time when not given.
+ */
+export function sessionProblems(
+  events: readonly MessageEvent[],
+  options: {
+    draft: number | null
+    tracks: Iterable<TrackEntry>
+    endMs?: number
+  },
+): SessionProblem[] {
+  const names = new Map<string, string>()
+  for (const track of options.tracks) {
+    names.set(requestKey(track.direction, track.subscribeId), track.fullName)
+  }
+  const wording = {
+    draft: options.draft,
+    pendingMs: PENDING_MS,
+    // The page opened the WebTransport session, so it is the client.
+    perspective: 'client',
+    trackOf: (event: MessageEvent) => {
+      const id = ownRequestId(event)
+      return id === null ? undefined : names.get(requestKey(event.entry.direction, id))
+    },
+  }
+  return problems(events, {
+    draft: options.draft,
+    pendingMs: PENDING_MS,
+    endMs: options.endMs,
+  }).map((problem) => ({
+    title: problemTitle(problem, wording),
+    detail: problemDetail(problem, wording),
+    severity: problemSeverity(problem.kind),
+    atMs: problem.atMs,
+  }))
 }
 
 /**

@@ -1,10 +1,11 @@
 <script lang="ts" setup>
 import type { StreamContentType } from '@/src/detect/content-detect'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   formatBytes,
   formatClock,
   formatCount,
+  formatOffset,
   isoTitle,
   shortId,
 } from '../format'
@@ -14,6 +15,7 @@ import {
   requestIds,
   requestTimes,
   sessionDraft,
+  sessionProblems,
 } from '../requests'
 import type { SessionEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
@@ -168,6 +170,25 @@ const filteredMessages = computed(() => {
     (msg) => ids.get(msg) === track.subscribeId,
   )
 })
+
+/**
+ * Wall-clock time while the session is open, so a request that is still
+ * waiting for its response shows up without another message arriving.
+ */
+const now = ref(Date.now())
+const nowTimer = setInterval(() => {
+  if (!props.session.closed && !props.session.imported) now.value = Date.now()
+}, 1_000)
+onBeforeUnmount(() => clearInterval(nowTimer))
+
+const shownProblems = computed(() =>
+  sessionProblems(events.value, {
+    draft: draft.value,
+    tracks: props.session.tracks.values(),
+    endMs:
+      props.session.closed || props.session.imported ? undefined : now.value,
+  }),
+)
 
 function protocolLabel(session: SessionEntry): string {
   switch (session.protocol) {
@@ -514,6 +535,41 @@ const collectorDetail = computed((): string | null => {
           </dd>
           <dt>Status</dt>
           <dd>{{ session.closed ? 'Closed' : 'Open' }}</dd>
+          <template v-if="shownProblems.length > 0">
+            <dt>Problems</dt>
+            <dd>
+              <ul class="problem-list">
+                <li
+                  v-for="(p, i) in shownProblems"
+                  :key="i"
+                  class="problem"
+                  :class="`problem--${p.severity}`"
+                >
+                  <span class="problem__glyph"
+                    ><span aria-hidden="true">{{
+                      p.severity === 'error' ? '✕' : '▲'
+                    }}</span
+                    ><span class="mq-sr">{{
+                      p.severity === 'error' ? 'Error' : 'Warning'
+                    }}</span></span
+                  >
+                  <span
+                    class="problem__time"
+                    :title="p.atMs !== null ? isoTitle(p.atMs) : undefined"
+                    >{{
+                      p.atMs !== null ? formatOffset(p.atMs, session.createdAt) : ''
+                    }}</span
+                  >
+                  <span class="problem__text">
+                    <span class="problem__title">{{ p.title }}</span>
+                    <span v-if="p.detail" class="problem__detail">{{
+                      p.detail
+                    }}</span>
+                  </span>
+                </li>
+              </ul>
+            </dd>
+          </template>
           <template v-if="session.frameId">
             <dt>Source</dt>
             <dd>iframe (frame {{ session.frameId }})</dd>
@@ -675,6 +731,47 @@ const collectorDetail = computed((): string | null => {
 
 .details-list {
   max-width: 900px;
+}
+
+/* One line per problem: glyph, time from session start, title, detail. */
+.problem-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.problem {
+  display: grid;
+  grid-template-columns: 1em auto 1fr;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+.problem__glyph {
+  text-align: center;
+}
+.problem--error .problem__glyph {
+  color: var(--danger);
+}
+.problem--warning .problem__glyph {
+  color: var(--warning);
+}
+.problem__time {
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.problem__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.problem__title {
+  font-family: var(--font-mono);
+}
+.problem__detail {
+  display: block;
+  color: var(--ink-muted);
 }
 
 /* A value with its copy control beside it, the control on the first line. */
