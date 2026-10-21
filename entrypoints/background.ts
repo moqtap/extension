@@ -16,7 +16,7 @@ import {
 } from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import { DECODE_ERROR_MESSAGE_TYPE } from '@/src/trace/decode-error'
-import { TrackRegistry, type TrackFields } from '@/src/codec/track-info'
+import { TrackRegistry, type TrackFields } from '@moqtap/inspect'
 import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
 import {
   detectAnnexB,
@@ -601,6 +601,7 @@ function decodeControlBytes(
       // streamId matters from draft-17: responses there carry no request id,
       // so the request stream they arrive on is what identifies them.
       const trackUpdate = session.trackRegistry.apply(
+        msgType,
         msg as unknown as Record<string, unknown>,
         { direction, streamId, timestamp: record.timestamp },
       )

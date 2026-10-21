@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, ref } from 'vue'
-import { isPrettifiedValue, type PrettifiedValue } from '../use-inspector'
+import { type Displayed, isDisplayed } from '@moqtap/inspect'
 
 /**
  * A decoded value as the design system's JsonTree: nested `<details>`, keys
@@ -18,8 +18,9 @@ const depth = computed(() => props.depth ?? 0)
 // The caller opens the first level; nested values start closed.
 const expanded = ref(props.initialExpanded)
 
-const prettyValue = computed((): PrettifiedValue | null =>
-  isPrettifiedValue(props.data) ? props.data : null,
+/** A value `displayFields` gave a shown form beside the recorded one. */
+const prettyValue = computed((): Displayed | null =>
+  isDisplayed(props.data) ? props.data : null,
 )
 
 const dataType = computed(() => {
@@ -62,7 +63,7 @@ const preview = computed(() => {
 /** Value colour classes from bundle.css: s string, n number, b boolean. */
 const valueClass = computed(() => {
   if (prettyValue.value) {
-    return prettyValue.value.cssClass === 'json-bytes' ? 'n' : 'b'
+    return prettyValue.value.$shown === 'bytes' ? 'n' : 'b'
   }
   switch (dataType.value) {
     case 'string':
@@ -82,18 +83,17 @@ const valueClass = computed(() => {
 const formattedValue = computed(() => {
   if (prettyValue.value) {
     const p = prettyValue.value
-    return p.quoted ? `"${p.display}"` : p.display
+    return p.$shown === 'text' ? `"${p.text}"` : p.text
   }
   if (dataType.value === 'string') return `"${props.data}"`
   if (dataType.value === 'null') return 'null'
   return String(props.data)
 })
 
-/** Whether the prettified display differs from the original (show hint). */
+/** Whether the shown form differs from the recorded value (show hint). */
 const showPrettyHint = computed(
   () =>
-    prettyValue.value != null &&
-    prettyValue.value.display !== prettyValue.value.original,
+    prettyValue.value != null && prettyValue.value.text !== prettyValue.value.raw,
 )
 
 function onToggle(e: Event) {
@@ -137,7 +137,7 @@ function onToggle(e: Event) {
     <span class="k">{{ label }}</span>:
     <span
       :class="[valueClass, { 'pretty-hint': showPrettyHint }]"
-      :title="prettyValue?.original"
+      :title="prettyValue?.raw"
       >{{ formattedValue }}</span
     >
   </li>

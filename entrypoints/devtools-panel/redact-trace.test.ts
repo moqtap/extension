@@ -84,7 +84,7 @@ const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '
 /**
  * The decoded map as the panel holds it during a live capture: the background
  * serialises it with bytes tagged as hex (background.ts `jsonSafe`), and the
- * panel strips the tags (use-inspector.ts `untagDecoded`), so a token value
+ * panel strips the tags (decoded.ts `untagDecoded`), so a token value
  * arrives as a hex string, not a Uint8Array.
  */
 function asLivePanelHolds(message: unknown): unknown {

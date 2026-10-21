@@ -14,7 +14,7 @@ import type { CollectorStatus } from '../intercept/collector-presence'
  * base64 strings to avoid encode/decode overhead on the hot path.
  */
 
-import type { TrackVia } from '../codec/track-info'
+import type { TrackVia } from '@moqtap/inspect'
 import type {
   PayloadMediaInfo,
   StreamContentType,

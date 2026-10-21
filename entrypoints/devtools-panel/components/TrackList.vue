@@ -259,7 +259,7 @@ const headerCount = computed(() => {
         >
         <span class="track-name">
           <span v-if="track.trackNamespace.length > 0" class="track-ns"
-            >{{ track.trackNamespace.join('/') }}/</span
+            >{{ track.trackNamespace.join('/') }} / </span
           >{{ track.trackName }}
         </span>
         <span v-if="track.errorReason" class="track-error" :title="track.errorReason">

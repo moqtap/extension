@@ -383,7 +383,7 @@ const headerCount = computed(() => {
                   <span
                     v-if="!groupByNs && row.track.trackNamespace.length > 0"
                     class="track-ns"
-                    >{{ row.track.trackNamespace.join('/') }}/</span
+                    >{{ row.track.trackNamespace.join('/') }} / </span
                   >{{ row.track.trackName }}
                 </td>
                 <td class="mono mq-r" :title="absTitle(row.track.subscribedAt)">

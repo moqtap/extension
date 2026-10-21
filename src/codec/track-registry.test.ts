@@ -1,5 +1,7 @@
 /**
- * Tests for the alias → track-name join.
+ * Tests for the alias → track-name join, as the extension drives it: the
+ * shared registry from `@moqtap/inspect`, fed the extension's decoded control
+ * messages under the name the codec gives them.
  *
  * Every case runs against bytes the draft's own codec produced, because the
  * bug these guard against was reading a field that no draft emits: the join
@@ -14,7 +16,12 @@ import {
   getCodec,
 } from './control-message'
 import { getMessageIdMap } from './message-ids'
-import { TrackRegistry, trackEventFrom, type TrackFields } from './track-info'
+import {
+  type TrackFields,
+  type TrackMessageContext,
+  TrackRegistry,
+  trackEventFrom,
+} from '@moqtap/inspect'
 import type { SupportedDraft } from '../types/common'
 
 const ALL_DRAFTS: SupportedDraft[] = [
@@ -255,12 +262,28 @@ function fetchHeader(
   return { requestId: id }
 }
 
-/** A registry storing the shared fields unchanged, as the background does. */
+/** The codec's name for a decoded message, as the background reads it. */
+function kind(msg: Record<string, unknown>): string {
+  return typeof msg.type === 'string' ? msg.type : 'unknown'
+}
+
+function eventOf(msg: Record<string, unknown>) {
+  return trackEventFrom(kind(msg), msg)
+}
+
+/**
+ * A registry storing the shared fields unchanged, as the background does,
+ * applying each message under its codec name.
+ */
 function registry() {
   const tracks = new Map<string, TrackFields>()
+  const inner = new TrackRegistry(tracks, (fields) => ({ ...fields }))
   return {
     tracks,
-    registry: new TrackRegistry(tracks, (fields) => ({ ...fields })),
+    registry: {
+      apply: (msg: Record<string, unknown>, ctx: TrackMessageContext) =>
+        inner.apply(kind(msg), msg, ctx),
+    },
   }
 }
 
@@ -353,7 +376,7 @@ describe('TrackRegistry', () => {
         : 'announce'
       const msg = roundTrip(draft, { ...NAMESPACE_ONLY, type })
 
-      expect(trackEventFrom(msg), `draft-${draft}`).toBeNull()
+      expect(eventOf(msg), `draft-${draft}`).toBeNull()
 
       const { tracks, registry: reg } = registry()
       reg.apply(msg, { direction: 'tx', streamId: 8, timestamp: 1000 })
@@ -413,7 +436,7 @@ describe('TrackRegistry', () => {
     // Draft-07's FETCH is standalone-only, so it cannot even encode one.
     const joining = ALL_DRAFTS.filter((draft) => {
       try {
-        const event = trackEventFrom(roundTrip(draft, JOINING_FETCH))
+        const event = eventOf(roundTrip(draft, JOINING_FETCH))
         return event?.kind === 'open' && event.joiningRequestId != null
       } catch {
         return false
@@ -471,7 +494,7 @@ describe('trackEventFrom', () => {
   it('reads camelCase fields from imported traces', () => {
     // Traces written by other tools use their own spelling; the codec's own
     // output is snake_case and is covered by every test above.
-    const event = trackEventFrom({
+    const event = eventOf({
       type: 'subscribe',
       requestId: 3,
       trackNamespace: ['ns'],
@@ -490,7 +513,7 @@ describe('trackEventFrom', () => {
   })
 
   it('ignores messages that say nothing about a track', () => {
-    expect(trackEventFrom({ type: 'goaway' })).toBeNull()
-    expect(trackEventFrom({})).toBeNull()
+    expect(eventOf({ type: 'goaway' })).toBeNull()
+    expect(eventOf({})).toBeNull()
   })
 })

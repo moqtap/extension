@@ -98,9 +98,10 @@ version numbers stop, and a new row there would be a value no peer sends.
 
 ### 3. Handle wire format changes (if any)
 
-If the draft renames fields in control messages, update the track registry in
-`src/codec/track-info.ts`, which reads `subscribeId`, `trackNamespace` and
-`trackName` off decoded messages.
+If the draft renames fields in control messages, the track registry and the
+field display need a new `@moqtap/inspect`: both live there, and read
+`request_id`, `track_namespace`, `track_name` and `track_alias` off decoded
+messages.
 
 If data stream framing changes, the codec adapter in
 `entrypoints/devtools-panel/stream-framing/codec-adapter.ts` may need new
@@ -113,7 +114,7 @@ per-era counts its test pins.
 ### 4. Update tests
 
 Add the draft to the per-draft lists in `src/codec/message-ids.test.ts`,
-`src/codec/track-info.test.ts`, `src/codec/varint.test.ts` and
+`src/codec/track-registry.test.ts`, `src/codec/varint.test.ts` and
 `src/detect/control-streams.test.ts`; to `UNI_CONTROL_DRAFTS` in
 `src/detect/uni-control-prefix.test.ts` if its control stream is a pair of
 unidirectional ones; and add a detection case to
