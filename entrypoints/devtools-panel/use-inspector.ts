@@ -1048,6 +1048,7 @@ export function useInspector() {
             timestamp: ce.timestamp,
             direction: ce.direction === 0 ? 'tx' : 'rx',
             messageType: msgType,
+            ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
             decoded: ce.message,
             decodedPretty: fields ? displayFields(msgType, fields) : ce.message,
             raw: ce.raw ?? new Uint8Array(0),

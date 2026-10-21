@@ -1,7 +1,20 @@
 <script lang="ts" setup>
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, ref, watch } from 'vue'
-import { formatBytes, formatClock, formatCount, isoTitle, shortId } from '../format'
+import {
+  formatBytes,
+  formatClock,
+  formatCount,
+  isoTitle,
+  shortId,
+} from '../format'
+import {
+  errorCodeLabels,
+  messageEvents,
+  requestIds,
+  requestTimes,
+  sessionDraft,
+} from '../requests'
 import type { SessionEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
 import CopyButton from './CopyButton.vue'
@@ -140,21 +153,20 @@ const hasNewData = computed(() => {
   return stream.byteCount > loadedByteCount.value
 })
 
+const draft = computed(() => sessionDraft(props.session))
+const events = computed(() => messageEvents(props.session.messages))
+const times = computed(() => requestTimes(events.value, draft.value))
+const errorLabels = computed(() => errorCodeLabels(events.value, draft.value))
+
 /** Filter messages by track if a track filter is active */
 const filteredMessages = computed(() => {
   if (!trackFilter.value) return props.session.messages
-  // Find the track's subscribeId and filter messages that mention it
   const track = props.session.tracks.get(trackFilter.value)
   if (!track) return props.session.messages
-  const subId = track.subscribeId
-  return props.session.messages.filter((msg) => {
-    if (!msg.decoded || typeof msg.decoded !== 'object') return false
-    const d = msg.decoded as Record<string, unknown>
-    const msgSubId = String(
-      d.subscribeId ?? d.request_id ?? d.subscribe_id ?? '',
-    )
-    return msgSubId === subId
-  })
+  const ids = requestIds(events.value, draft.value)
+  return props.session.messages.filter(
+    (msg) => ids.get(msg) === track.subscribeId,
+  )
 })
 
 function protocolLabel(session: SessionEntry): string {
@@ -334,6 +346,9 @@ const collectorDetail = computed((): string | null => {
         v-if="activeTab === 'messages'"
         :messages="filteredMessages"
         :started-at="session.createdAt"
+        :draft="draft"
+        :response-times="times.byResponse"
+        :error-labels="errorLabels"
       />
       <div
         v-else-if="activeTab === 'streams'"
@@ -431,7 +446,11 @@ const collectorDetail = computed((): string | null => {
           </p>
         </section>
       </div>
-      <TracksTab v-else-if="activeTab === 'tracks'" :session="session" />
+      <TracksTab
+        v-else-if="activeTab === 'tracks'"
+        :session="session"
+        :times="times"
+      />
       <div v-else-if="activeTab === 'details'" class="details-panel">
         <dl class="mq-kv details-list">
           <dt>URL</dt>

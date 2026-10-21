@@ -10,6 +10,7 @@ import {
 } from '../format'
 import type { DirectionFilter } from '../prefs'
 import { getCachedPref, loadPrefs, savePref } from '../prefs'
+import { type RequestTimes, trackRoundTrip } from '../requests'
 import { trackColourClass } from '../track-colour'
 import type { SessionEntry, TrackEntry } from '../use-inspector'
 
@@ -17,6 +18,8 @@ const DECAY_WINDOW_MS = 5_000
 
 const props = defineProps<{
   session: SessionEntry
+  /** How long each request took to answer. */
+  times: RequestTimes
 }>()
 
 // ── Bitrate tick (same pattern as ConnectionList.vue) ────────────
@@ -260,8 +263,8 @@ function activeFor(track: TrackEntry, stats: TrackStats | undefined): string {
 }
 
 function formatLatency(track: TrackEntry): string {
-  if (track.subscribedAt == null || track.subscribeOkAt == null) return '—'
-  return formatDuration(track.subscribeOkAt - track.subscribedAt)
+  const ms = trackRoundTrip(track, props.times)
+  return ms === null ? '—' : formatDuration(ms)
 }
 
 /** Rows as namespace groups, or as one unnamed group when not grouping. */
@@ -335,7 +338,7 @@ const headerCount = computed(() => {
             <th class="col-name">Track</th>
             <th class="mq-r" title="SUBSCRIBE sent, from session start">Subscribed</th>
             <th class="mq-r" title="SUBSCRIBE_OK received, from session start">OK</th>
-            <th class="mq-r">Latency</th>
+            <th class="mq-r" title="From the request to its response">Latency</th>
             <th class="mq-r" title="First object byte, from session start">First byte</th>
             <th class="mq-r">Total</th>
             <th class="mq-r">Bitrate</th>
