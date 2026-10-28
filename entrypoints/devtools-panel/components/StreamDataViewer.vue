@@ -33,20 +33,13 @@ const props = defineProps<{
   tracks?: Map<string, TrackEntry>
   /** True when this data is a datagram group (length-prefixed concatenated datagrams) */
   isDatagramGroup?: boolean
-  /**
-   * The catalog this stream carries objects of, when it is on a catalog
-   * track. It is the whole track's catalog, merged across its streams, not
-   * just this stream's objects.
-   */
+  /** The catalog of this stream's track, merged across all its streams */
   catalog?: CatalogView | null
   /** How an imported stream's framing came about; absent for a live stream */
   importedFraming?: ImportedFraming
 }>()
 
-/**
- * `catalog` is offered only on a catalog stream and is never saved as the
- * preference: it would mean nothing on the next stream opened.
- */
+/** `catalog` is offered only on a catalog stream and is never saved as the preference. */
 type ViewMode = 'hex' | 'json' | 'catalog'
 
 /** Content types that can be decoded to a JSON tree view */
@@ -77,8 +70,7 @@ const viewMode = ref<ViewMode>(
       : 'hex',
 )
 
-// The catalog is read in the background of the panel and may land after the
-// stream is open; a catalog stream opens on what its catalog says.
+// The catalog may land after the stream is open.
 watch(
   () => props.catalog?.key,
   (key, previous) => {
@@ -100,11 +92,7 @@ const framing = computed(() => {
   return parseStreamFraming(props.data, props.draft)
 })
 
-/**
- * What the hex view says about bytes it did not see captured. A trace records
- * no framing, so an imported stream's is either encoded again from its events
- * or missing altogether.
- */
+/** The hex view's note on an imported stream's framing bytes. */
 const framingNote = computed((): string | undefined => {
   if (props.importedFraming === 'reconstructed')
     return 'header bytes rebuilt from the trace, not captured'

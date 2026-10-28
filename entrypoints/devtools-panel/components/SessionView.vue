@@ -159,11 +159,7 @@ const hasNewData = computed(() => {
 
 const draft = computed(() => sessionDraft(props.session))
 
-/**
- * The session's MSF / CMSF catalogs, read as their streams grow: the Tracks
- * tab shows what they say about each track, and a catalog stream opens on its
- * catalog.
- */
+/** The session's MSF / CMSF catalogs, read as their streams grow. */
 const catalogs = useSessionCatalogs(() => props.session, props.getStreamData)
 const selectedCatalog = computed(() =>
   selectedStreamId.value == null || selectedStreamId.value < 0

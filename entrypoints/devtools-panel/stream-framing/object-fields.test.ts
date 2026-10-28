@@ -211,9 +211,7 @@ describe('object properties', () => {
 
 describe('datagram status and type', () => {
   // draft-22 OBJECT_DATAGRAM, STATUS set (0x20): alias 1, group 0, object 5,
-  // priority 0x80, status 3 (End of Group). The codec reports these as
-  // `datagramType` and `objectStatus`; reading `streamTypeId` and `status`
-  // lost both.
+  // priority 0x80, status 3 (End of Group).
   const bytes = new Uint8Array([0x20, 0x01, 0x00, 0x05, 0x80, 0x03])
 
   it('reports the datagram type', () => {

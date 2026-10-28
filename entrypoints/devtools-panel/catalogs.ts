@@ -1,39 +1,8 @@
 /**
- * MSF and CMSF catalogs, read in the panel.
- *
- * A catalog is the JSON carried on a track named "catalog" (msf-00 5,
- * msf-01 5): one object per update, each an independent catalog or a delta to
- * the one before it. What a session's catalogs say is what turns a list of
- * track names into a list of media tracks, so the panel reads them as they
- * arrive and keeps, per catalog track, the catalog as it stands now, the
- * problems each object had, and whether anything was missed on the way.
- *
- * Why here and not in the background. The background's data path is
- * synchronous and runs on every chunk; a catalog needs JSON parsing, state
- * across streams and a track registry join, none of which it should pay for,
- * and a service worker restart would drop that state anyway. The panel has the
- * registry, can ask for a stream's bytes when it grows, and only ever reads the
- * handful of streams that belong to catalog tracks.
- *
- * Finding a catalog stream. Data streams name their track by number only: a
- * subgroup stream by track alias, a fetch stream by the request id it answers.
- * The registry joins either to a namespace and name, so a stream is a catalog
- * stream when that join lands on a track named exactly "catalog". The alias
- * often arrives after the stream (SUBSCRIBE_OK, PUBLISH, FETCH_OK), so every
- * {@link SessionCatalogs.sync} resolves again rather than deciding once.
- *
- * One catalog per (namespace, name). A subscription and its joining FETCH are
- * two requests for the same track, and the drafts tell subscribers to use both
- * (msf-01 5): their objects are one sequence, merged by Group and Object ID.
- * Sent and received catalogs are kept apart only by their namespace.
- *
- * Incremental. A live catalog stream grows a little at a time and the panel
- * can only ask for a stream's bytes whole, so the framing is redone when a
- * stream grows, but each object's JSON is parsed once: a stream remembers how
- * many of its objects were taken, and only later ones are read. Applying them
- * is cheap and runs in Group and Object order; an object that arrives behind
- * one already applied (a joining FETCH answering after the subscription's
- * first group) replays the parsed objects from the start.
+ * MSF and CMSF catalogs, read in the panel. A catalog is the JSON on a track
+ * named "catalog" (msf-00 5, msf-01 5), one independent catalog or delta per
+ * object. One catalog per (namespace, name): a subscription and its joining
+ * FETCH are one sequence, merged by Group and Object ID (msf-01 5).
  */
 
 import {
@@ -69,21 +38,14 @@ import type { SessionEntry, TrackEntry } from './use-inspector'
 /** A catalog track, or a track a catalog describes: namespace text and name. */
 export type TrackKey = string
 
-/**
- * A namespace tuple as text, the way the rest of the panel writes it: the
- * fields joined by `/`. A catalog's own `namespace` is a JSON string whose
- * mapping to a tuple the drafts leave open, and this is the reading every
- * catalog seen so far follows.
- */
+/** A namespace tuple as text: the fields joined by `/`. */
 export function namespaceText(tuple: readonly string[]): string {
   return tuple.join('/')
 }
 
 /**
- * The key two namespace-and-name pairs are compared by. Leading and trailing
- * slashes are dropped from the namespace, because nothing in the drafts says
- * whether `/live/event` and `live/event` name one tuple and a catalog written
- * either way should still find its tracks.
+ * The key namespace-and-name pairs are compared by. Leading and trailing
+ * slashes in the namespace are ignored.
  */
 export function trackKey(namespace: string | null, name: string): TrackKey {
   const ns = (namespace ?? '').replace(/^\/+|\/+$/g, '')
@@ -115,28 +77,18 @@ export interface CatalogStreamRef {
   byteCount: number
 }
 
-/**
- * Which way a track's objects travel, from the request that registered it. A
- * SUBSCRIBE or FETCH the page sent brings objects in; a PUBLISH the page sent
- * sends them out; a request the page received runs the other way.
- */
+/** Which way a track's objects travel, from the request that registered it. */
 function dataDirection(track: TrackEntry): 'tx' | 'rx' {
   if (track.via === 'publish') return track.direction
   return track.direction === 'tx' ? 'rx' : 'tx'
 }
 
 /**
- * Every data stream of `session` whose track is a catalog track.
- *
- * A subgroup stream is found by its alias and nothing else, as the stream
- * list finds it. Aliases are the publisher's and each end publishes, so the
- * same number can name one track coming in and another going out; a track
- * whose objects travel the stream's way is preferred, and the latest to claim
- * the alias otherwise, as the registry itself resolves it.
- *
- * A fetch stream is found by its request id. Usually that is a FETCH's own;
- * a draft-22 fill fetch carries the SUBSCRIBE's instead (transport-22 3.4),
- * which is still the catalog track, so the track's request kind is not checked.
+ * Every data stream of `session` whose track is a catalog track. An alias
+ * claimed in both directions resolves to the track whose objects travel the
+ * stream's way, else the latest claim. A draft-22 fill fetch carries the
+ * SUBSCRIBE's request id (transport-22 3.4), so a fetch stream's track may be
+ * any request kind.
  */
 export function locateCatalogStreams(
   session: Pick<SessionEntry, 'streams' | 'tracks'>,
@@ -150,7 +102,6 @@ export function locateCatalogStreams(
     if (list) list.push(track)
     else byAlias.set(track.trackAlias, [track])
   }
-  // Nothing to find, and no reason to walk what may be thousands of streams.
   if (!anyCatalog) return []
 
   const refs: CatalogStreamRef[] = []
@@ -198,10 +149,8 @@ export function locateCatalogStreams(
 // ─── What the panel keeps ─────────────────────────────────────────
 
 /**
- * A problem with a catalog object. The library's, with the section that states
- * the rule, plus `object_order`: a rule about which object of a Group holds
- * what, which only the reader of the track can check because only it has the
- * Group and Object IDs.
+ * A problem with a catalog object: the library's, plus `object_order` for the
+ * Group rules, which need the Group and Object IDs.
  */
 export interface CatalogObjectProblem extends Omit<CatalogProblem, 'category'> {
   category: CatalogProblemCategory | 'object_order'
@@ -249,15 +198,9 @@ export interface CatalogView {
   objects: CatalogObjectRecord[]
   /** The data streams it was read from */
   streamIds: number[]
-  /**
-   * The newest independent catalog is compressed, so what the catalog says
-   * now is not known; `state` is empty rather than the older catalog.
-   */
+  /** The newest independent catalog is compressed; `state` is empty */
   compressed: boolean
-  /**
-   * Why what is shown may not be all the track sent. Empty when nothing is
-   * known to be missing.
-   */
+  /** Why objects the track sent may be missing; empty when none are known */
   incomplete: string[]
 }
 
@@ -285,10 +228,9 @@ function groupRuleSection(draft: CatalogDraft | null): string | null {
 }
 
 /**
- * The Group rules, which hold whichever draft the object follows: the first
- * object of a Group is independent (msf-00 5, msf-01 5), and from MSF-01 the
- * rest of the Group is deltas, all in Subgroup 0. They are the producer's to
- * keep, so breaking one is a warning and the object still applies.
+ * The Group rules: the first object of a Group is independent (msf-00 5,
+ * msf-01 5); from MSF-01 the rest of the Group is deltas, all in Subgroup 0.
+ * Breaking one is a warning and the object still applies.
  */
 function orderProblems(
   parsed: ParsedCatalog,
@@ -332,12 +274,9 @@ function orderProblems(
 }
 
 /**
- * The objects of one catalog track and the catalog they add up to.
- *
- * Objects are kept parsed, sorted by Group and Object ID, and applied up to
- * `applied`. A new object that sorts after them is applied on its own; one
- * that sorts before them means the catalog is rebuilt from the start, which
- * costs one `applyCatalogObject` per object and no parsing.
+ * The objects of one catalog track, parsed, sorted by Group and Object ID and
+ * applied up to `applied`. An object sorting before an applied one replays
+ * the log from the start.
  */
 class CatalogLog {
   readonly entries: Entry[] = []
@@ -370,8 +309,7 @@ class CatalogLog {
     payload: Uint8Array,
   ): boolean {
     this.streamIds.add(streamId)
-    // A subscription and its joining FETCH deliver the same objects; the
-    // first copy read is the one kept.
+    // A subscription and its joining FETCH deliver the same objects.
     const id = `${groupId}:${objectId}`
     if (this.ids.has(id)) return false
     this.ids.add(id)
@@ -395,7 +333,7 @@ class CatalogLog {
       readProblems,
     }
 
-    // Insert in order. Live objects arrive in order, so look from the end.
+    // Live objects arrive in order, so search from the end.
     let at = this.entries.length
     while (at > 0 && compareEntries(this.entries[at - 1], entry) > 0) at--
     this.entries.splice(at, 0, entry)
@@ -421,9 +359,7 @@ class CatalogLog {
   private apply(entry: Entry): void {
     const { parsed } = entry
     if (parsed.kind === 'compressed') {
-      // A compressed independent catalog replaces whatever came before with
-      // something unreadable here. Showing the older catalog as current would
-      // be wrong, so the state empties and says why.
+      // The catalog is now unknown; the older one is not shown as current.
       this.state = createCatalogState({ catalogNamespace: this.namespace })
       this.baseGroup = entry.groupId
       this.compressed = true
@@ -432,19 +368,15 @@ class CatalogLog {
       return
     }
     if (parsed.kind === 'delta') {
-      // A delta builds on the independent catalog that starts its own Group
-      // (msf-00 5, msf-01 5). Without that object, applying it to an earlier
-      // Group's catalog would describe a catalog nobody sent, and MSF-01
-      // says updates before the latest Group's first object are ignored.
+      // A delta applies only to the independent catalog starting its own
+      // Group (msf-00 5, msf-01 5).
       if (this.compressed && this.baseGroup === entry.groupId) {
         entry.outcome = 'skipped'
         entry.problems = entry.readProblems
         return
       }
       if (this.baseGroup !== entry.groupId) {
-        // Missing only when object 0 never arrived. When it did and was not
-        // an independent catalog, the fault is the producer's and object 0
-        // already says so.
+        // An object 0 that arrived but was not independent has its own problem.
         if (!this.ids.has(`${entry.groupId}:0`)) {
           this.missingBase.add(entry.groupId)
         }
@@ -491,9 +423,9 @@ interface StreamProgress {
 }
 
 /**
- * Every catalog of one session, read incrementally. Plain state, no Vue: a
- * caller calls {@link sync} when the session changes, reads the streams it
- * returns and hands their bytes to {@link ingest}.
+ * Every catalog of one session, read incrementally: call {@link sync} when
+ * the session changes, read the streams it returns and pass their bytes to
+ * {@link ingest}.
  */
 export class SessionCatalogs {
   private readonly logs = new Map<TrackKey, CatalogLog>()
@@ -513,15 +445,12 @@ export class SessionCatalogs {
   ): CatalogStreamRef[] {
     let changed = false
 
-    // While recording is paused the panel drops stream data notifications
-    // and the background stores nothing, so a catalog object sent meanwhile
-    // was never seen, and which catalog it belonged to cannot be known.
     if (session.streamRecording === false && !this.pausedSeen) {
       this.pausedSeen = true
       changed = true
     }
 
-    // A catalog track the registry knows is listed before any of its data.
+    // Listed before any of its data arrives.
     for (const track of session.tracks.values()) {
       if (!isCatalogTrackName(track.trackName)) continue
       const namespace = namespaceText(track.trackNamespace)
@@ -552,8 +481,7 @@ export class SessionCatalogs {
         this.progress.set(ref.streamId, p)
         changed = true
       } else if (p.key !== ref.key) {
-        // An alias claimed again by another track. The objects already read
-        // stay with the catalog they were read for.
+        // Alias claimed again by another track; read objects stay put.
         continue
       }
       if (p.done) continue
@@ -562,9 +490,6 @@ export class SessionCatalogs {
       }
     }
 
-    // A stream cleared from the list (Clear, or the session's streams being
-    // dropped) before it was read to its end took the rest of its objects
-    // with it.
     for (const [streamId, p] of this.progress) {
       if (p.done || p.vanished) continue
       if (!session.streams.has(streamId)) {
@@ -598,9 +523,7 @@ export class SessionCatalogs {
     p.readBytes = data.length
     p.closed = ref.closed
 
-    // The framing must be the stream the header promised: a parser that
-    // falls back to another draft or reads the bytes as a datagram would
-    // otherwise hand catalog-shaped garbage to the JSON reader.
+    // Rejects a framing that fell back to another draft or to a datagram.
     const matches = (f: ParsedStreamFraming | null): f is ParsedStreamFraming =>
       f != null &&
       f.streamType === ref.kind &&
@@ -608,10 +531,7 @@ export class SessionCatalogs {
         ? f.headerFields.trackAlias === ref.id
         : f.headerFields.requestId === ref.id)
     let framing = parseStreamFraming(data, draft)
-    // A stream that ends inside an object does not frame whole, open (the
-    // rest has not arrived) or closed (reset, or cut short). Its complete
-    // objects still do: read those now. An open stream's cut object is read
-    // when the stream grows; a closed stream's never will be.
+    // A stream ending inside an object: read its complete objects.
     let cut = false
     if (!matches(framing) && draft !== undefined) {
       const prefix = parseStreamPrefix(data, draft, ref.kind)
@@ -621,7 +541,6 @@ export class SessionCatalogs {
     if (!matches(framing)) {
       p.unframed = ref.closed
       p.done = ref.closed
-      // Waiting on an open stream changes nothing anyone sees.
       if (ref.closed) this.touch()
       return
     }
@@ -633,8 +552,6 @@ export class SessionCatalogs {
       const obj = objects[i]
       const end = obj.payloadOffset + obj.payloadLength
       if (end > data.length) break
-      // A zero-length object is a status (end of group, end of track) or
-      // carries no catalog at all.
       if (obj.payloadLength === 0) continue
       const groupId = obj.groupId ?? framing.headerFields.groupId ?? 0
       const subgroupId = obj.subgroupId ?? framing.headerFields.subgroupId ?? 0
@@ -806,11 +723,7 @@ export function trackSummary(track: CatalogTrack): string {
 
 // ─── Vue ──────────────────────────────────────────────────────────
 
-/**
- * One reader per session, kept beside the session rather than inside a
- * component, so leaving the session's view and coming back does not parse its
- * catalogs again.
- */
+/** One reader per session, so returning to its view does not parse again. */
 const readers = new WeakMap<SessionEntry, SessionCatalogs>()
 
 function readerFor(session: SessionEntry): SessionCatalogs {
@@ -833,13 +746,8 @@ export interface SessionCatalogsView {
 }
 
 /**
- * A session's catalogs, kept current while the caller is mounted.
- *
- * What it watches is small on purpose: the catalog tracks in the registry,
- * and for the streams on them their size and whether they closed. A session
- * without a catalog track costs a walk of its tracks per update and nothing
- * more. Reads go out one stream at a time, and a change while one is in flight
- * is picked up when it lands rather than starting a second.
+ * A session's catalogs, kept current while the caller is mounted. Reads go
+ * out one stream at a time.
  */
 export function useSessionCatalogs(
   session: () => SessionEntry,
@@ -851,10 +759,7 @@ export function useSessionCatalogs(
   const revision = shallowRef(0)
   const reader = computed(() => readerFor(session()))
 
-  /**
-   * Everything a catalog read depends on, as one string, so the watcher
-   * fires on a change that matters and not on every chunk of every stream.
-   */
+  /** Everything a catalog read depends on, so other chunks do not fire it. */
   const signature = computed(() => {
     const s = session()
     const parts: string[] = [s.sessionId, String(s.streamRecording !== false)]

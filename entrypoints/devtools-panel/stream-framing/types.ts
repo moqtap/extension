@@ -16,7 +16,7 @@ export interface StreamObject {
    *
    * Only a zero-length object has one, and it is the difference between an
    * object that carried no bytes and an object that marked the end of a group
-   * or a track. Dropping it made those indistinguishable in an exported trace.
+   * or a track.
    */
   status?: number
   /**
@@ -30,15 +30,13 @@ export interface StreamObject {
   publisherPriority?: number
   /**
    * The Serialization Flags of an End of Range marker on a fetch stream (from
-   * draft-16): a range that does not exist or is not known, not an object. It
-   * frames like one, a Group and Object ID and no payload, and is no object.
+   * draft-16), which frames like an object but is none.
    */
   endOfRange?: number
   /**
    * Byte offset of the Object's property block (Extension Headers before
    * draft-17) in the stream, past its length field. Absent when the Object had
-   * no properties field. The block is the wire's own bytes; decode them with
-   * {@link decodeObjectProperties} when they are wanted, not before.
+   * no properties field. Decode with {@link decodeObjectProperties}.
    */
   propertiesOffset?: number
   /** Length of the property block. Present exactly when `propertiesOffset` is. */

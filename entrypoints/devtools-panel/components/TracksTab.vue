@@ -174,9 +174,7 @@ function getStats(track: TrackEntry): TrackStats | undefined {
 
 /**
  * The Media column: for a track a catalog describes, its packaging and shape;
- * for a catalog track, how many tracks it declares. Both are joined on the
- * namespace text and name, so a subscription and a fetch of one track show
- * the same thing.
+ * for a catalog track, how many tracks it declares.
  */
 interface MediaCell {
   badge: string
@@ -199,9 +197,7 @@ function mediaCell(track: TrackEntry): MediaCell | null {
     const notes: string[] = []
     if (catalog.compressed) notes.push('compressed')
     if (catalog.incomplete.length > 0) notes.push('incomplete')
-    // No object read is not a catalog that declares no tracks: no stream of
-    // the track may have been found (its data never recorded, or a trace
-    // that does not say which track a stream is on), or none has arrived yet.
+    // No object read means the declared tracks are unknown, not none.
     const read = catalog.objects.length > 0
     const unread =
       catalog.streamIds.length === 0

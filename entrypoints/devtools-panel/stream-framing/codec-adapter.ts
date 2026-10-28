@@ -123,17 +123,9 @@ export function createCodecDraftParser(draft: SupportedDraft): DraftParser {
 }
 
 /**
- * Create a parser for the longest prefix of a stream that frames whole as
- * `kind` under this draft alone: no fallback to another stream kind or
- * draft. It is for a stream that ends inside an object, which the codec
- * rejects whole: its complete objects are still worth reading.
- *
- * The codec's error offset says where it ran out of bytes, which is at or
- * past the start of the object it could not finish. Each try cuts the bytes
- * back to that offset (or by one byte, if the offset is not short of the
- * end), so the search walks back over only the cut object's own header.
- * A stream that is not this kind at all gives up after a bounded number of
- * tries rather than decoding every prefix.
+ * A parser for the longest prefix of a stream that frames whole as `kind`
+ * under this draft alone, for a stream that ends inside an object. Each try
+ * cuts the bytes back to the codec's error offset, or by one byte.
  */
 export function createCodecPrefixParser(
   draft: SupportedDraft,
@@ -173,12 +165,7 @@ export interface ParsedPrefix {
   end: number
 }
 
-/**
- * Decode attempts {@link createCodecPrefixParser} makes before giving up. An
- * object's header (id, properties length, payload length) is a handful of
- * varints, each try steps over at least one byte of it, and properties are
- * skipped whole by the error offset, so a real stream frames well within it.
- */
+/** Decode attempts {@link createCodecPrefixParser} makes before giving up. */
 const MAX_PREFIX_TRIES = 64
 
 function tryDecodeSubgroup(
@@ -326,9 +313,8 @@ function tryDecodeDatagram(
 }
 
 /**
- * A draft-08 to -10 status datagram: no payload, a status in its place. Its
- * type is not the datagram's, so the datagram decoder refuses it. Only a
- * datagram that is all status is one: it ends where the status does.
+ * A draft-08 to -10 status datagram, which the datagram decoder refuses. It
+ * must end where the status does.
  */
 function tryDecodeDatagramStatus(
   codec: DataStreamCodec,
@@ -388,11 +374,7 @@ function mapObjects(codecObjects: ObjectResult[]): StreamObject[] {
   }))
 }
 
-/**
- * Where an Object's property block sits, from the codec's offset and the length
- * of the raw block. The block itself is not kept: it is a view into the stream,
- * and the stream is already held.
- */
+/** Where an Object's property block sits in the stream. */
 function propertiesSpan(obj: {
   readonly extensionData?: Uint8Array
   readonly extensionDataByteOffset?: number
@@ -416,13 +398,8 @@ export function createPropertiesDecoder(
 }
 
 /**
- * The same, for fetch objects, which carry their own Group ID, Subgroup ID and
- * Priority rather than inheriting the stream's.
- *
- * A fetch stream has no group or priority in its header at all -- Section
- * 11.4.4 puts them on each object -- so mapping these through `mapObjects` gave
- * every object in an exported trace the same wrong values: group 0 and priority
- * 0, for a stream whose whole point is that it spans groups.
+ * The same, for fetch objects. Fetch objects carry their own Group ID,
+ * Subgroup ID and Priority (Section 11.4.4); a fetch stream header has none.
  */
 function mapFetchObjects(codecObjects: FetchObjectResult[]): StreamObject[] {
   return mapObjects(codecObjects).map((mapped, i) => {

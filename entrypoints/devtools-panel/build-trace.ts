@@ -75,8 +75,7 @@ function optionalId<K extends string>(
 
 /**
  * The object's property block as the wire carried it, for Event 3's `"props"`.
- * Nothing when the object had no properties field — not an empty block, which
- * is a field that carried nothing.
+ * Nothing when the object had no properties field.
  */
 function propertiesOf(
   data: Uint8Array,
@@ -165,7 +164,6 @@ export async function buildTrace(
     // no data falls back to session start.
     const openedAt = stream.firstDataAt ?? startTime
 
-    // Load stream data via callback (background serves from memory + IDB)
     let data: Uint8Array | null = null
     if (stream.byteCount > 0 && !controlStreams.has(stream.streamId)) {
       try {
@@ -177,15 +175,8 @@ export async function buildTrace(
     // The session's own draft first: a parser for another draft can accept the
     // same bytes and read different fields out of them.
     let framing = data ? parseStreamFraming(data, session.draft) : null
-    // A stream is never a datagram. The parser falls back to reading it as
-    // one when the stream does not frame whole, which is what a stream that
-    // ends inside an object does (reset, cut short, or still open when the
-    // trace is built), and the "datagram" it finds is the whole stream,
-    // framing bytes and all, as one object's payload. Exported, that object
-    // would hide a catalog's JSON behind those bytes from the share
-    // redaction, which reads payloads from their first byte. The objects
-    // before the cut frame on their own; the one cut short is left out,
-    // since its bytes are not an object.
+    // A stream is never a datagram: the parser falls back to one when a
+    // stream ends inside an object. Keep the objects before the cut instead.
     if (data && (framing == null || framing.streamType === 'datagram')) {
       const draft = session.draft
       // A stream the background saw a fetch header on is a fetch stream;
@@ -228,25 +219,19 @@ export async function buildTrace(
       try {
         if (framing && framing.objects.length > 0) {
           for (const obj of framing.objects) {
-            // An End of Range marker says a range of a fetch holds no objects.
-            // The format has no event for that, and written as an object it
-            // would say the very object it rules out exists, empty.
+            // An End of Range marker is not an object; the format has no event for it.
             if (obj.endOfRange !== undefined) continue
             const end = Math.min(
               obj.payloadOffset + obj.payloadLength,
               data.length,
             )
             const payload = data.slice(obj.payloadOffset, end)
-            // When this object's bytes actually arrived, resolved through the
-            // chunk-boundary index the panel keeps. Absent for streams
-            // replayed from IDB, which nobody watched arrive.
+            // Absent for streams replayed from IDB.
             const objectAt =
               arrivalAt(stream.arrivals, obj.payloadOffset) ?? openedAt
 
             // A fetch object carries its own Group ID and Priority; a
-            // subgroup object inherits the stream header's. Preferring the
-            // object's own is what makes a fetch stream export correctly,
-            // and is a no-op on a subgroup stream, where they are absent.
+            // subgroup object inherits the stream header's.
             const objectGroupId = BigInt(obj.groupId ?? hf.groupId ?? 0)
             const objectPriority =
               obj.publisherPriority ?? hf.publisherPriority ?? 0
@@ -325,10 +310,8 @@ export async function buildTrace(
               // stream this needs no offset arithmetic.
               const objectAt = dg.arrivals?.get(obj.objectId) ?? groupAt
 
-              // Datagrams are not a QUIC stream and have no stream id; the
-              // convention here is 0. Declaring one open as a datagram stream
-              // is how a reader learns that from the format's own stream-type
-              // field rather than inferring it from the id being zero.
+              // Datagrams have no stream id: 0 by convention, typed as a
+              // datagram stream.
               push(objectAt, {
                 type: 'stream-opened',
                 seq: 0,
@@ -336,11 +319,8 @@ export async function buildTrace(
                 streamId: 0n,
                 direction: dg.direction === 'tx' ? 0 : 1,
                 streamType: STREAM_TYPE_DATAGRAM,
-                // Every datagram stream shares stream id 0 and an object event
-                // names only its group, so the alias is all that tells one
-                // track's datagrams from another's. Sorted by time, two
-                // tracks' datagrams of one group id interleave: each is opened
-                // on its own, right before it, so none takes the other's.
+                // Every datagram shares stream id 0, so each is opened with
+                // its alias right before it; interleaved tracks stay apart.
                 ...optionalId('trackAlias', framing.headerFields.trackAlias),
                 groupId: BigInt(dg.groupId),
               })

@@ -194,10 +194,9 @@ export interface StreamEntry {
   /** MoQT group ID (for datagram groups) */
   groupId?: number
   /**
-   * How an imported stream's framing came about. The trace records no framing
-   * bytes: 'reconstructed' when they were encoded again from its events,
-   * 'unavailable' when the events did not say enough and the bytes are the
-   * payloads alone. Absent for live streams.
+   * How an imported stream's framing came about: 'reconstructed' when encoded
+   * again from its events, 'unavailable' when the bytes are the payloads
+   * alone. Absent for live streams.
    */
   importedFraming?: ImportedFraming
 }

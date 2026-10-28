@@ -1,11 +1,7 @@
 /**
- * Which content type the background reports for a stream's first chunk.
- *
- * The detectors themselves (ISO BMFF boxes, Annex-B) live in @moqtap/media
- * and are tested there. What is tested here is the order this module asks
- * them in, which is the extension's own: a raw codec frame must not be
- * claimed by the looser checks after it, and a catalog must not be claimed
- * by the media checks before it.
+ * Which content type the background reports for a stream's first chunk: the
+ * order the detectors are asked in. A raw codec frame must not be claimed by
+ * the looser checks after it, nor a catalog by the media checks before it.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -54,7 +50,7 @@ describe('content type routing', () => {
     expect(detectContentType(DELTA_FRAME)).toBe('h264')
   })
 
-  it('still reports json for a catalog payload', () => {
+  it('reports json for a catalog payload', () => {
     const hang = new TextEncoder().encode(
       '{"video":{"renditions":{"video":{"codec":"avc1.64001f"}}}}',
     )

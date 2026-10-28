@@ -8,8 +8,8 @@
  * Runs synchronously before IndexedDB write — must be fast.
  */
 
-// Subpath imports only: the package root also exports the catalog parser,
-// which the background bundle (this module's main caller) must not carry.
+// Subpath imports: the package root also pulls in the catalog parser, which
+// the background bundle must not carry.
 import { detectAnnexB } from '@moqtap/media/annexb'
 import {
   detectMediaInfo,

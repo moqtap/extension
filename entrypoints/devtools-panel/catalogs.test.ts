@@ -1,12 +1,7 @@
 /**
- * Reading a session's catalogs out of its recorded streams.
- *
- * Every stream here is real draft-22 wire bytes from the codec's encoders, and
- * every session is the shape the panel builds: a registry of tracks keyed by
- * request id, and data streams that know only their alias or fetch request id.
- * What is asserted is what a user sees — which tracks a catalog declares,
- * which objects applied, what is missing — plus the one cost that matters live:
- * an object's JSON is parsed once, however often its stream grows.
+ * Reading a session's catalogs out of its recorded streams. Streams are
+ * draft-22 wire bytes from the codec's encoders; sessions are shaped as the
+ * panel builds them.
  */
 
 import * as media from '@moqtap/media/catalog'

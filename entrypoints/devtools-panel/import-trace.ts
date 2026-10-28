@@ -1,19 +1,10 @@
 /**
- * A .moqtrace read back into a panel session.
- *
- * The format records what a data stream carried, not its bytes: Event 1 names
- * the stream's track (by alias, or by request on a fetch stream) and subgroup,
- * Event 3 each object's ids, priority, status and property block, Event 4 its
- * payload. The framing around them is not recorded at any level. Everything in
- * the panel that reads a stream -- the stream list, the hex viewer, catalogs,
- * media detection -- frames its bytes first, so a stream rebuilt as its
- * payloads run together reads as nothing.
- *
- * So each stream is encoded again with the session draft's own codec from what
- * the events say, and read back to check that it says the same. Where it
- * cannot be -- no draft, a trace from before these fields, an object with no
- * header event -- the payloads are kept as they were and the stream is marked
- * so the UI can say its framing is unavailable.
+ * A .moqtrace read back into a panel session. A trace records each data
+ * stream's track (Event 1), objects (Event 3) and payloads (Event 4) but not
+ * its framing, so each stream is encoded again with the session draft's codec
+ * and read back to check. Where it cannot be (no draft, missing fields, an
+ * object with no header event) the payloads are kept as they were and the
+ * stream is marked as having no framing.
  */
 
 import {
@@ -53,11 +44,7 @@ import type {
 
 /**
  * Record the `moqt_implementation` either side advertises in its setup
- * message: the client and relay name themselves on the wire, which beats any
- * fingerprint inferred from traffic.
- *
- * Called from both the live control-message path and the trace import path,
- * so an imported .moqtrace shows the same thing a live session does.
+ * message, for live and imported sessions alike.
  */
 export function applySetupImplementation(
   session: SessionEntry,
@@ -168,9 +155,7 @@ export function sessionFromTrace(
   // its group: the alias comes from the datagram stream-opened before it.
   const datagramAlias = new Map<bigint, bigint>()
   // Every alias a group id has been opened on, and the group ids opened again
-  // since their last datagram. This extension opens each datagram on its own;
-  // a trace that opened a group once, while another track's group of the same
-  // id was open, says nothing of which track a later datagram is on.
+  // since their last datagram.
   const datagramAliases = new Map<bigint, Set<bigint>>()
   const datagramOpened = new Set<bigint>()
   const ambiguousGroups = new Set<bigint>()
@@ -186,8 +171,7 @@ export function sessionFromTrace(
 
   function datagramGroup(groupId: bigint): RecordedDatagramGroup {
     const trackAlias = datagramAlias.get(groupId)
-    // Without an alias there is nothing to tell one track's group from
-    // another's, and imports have always filed those under alias 0.
+    // Without an alias, a group is filed under alias 0.
     const gk = `${trackAlias ?? 0n}:${groupId}`
     let group = datagramGroups.get(gk)
     if (!group) {
@@ -205,10 +189,9 @@ export function sessionFromTrace(
   }
 
   /**
-   * A datagram header that no stream-opened came right before, in a group id
-   * more than one alias has been opened on: it may be on any of them. Every
-   * group of that id keeps its payloads and loses its framing, rather than
-   * frame a datagram on another track's alias.
+   * A datagram header with no stream-opened right before it, in a group id
+   * opened on more than one alias: every group of that id keeps its payloads
+   * and loses its framing.
    */
   function datagramHeader(groupId: bigint): void {
     const opened = datagramOpened.delete(groupId)
@@ -235,11 +218,9 @@ export function sessionFromTrace(
     return stream
   }
 
-  // Tracks are rebuilt from the trace's control messages the same way they
-  // are live, including the stream each message came from — a draft-17+
-  // response identifies its request only by the stream it arrived on.
-  // Traces written before the format carried a stream id have none, and
-  // their draft-17+ subscriptions stay unresolved.
+  // Tracks are rebuilt from the control messages as they are live, with the
+  // stream each came from: a draft-17+ response identifies its request only by
+  // its stream. Without stream ids, draft-17+ subscriptions stay unresolved.
   const trackRegistry = new TrackRegistry<TrackEntry>(
     session.tracks,
     (fields) => ({
@@ -254,11 +235,8 @@ export function sessionFromTrace(
     switch (event.type) {
       case 'control': {
         const ce = event as ControlMessageEvent
-        // A conformant writer puts a field map in `message`, but the format
-        // obliges a reader to accept less: a trace may carry a text rendering
-        // of the message there instead. Narrowing decides which of the two
-        // this is, and everything that reads a field off it is skipped for
-        // the other rather than reading `undefined` from it.
+        // `message` may be a text rendering rather than a field map; fields
+        // are read only from a field map.
         const fields = controlMessageFields(ce.message)
         const msgType = controlMessageName(ce.messageType, draft, fields)
         session.messages.push({
@@ -278,8 +256,7 @@ export function sessionFromTrace(
           ce.direction === 0 ? 'tx' : 'rx',
         )
 
-        // Extract track info from control messages. Traces recorded before
-        // the stream id existed simply have none.
+        // Extract track info from control messages.
         if (fields) {
           trackRegistry.apply(msgType, fields, {
             direction: ce.direction === 0 ? 'tx' : 'rx',
@@ -317,10 +294,8 @@ export function sessionFromTrace(
             byteCount: 0,
             chunkCount: 0,
             contentType: 'binary',
-            // What the stream's header said, as the background reads it
-            // live: the alias on a subgroup stream, the request on a fetch
-            // stream (type 2). They are what attribute a stream to its
-            // track, a catalog's among them.
+            // What the stream's header said: the alias on a subgroup stream,
+            // the request on a fetch stream (type 2).
             ...(!isFetch && se.trackAlias != null
               ? { trackAlias: Number(se.trackAlias) }
               : {}),
@@ -378,11 +353,9 @@ export function sessionFromTrace(
             : undefined
         if (payload && payload.length > 0) rec.payloads.push(payload)
 
-        // The header this payload belongs to: same group and object, not yet
-        // given one, wherever it is among the headers still waiting (the
-        // format lets payloads follow their headers in any order). Without
-        // one, or with a payload the trace left out, the object cannot be
-        // encoded.
+        // The waiting header with the same group and object; payloads may
+        // follow their headers in any order. Without one, or without a
+        // payload, the object cannot be encoded.
         const header = rec.unpaired.get(`${op.groupId}:${op.objectId}`)?.pop()
         if (!header || !payload) rec.framable = false
         if (header) {
@@ -590,10 +563,8 @@ function frameFetch(
   draft: SupportedDraft,
 ): Uint8Array | null {
   if (rec.fetchRequestId === undefined) return null
-  // From draft-16 a fetch stream can end a range with a marker, which is no
-  // object. Exports from before they were left out wrote one as an empty
-  // Normal object, which is what it reads as here; framed as one, it would
-  // say an object exists where the original said the range does not.
+  // From draft-16 an empty Normal object may stand for an End of Range
+  // marker, which is no object, so such a stream is not re-framed.
   if (
     Number(draft) >= 16 &&
     rec.objects.some((o) => o.status === 0 && (o.payload?.length ?? 0) === 0)
@@ -634,7 +605,7 @@ function frameFetch(
  * A datagram group as one encoded datagram per object. Each datagram has its
  * own type, so PROPERTIES is set on those that had a block and no other. One
  * that does not encode, or does not read back as itself, leaves the whole
- * group as payloads: a group half framed would read as two things at once.
+ * group as payloads.
  */
 function frameDatagramGroup(
   rec: RecordedDatagramGroup,
@@ -650,11 +621,10 @@ function frameDatagramGroup(
       const withProperties = o.properties !== undefined
       const obj = encoderObject(o, withProperties, draft)
       if (!obj) return null
-      // A zero-length object with a status other than Normal is a status
-      // datagram, whose type bit moved across drafts. Through draft-10 the
-      // encoder writes its own type whatever this says: draft-08's datagram
-      // carries a status, draft-09 and -10 send one as a DATAGRAM_STATUS of
-      // its own, and draft-07 has no status to send.
+      // A zero-length object with a non-Normal status is a status datagram.
+      // Through draft-10 the encoder picks its own type: draft-08's datagram
+      // carries a status, draft-09 and -10 use DATAGRAM_STATUS, and draft-07
+      // has none.
       const status = obj.payloadLength === 0 && o.status !== 0
       const props = withProperties ? 0x01 : 0
       const type =

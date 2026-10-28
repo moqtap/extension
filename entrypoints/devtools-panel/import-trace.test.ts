@@ -1,12 +1,8 @@
 /**
- * An exported trace read back has to frame as the session it came from.
- *
- * The format records no framing bytes, and the import used to run each
- * stream's payloads together, which nothing in the panel can read: the hex
- * view found no objects, catalogs found no catalog, datagram groups all landed
- * on alias 0. Every case here goes the whole way -- a session the panel would
- * hold, buildTrace, writeMoqtrace, readMoqtrace, sessionFromTrace -- and
- * compares what the framing parser reads out of the bytes before and after.
+ * An exported trace read back has to frame as the session it came from. Each
+ * case goes through buildTrace, writeMoqtrace, readMoqtrace and
+ * sessionFromTrace, and compares what the framing parser reads before and
+ * after.
  */
 
 import { createCodec } from '@moqtap/codec'
@@ -562,7 +558,7 @@ describe('a draft-22 fetch End of Range marker is no object', () => {
     )
   })
 
-  it('keeps the payloads of an empty Normal object, which an older export wrote a marker as', async () => {
+  it('keeps the payloads of a fetch stream holding an empty Normal object', async () => {
     const f = fixture([
       [
         6,
@@ -695,8 +691,8 @@ describe('a catalog track comes back as a catalog', () => {
 })
 
 describe('a trace that does not say enough keeps its payloads', () => {
-  /** A trace from before stream-opened named a track and objects had headers */
-  function oldTrace(protocol: string): Trace {
+  /** A trace whose stream-opened names no track and whose objects have no headers */
+  function bareTrace(protocol: string): Trace {
     const payload = (seq: number, streamId: bigint, body: string) => ({
       type: 'object-payload' as const,
       seq,
@@ -740,7 +736,7 @@ describe('a trace that does not say enough keeps its payloads', () => {
   for (const protocol of ['moq-transport-14', 'unknown']) {
     it(`runs the payloads together and says so (${protocol})`, () => {
       const { session, streamData, datagramData } = importTrace(
-        oldTrace(protocol),
+        bareTrace(protocol),
       )
       expect(new TextDecoder().decode(streamData.get(2))).toBe('abcd')
       expect(session.streams.get(2)).toMatchObject({
@@ -750,7 +746,7 @@ describe('a trace that does not say enough keeps its payloads', () => {
       })
       expect(session.streams.get(2)).not.toHaveProperty('trackAlias')
 
-      // A datagram with no alias anywhere is filed under alias 0, as before.
+      // A datagram with no alias anywhere is filed under alias 0.
       expect([...session.datagramGroups.keys()]).toEqual(['0:5'])
       expect(session.datagramGroups.get('0:5')?.importedFraming).toBe(
         'unavailable',
