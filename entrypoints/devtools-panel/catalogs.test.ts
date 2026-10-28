@@ -249,6 +249,15 @@ describe('finding catalog streams', () => {
     expect(locateCatalogStreams(t.s).map((r) => r.streamId)).toEqual([3])
   })
 
+  it('leaves out a stream whose alias two tracks claim in its direction', () => {
+    const t = session([
+      track('1', ['live'], 'catalog', { trackAlias: '5' }),
+      track('2', ['live'], 'video', { trackAlias: '5' }),
+    ])
+    t.put(3, subgroup(5, 0, [CATALOG]), { direction: 'rx' })
+    expect(locateCatalogStreams(t.s)).toEqual([])
+  })
+
   it('finds a stream whose alias arrives after it does', () => {
     const catalog = track('1', ['live'], 'catalog')
     const t = session([catalog])

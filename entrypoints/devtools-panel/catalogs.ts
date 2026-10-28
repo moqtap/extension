@@ -85,8 +85,9 @@ function dataDirection(track: TrackEntry): 'tx' | 'rx' {
 
 /**
  * Every data stream of `session` whose track is a catalog track. An alias
- * claimed in both directions resolves to the track whose objects travel the
- * stream's way, else the latest claim. A draft-22 fill fetch carries the
+ * resolves only when exactly one track sending in the stream's direction
+ * claimed it; any other alias is ambiguous and its stream is left out. A
+ * draft-22 fill fetch carries the
  * SUBSCRIBE's request id (transport-22 3.4), so a fetch stream's track may be
  * any request kind.
  */
@@ -117,13 +118,9 @@ export function locateCatalogStreams(
     } else if (stream.trackAlias != null) {
       const claims = byAlias.get(String(stream.trackAlias))
       if (!claims) continue
-      track = claims[claims.length - 1]
-      for (let i = claims.length - 1; i >= 0; i--) {
-        if (dataDirection(claims[i]) === stream.direction) {
-          track = claims[i]
-          break
-        }
-      }
+      const matching = claims.filter((t) => dataDirection(t) === stream.direction)
+      if (matching.length !== 1) continue
+      track = matching[0]
       kind = 'subgroup'
       id = stream.trackAlias
     } else {
@@ -239,7 +236,10 @@ function orderProblems(
   objectId: number,
 ): CatalogObjectProblem[] {
   if (parsed.kind !== 'independent' && parsed.kind !== 'delta') return []
-  const section = groupRuleSection(parsed.draft)
+  // An open draft still has one Group rule when every candidate shares it.
+  const drafts = parsed.draft ? [parsed.draft] : parsed.candidates
+  const sections = new Set(drafts.map(groupRuleSection))
+  const section = sections.size === 1 ? [...sections][0] : null
   if (!section) return []
   const msf01 = section === 'MSF-01 5'
   const problems: CatalogObjectProblem[] = []

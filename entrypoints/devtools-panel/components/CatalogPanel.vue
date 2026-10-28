@@ -26,8 +26,9 @@ const DRAFT_LABELS: Record<string, string> = {
 }
 
 const draftLabel = computed(() => {
-  const d = props.catalog.state.draft
-  return d ? (DRAFT_LABELS[d] ?? d) : null
+  const { draft, candidates } = props.catalog.state
+  const drafts = draft ? [draft] : candidates
+  return drafts.length ? drafts.map((d) => DRAFT_LABELS[d] ?? d).join(' or ') : null
 })
 
 const problemCounts = computed(() => {
