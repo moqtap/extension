@@ -105,6 +105,65 @@ export function createCodecDraftParser(draft: SupportedDraft): DraftParser {
   }
 }
 
+/**
+ * Create a parser for the longest prefix of a stream that frames whole as
+ * `kind` under this draft alone: no fallback to another stream kind or
+ * draft. It is for a stream that ends inside an object, which the codec
+ * rejects whole: its complete objects are still worth reading.
+ *
+ * The codec's error offset says where it ran out of bytes, which is at or
+ * past the start of the object it could not finish. Each try cuts the bytes
+ * back to that offset (or by one byte, if the offset is not short of the
+ * end), so the search walks back over only the cut object's own header.
+ * A stream that is not this kind at all gives up after a bounded number of
+ * tries rather than decoding every prefix.
+ */
+export function createCodecPrefixParser(
+  draft: SupportedDraft,
+): (data: Uint8Array, kind: 'subgroup' | 'fetch') => ParsedPrefix | null {
+  const codec = createCodec({ draft }) as unknown as DataStreamCodec
+
+  return (data, kind) => {
+    let end = data.length
+    for (let tries = 0; tries < MAX_PREFIX_TRIES && end > 0; tries++) {
+      const bytes = data.subarray(0, end)
+      let next: number
+      try {
+        if (kind === 'subgroup') {
+          const result = codec.decodeSubgroupStream(bytes)
+          if (result.ok)
+            return { framing: subgroupFraming(result.value, end), end }
+          next = result.error.offset
+        } else {
+          const result = codec.decodeFetchStream(bytes)
+          if (result.ok)
+            return { framing: fetchFraming(result.value, end), end }
+          next = result.error.offset
+        }
+      } catch {
+        return null
+      }
+      end = Math.min(end - 1, next)
+    }
+    return null
+  }
+}
+
+/** The longest prefix of a stream that frames, and where it ends. */
+export interface ParsedPrefix {
+  framing: ParsedStreamFraming
+  /** Bytes the framing covers; past it is an object cut short */
+  end: number
+}
+
+/**
+ * Decode attempts {@link createCodecPrefixParser} makes before giving up. An
+ * object's header (id, properties length, payload length) is a handful of
+ * varints, each try steps over at least one byte of it, and properties are
+ * skipped whole by the error offset, so a real stream frames well within it.
+ */
+const MAX_PREFIX_TRIES = 64
+
 function tryDecodeSubgroup(
   codec: DataStreamCodec,
   data: Uint8Array,
@@ -112,44 +171,50 @@ function tryDecodeSubgroup(
   try {
     const result = codec.decodeSubgroupStream(data)
     if (!result.ok) return null
-
-    const stream = result.value
-    const headerFields: Record<string, number> = {}
-    const tags: HeaderTag[] = []
-
-    const streamType = stream.headerType ?? stream.streamTypeId
-    if (streamType !== undefined) {
-      headerFields.streamType = streamType
-    }
-    headerFields.trackAlias = Number(stream.trackAlias)
-    headerFields.groupId = Number(stream.groupId)
-    tags.push({ label: 'group', value: String(stream.groupId), kind: 'group' })
-
-    headerFields.subgroupId = Number(stream.subgroupId)
-    if (stream.subgroupId !== 0n) {
-      tags.push({
-        label: 'subgroup',
-        value: String(stream.subgroupId),
-        kind: 'info',
-      })
-    }
-
-    if (stream.publisherPriority !== undefined) {
-      headerFields.publisherPriority = stream.publisherPriority
-      tags.push({
-        label: 'pri',
-        value: String(stream.publisherPriority),
-        kind: 'priority',
-      })
-    }
-
-    const objects = mapObjects(stream.objects)
-    const headerEnd = objects.length > 0 ? objects[0].offset : data.length
-
-    return { streamType: 'subgroup', headerEnd, headerFields, objects, tags }
+    return subgroupFraming(result.value, data.length)
   } catch {
     return null
   }
+}
+
+/** A decoded subgroup stream of `length` bytes, as the panel frames it. */
+function subgroupFraming(
+  stream: SubgroupResult,
+  length: number,
+): ParsedStreamFraming {
+  const headerFields: Record<string, number> = {}
+  const tags: HeaderTag[] = []
+
+  const streamType = stream.headerType ?? stream.streamTypeId
+  if (streamType !== undefined) {
+    headerFields.streamType = streamType
+  }
+  headerFields.trackAlias = Number(stream.trackAlias)
+  headerFields.groupId = Number(stream.groupId)
+  tags.push({ label: 'group', value: String(stream.groupId), kind: 'group' })
+
+  headerFields.subgroupId = Number(stream.subgroupId)
+  if (stream.subgroupId !== 0n) {
+    tags.push({
+      label: 'subgroup',
+      value: String(stream.subgroupId),
+      kind: 'info',
+    })
+  }
+
+  if (stream.publisherPriority !== undefined) {
+    headerFields.publisherPriority = stream.publisherPriority
+    tags.push({
+      label: 'pri',
+      value: String(stream.publisherPriority),
+      kind: 'priority',
+    })
+  }
+
+  const objects = mapObjects(stream.objects)
+  const headerEnd = objects.length > 0 ? objects[0].offset : length
+
+  return { streamType: 'subgroup', headerEnd, headerFields, objects, tags }
 }
 
 function tryDecodeFetch(
@@ -159,24 +224,30 @@ function tryDecodeFetch(
   try {
     const result = codec.decodeFetchStream(data)
     if (!result.ok) return null
-
-    const stream = result.value
-    const headerFields: Record<string, number> = { streamType: 0x05 }
-    const tags: HeaderTag[] = []
-
-    const requestId = stream.requestId ?? stream.subscribeId
-    if (requestId !== undefined) {
-      headerFields.requestId = Number(requestId)
-      tags.push({ label: 'request', value: String(requestId), kind: 'track' })
-    }
-
-    const objects = mapFetchObjects(stream.objects)
-    const headerEnd = objects.length > 0 ? objects[0].offset : data.length
-
-    return { streamType: 'fetch', headerEnd, headerFields, objects, tags }
+    return fetchFraming(result.value, data.length)
   } catch {
     return null
   }
+}
+
+/** A decoded fetch stream of `length` bytes, as the panel frames it. */
+function fetchFraming(
+  stream: FetchResult,
+  length: number,
+): ParsedStreamFraming {
+  const headerFields: Record<string, number> = { streamType: 0x05 }
+  const tags: HeaderTag[] = []
+
+  const requestId = stream.requestId ?? stream.subscribeId
+  if (requestId !== undefined) {
+    headerFields.requestId = Number(requestId)
+    tags.push({ label: 'request', value: String(requestId), kind: 'track' })
+  }
+
+  const objects = mapFetchObjects(stream.objects)
+  const headerEnd = objects.length > 0 ? objects[0].offset : length
+
+  return { streamType: 'fetch', headerEnd, headerFields, objects, tags }
 }
 
 function tryDecodeDatagram(

@@ -11,9 +11,11 @@
  * enable by default" is there to prevent.
  */
 
+import { encodeSubgroupStream } from '@moqtap/codec/draft22'
 import { writeMoqtrace } from '@moqtap/trace'
 import { describe, expect, it } from 'vitest'
 import { buildTrace } from './build-trace'
+import { redactTrace } from './redact-trace'
 import type { SessionEntry } from './use-inspector'
 
 // SessionEntry carries far more than buildTrace reads; the fixture supplies
@@ -268,5 +270,79 @@ describe('the exported trace carries what the stream header and object said', ()
     const header = trace.events.find((e) => e.type === 'object-header')
     expect(header).toBeDefined()
     expect(header).not.toHaveProperty('properties')
+  })
+})
+
+describe('a stream that ends inside an object', () => {
+  const enc = new TextEncoder()
+  const CATALOG = JSON.stringify({
+    version: 1,
+    tracks: [{ name: 'v', packaging: 'loc', trackBaseKey: 'SECRETKEY' }],
+  })
+  /** A draft-22 subgroup stream on alias 5 holding `payloads`, objects 0.. */
+  const subgroup = (payloads: string[]) =>
+    encodeSubgroupStream({
+      type: 'subgroup',
+      headerType: 0x10,
+      trackAlias: 5n,
+      groupId: 0n,
+      subgroupId: 0n,
+      publisherPriority: 0,
+      objects: payloads.map((text, i) => {
+        const payload = enc.encode(text)
+        return {
+          type: 'object',
+          byteOffset: 0,
+          payloadByteOffset: 0,
+          objectId: BigInt(i),
+          payloadLength: payload.length,
+          payload,
+          extensionData: new Uint8Array(0),
+        }
+      }),
+    } as AnySession)
+
+  it('exports the objects before the cut as objects, not the stream as a datagram', async () => {
+    const whole = subgroup([CATALOG, CATALOG])
+    const cut = whole.subarray(0, whole.length - 5)
+    const trace = await buildTrace(
+      session({
+        draft: '22',
+        streams: [
+          {
+            streamId: 3,
+            byteCount: cut.length,
+            closed: true,
+            direction: 'rx',
+            trackAlias: 5,
+            firstDataAt: 1010,
+            lastDataAt: 1020,
+            arrivals: [],
+          },
+        ],
+      }),
+      async () => cut,
+    )
+    const payloads = trace.events.filter((e) => e.type === 'object-payload')
+    expect(payloads).toHaveLength(1)
+    expect(
+      new TextDecoder().decode(
+        (payloads[0] as { payload: Uint8Array }).payload,
+      ),
+    ).toBe(CATALOG)
+    expect(trace.events.find((e) => e.type === 'stream-opened')).toMatchObject({
+      streamType: 0,
+      trackAlias: 5n,
+    })
+
+    // Shared with payloads, the catalog's key is redacted, auth on or off.
+    for (const auth of [false, true]) {
+      const shared = writeMoqtrace(
+        redactTrace(trace, { payloads: true, auth }, '22'),
+      )
+      expect(new TextDecoder('latin1').decode(shared)).not.toContain(
+        'SECRETKEY',
+      )
+    }
   })
 })

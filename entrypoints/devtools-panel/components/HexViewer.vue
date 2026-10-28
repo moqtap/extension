@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { detectMediaInfo } from '@/src/detect/bmff-boxes'
+import { detectMediaInfo } from '@moqtap/media/bmff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes, formatCount, plural } from '../format'
 import type { StreamObject } from '../stream-framing'
@@ -67,7 +67,6 @@ const objectAnnotations = computed((): ObjectAnnotation[] => {
 
 const VARIANT_LABELS: Record<string, string> = {
   cmaf: 'CMAF',
-  loc: 'LOC',
   fmp4: 'fMP4',
 }
 
@@ -163,8 +162,7 @@ watch(
 
 // ── Virtual row mapping ──────────────────────────────────────────
 type ResolvedRow =
-  | { type: 'banner'; bannerIdx: number }
-  | { type: 'data'; dataRow: number }
+  { type: 'banner'; bannerIdx: number } | { type: 'data'; dataRow: number }
 
 function resolveVirtualRow(vRow: number): ResolvedRow {
   const positions = bannerPositions.value
@@ -308,7 +306,9 @@ const visibleEntries = computed<VisibleEntry[]>(() => {
       entries.push({
         type: 'banner',
         objectIdx: pos.objectIdx,
-        content: ann ? formatBannerContent(ann) : formatBytes(obj.payloadLength),
+        content: ann
+          ? formatBannerContent(ann)
+          : formatBytes(obj.payloadLength),
         label: ann ? formatBannerLabel(ann) : `obj ${obj.objectId}`,
         byteColumn: obj.offset % BYTES_PER_ROW,
       })
@@ -527,7 +527,8 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
       </div>
     </div>
     <div class="hex-footer">
-      {{ plural(data.length, 'byte') }}<template v-if="headerSize > 0">
+      {{ plural(data.length, 'byte')
+      }}<template v-if="headerSize > 0">
         ({{ formatBytes(headerSize) }} header<template
           v-if="objects && objects.length > 0"
           >, {{ plural(objects.length, 'object') }}</template

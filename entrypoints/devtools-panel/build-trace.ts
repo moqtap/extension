@@ -18,6 +18,7 @@ import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import {
   parseDatagramGroupFraming,
   parseStreamFraming,
+  parseStreamPrefix,
   type StreamObject,
 } from './stream-framing'
 import { arrivalAt } from '@/src/trace/arrivals'
@@ -175,7 +176,31 @@ export async function buildTrace(
     }
     // The session's own draft first: a parser for another draft can accept the
     // same bytes and read different fields out of them.
-    const framing = data ? parseStreamFraming(data, session.draft) : null
+    let framing = data ? parseStreamFraming(data, session.draft) : null
+    // A stream is never a datagram. The parser falls back to reading it as
+    // one when the stream does not frame whole, which is what a stream that
+    // ends inside an object does (reset, cut short, or still open when the
+    // trace is built), and the "datagram" it finds is the whole stream,
+    // framing bytes and all, as one object's payload. Exported, that object
+    // would hide a catalog's JSON behind those bytes from the share
+    // redaction, which reads payloads from their first byte. The objects
+    // before the cut frame on their own; the one cut short is left out,
+    // since its bytes are not an object.
+    if (data && (framing == null || framing.streamType === 'datagram')) {
+      const draft = session.draft
+      // A stream the background saw a fetch header on is a fetch stream;
+      // otherwise either kind may be.
+      const kinds =
+        stream.fetchRequestId != null
+          ? (['fetch'] as const)
+          : (['subgroup', 'fetch'] as const)
+      framing = null
+      for (const kind of kinds) {
+        if (!draft) break
+        framing = parseStreamPrefix(data, draft, kind)?.framing ?? null
+        if (framing) break
+      }
+    }
     const hf = framing?.headerFields ?? {}
     const isFetch =
       framing?.streamType === 'fetch' || stream.fetchRequestId != null

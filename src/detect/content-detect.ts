@@ -8,15 +8,16 @@
  * Runs synchronously before IndexedDB write — must be fast.
  */
 
-import type { AnnexBInfo } from './annexb'
-import { detectAnnexB } from './annexb'
-import type { PayloadMediaInfo } from './bmff-boxes'
-import { detectMediaInfo, scanAndDetectMedia } from './bmff-boxes'
+// Subpath imports only: the package root also exports the catalog parser,
+// which the background bundle (this module's main caller) must not carry.
+import { detectAnnexB } from '@moqtap/media/annexb'
+import {
+  detectMediaInfo,
+  scanAndDetectMedia,
+  type PayloadMediaInfo,
+} from '@moqtap/media/bmff'
 import { looksLikeCbor } from './cbor-decode'
 import { looksLikeMsgpack } from './msgpack-decode'
-
-export type { AnnexBInfo, PayloadMediaInfo }
-export { detectAnnexB }
 
 /** Detected content type for a stream's payload data */
 export type StreamContentType =

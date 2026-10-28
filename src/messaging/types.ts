@@ -16,10 +16,8 @@ import type { ImpairPageMsg } from '../impair/messages'
  */
 
 import type { TrackVia } from '@moqtap/inspect'
-import type {
-  PayloadMediaInfo,
-  StreamContentType,
-} from '../detect/content-detect'
+import type { PayloadMediaInfo } from '@moqtap/media/bmff'
+import type { StreamContentType } from '../detect/content-detect'
 import type { DetectionResult } from '../detect/draft-detect'
 
 // ─── Content -> Background messages ─────────────────────────────────

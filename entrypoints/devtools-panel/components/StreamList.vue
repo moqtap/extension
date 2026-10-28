@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
+import type { PayloadMediaInfo } from '@moqtap/media/bmff'
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { formatBytes, messageTypeName, plural } from '../format'
@@ -187,7 +187,6 @@ function sumBytes(list: StreamEntry[], dir?: 'tx' | 'rx'): number {
 
 const VARIANT_LABELS: Record<string, string> = {
   cmaf: 'CMAF',
-  loc: 'LOC',
   fmp4: 'fMP4',
 }
 
@@ -398,7 +397,10 @@ function transferParts(
                       >fetch</span
                     >
                   </span>
-                  <span v-else-if="stream.trackAlias != null" class="track-alias">
+                  <span
+                    v-else-if="stream.trackAlias != null"
+                    class="track-alias"
+                  >
                     alias:{{ stream.trackAlias }}
                     <span v-if="stream.datagramGroupKey" class="group-tag"
                       >g:{{ stream.groupId }}</span
@@ -416,7 +418,9 @@ function transferParts(
                   <template v-if="stream.datagramGroupKey">{{
                     plural(stream.datagramCount ?? 0, 'datagram')
                   }}</template>
-                  <template v-else>{{ stream.closed ? 'closed' : 'open' }}</template>
+                  <template v-else>{{
+                    stream.closed ? 'closed' : 'open'
+                  }}</template>
                 </span>
                 <span v-if="!compact" class="col-bytes">{{
                   formatBytes(stream.byteCount)

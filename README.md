@@ -10,7 +10,7 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 - Lists a session's problems in Details: error responses, requests left without a response, blocked or exhausted request IDs, GOAWAY and undecodable bytes
 - Tracks tab with per-track subscription state, timing, and namespace grouping
 - WebTransport datagram interception and decoding (shown in Streams tab)
-- Stream content detection: JSON, CBOR, MessagePack, and ISO BMFF media (CMAF, LOC, fMP4)
+- Stream content detection: JSON, CBOR, MessagePack, and ISO BMFF media (CMAF, fMP4)
 - Hex viewer with inline object boundary annotations and object navigation
 - Live bitrate display for active connections
 - Filter toolbar for messages (active only, group by namespace, outgoing/incoming direction, message name under any draft's name for it) and streams (text search)

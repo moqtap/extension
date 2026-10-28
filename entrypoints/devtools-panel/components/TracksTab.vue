@@ -1,6 +1,14 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  type CatalogView,
+  packagingLabel,
+  registryTrackKey,
+  type TrackKey,
+  type TrackPackaging,
+  trackSummary,
+} from '../catalogs'
+import {
   formatBitrate,
   formatBytes,
   formatDuration,
@@ -20,6 +28,10 @@ const props = defineProps<{
   session: SessionEntry
   /** How long each request took to answer. */
   times: RequestTimes
+  /** The session's catalog tracks, as read so far */
+  catalogs?: CatalogView[]
+  /** What those catalogs say about each track, by {@link registryTrackKey} */
+  packaging?: Map<TrackKey, TrackPackaging>
 }>()
 
 // ── Bitrate tick (same pattern as ConnectionList.vue) ────────────
@@ -158,12 +170,77 @@ function getStats(track: TrackEntry): TrackStats | undefined {
   return trackStatsByKey.value.get(`a:${track.trackAlias}`)
 }
 
+// ── What the catalogs say ────────────────────────────────────────
+
+/**
+ * The Media column: for a track a catalog describes, its packaging and shape;
+ * for a catalog track, how many tracks it declares. Both are joined on the
+ * namespace text and name, so a subscription and a fetch of one track show
+ * the same thing.
+ */
+interface MediaCell {
+  badge: string
+  /** Codec, size, rate: whatever the catalog gave */
+  text: string
+  title: string
+  catalog: boolean
+}
+
+const catalogsByKey = computed(() => {
+  const map = new Map<TrackKey, CatalogView>()
+  for (const c of props.catalogs ?? []) map.set(c.key, c)
+  return map
+})
+
+function mediaCell(track: TrackEntry): MediaCell | null {
+  const key = registryTrackKey(track)
+  const catalog = catalogsByKey.value.get(key)
+  if (catalog) {
+    const notes: string[] = []
+    if (catalog.compressed) notes.push('compressed')
+    if (catalog.incomplete.length > 0) notes.push('incomplete')
+    // No object read is not a catalog that declares no tracks: no stream of
+    // the track may have been found (its data never recorded, or a trace
+    // that does not say which track a stream is on), or none has arrived yet.
+    const read = catalog.objects.length > 0
+    const unread =
+      catalog.streamIds.length === 0
+        ? 'No stream of this track has been read.'
+        : 'No catalog object has been read from its streams.'
+    return {
+      badge: 'catalog',
+      text: [
+        read ? plural(catalog.tracks.length, 'track') : 'nothing read',
+        ...notes,
+      ].join(' · '),
+      title: [...(read ? [] : [unread]), ...catalog.incomplete].join(' '),
+      catalog: true,
+    }
+  }
+  const described = props.packaging?.get(key)
+  if (!described) return null
+  const t = described.track
+  const title = [
+    t.role,
+    t.mimeType,
+    t.bitrate != null ? formatBitrate(t.bitrate) : null,
+    described.publish ? 'listed under publishTracks' : null,
+  ]
+  return {
+    badge: packagingLabel(t.packaging) ?? '?',
+    text: trackSummary(t),
+    title: title.filter((x) => x).join(' · '),
+    catalog: false,
+  }
+}
+
 // ── Computed rows with bitrate ───────────────────────────────────
 
 interface TrackRow {
   track: TrackEntry
   stats: TrackStats | undefined
   bitrate: number
+  media: MediaCell | null
 }
 
 const trackRows = computed((): TrackRow[] => {
@@ -186,7 +263,7 @@ const trackRows = computed((): TrackRow[] => {
       const decay = Math.max(0, 1 - (now - stats.lastDataAt) / DECAY_WINDOW_MS)
       bitrate = activeBps * decay
     }
-    return { track, stats, bitrate }
+    return { track, stats, bitrate, media: mediaCell(track) }
   })
 })
 
@@ -336,10 +413,24 @@ const headerCount = computed(() => {
             <th class="col-dir"><span class="mq-sr">Direction</span></th>
             <th class="col-status"><span class="mq-sr">Status</span></th>
             <th class="col-name">Track</th>
-            <th class="mq-r" title="SUBSCRIBE sent, from session start">Subscribed</th>
-            <th class="mq-r" title="SUBSCRIBE_OK received, from session start">OK</th>
-            <th class="mq-r" title="From the request to its response">Latency</th>
-            <th class="mq-r" title="First object byte, from session start">First byte</th>
+            <th
+              class="col-media"
+              title="What the session's catalog says about the track"
+            >
+              Media
+            </th>
+            <th class="mq-r" title="SUBSCRIBE sent, from session start">
+              Subscribed
+            </th>
+            <th class="mq-r" title="SUBSCRIBE_OK received, from session start">
+              OK
+            </th>
+            <th class="mq-r" title="From the request to its response">
+              Latency
+            </th>
+            <th class="mq-r" title="First object byte, from session start">
+              First byte
+            </th>
             <th class="mq-r">Total</th>
             <th class="mq-r">Bitrate</th>
             <th class="mq-r">Active</th>
@@ -349,7 +440,7 @@ const headerCount = computed(() => {
         <tbody>
           <template v-for="g in visibleGroups" :key="g.ns">
             <tr v-if="groupByNs" class="ns-group-row">
-              <td colspan="12">
+              <td colspan="13">
                 <button
                   class="ns-toggle"
                   :aria-expanded="!collapsedGroups.has(g.ns)"
@@ -359,19 +450,26 @@ const headerCount = computed(() => {
                     collapsedGroups.has(g.ns) ? '▸' : '▾'
                   }}</span>
                   <span class="ns-name">{{ g.ns }}</span>
-                  <span class="ns-count">{{ plural(g.rows.length, 'track') }}</span>
+                  <span class="ns-count">{{
+                    plural(g.rows.length, 'track')
+                  }}</span>
                 </button>
               </td>
             </tr>
             <template v-if="!groupByNs || !collapsedGroups.has(g.ns)">
               <tr v-for="row in g.rows" :key="row.track.subscribeId">
                 <td class="col-color">
-                  <span :class="trackColourClass(row.track.colorIndex)" aria-hidden="true" />
+                  <span
+                    :class="trackColourClass(row.track.colorIndex)"
+                    aria-hidden="true"
+                  />
                 </td>
                 <td
                   class="col-dir dir"
                   :class="row.track.direction === 'tx' ? 'dir-c2s' : 'dir-s2c'"
-                  :title="row.track.direction === 'tx' ? 'outgoing' : 'incoming'"
+                  :title="
+                    row.track.direction === 'tx' ? 'outgoing' : 'incoming'
+                  "
                 >
                   {{ row.track.direction === 'tx' ? '→' : '←' }}
                 </td>
@@ -389,10 +487,25 @@ const headerCount = computed(() => {
                     >{{ row.track.trackNamespace.join('/') }} / </span
                   >{{ row.track.trackName }}
                 </td>
+                <td class="col-media" :title="row.media?.title || undefined">
+                  <template v-if="row.media">
+                    <span
+                      class="mq-badge mq-badge--mono"
+                      :class="{ 'mq-badge--note': row.media.catalog }"
+                      >{{ row.media.badge }}</span
+                    >
+                    <span v-if="row.media.text" class="mono media-text">{{
+                      row.media.text
+                    }}</span>
+                  </template>
+                </td>
                 <td class="mono mq-r" :title="absTitle(row.track.subscribedAt)">
                   {{ relTime(row.track.subscribedAt) }}
                 </td>
-                <td class="mono mq-r" :title="absTitle(row.track.subscribeOkAt)">
+                <td
+                  class="mono mq-r"
+                  :title="absTitle(row.track.subscribeOkAt)"
+                >
                   {{ relTime(row.track.subscribeOkAt) }}
                 </td>
                 <td class="mono mq-r">{{ formatLatency(row.track) }}</td>
@@ -483,6 +596,10 @@ td.col-error {
   color: var(--danger);
 }
 .track-ns {
+  color: var(--ink-muted);
+}
+.media-text {
+  margin-left: var(--space-1);
   color: var(--ink-muted);
 }
 

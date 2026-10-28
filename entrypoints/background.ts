@@ -17,9 +17,9 @@ import {
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import { DECODE_ERROR_MESSAGE_TYPE } from '@/src/trace/decode-error'
 import { TrackRegistry, type TrackFields } from '@moqtap/inspect'
-import type { PayloadMediaInfo } from '@/src/detect/bmff-boxes'
+import { detectAnnexB } from '@moqtap/media/annexb'
+import type { PayloadMediaInfo } from '@moqtap/media/bmff'
 import {
-  detectAnnexB,
   detectContentType,
   detectPayloadMedia,
   detectStreamMedia,

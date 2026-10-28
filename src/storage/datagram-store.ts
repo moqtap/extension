@@ -15,10 +15,8 @@
  * from stream pages.
  */
 
-import type {
-  PayloadMediaInfo,
-  StreamContentType,
-} from '../detect/content-detect'
+import type { PayloadMediaInfo } from '@moqtap/media/bmff'
+import type { StreamContentType } from '../detect/content-detect'
 
 // ── Constants ──────────────────────────────────────────────────────
 

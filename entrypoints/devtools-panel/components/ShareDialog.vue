@@ -311,7 +311,7 @@ const busyText = computed(
           <label class="mq-toggle">
             <span>
               <span class="toggle-label">Authorization tokens</span>
-              <span class="mq-help">Tokens in SETUP and request parameters, and the URL query.</span>
+              <span class="mq-help">Tokens in SETUP and request parameters, the URL query, and catalog credentials.</span>
             </span>
             <input v-model="includeAuth" type="checkbox" role="switch" />
           </label>

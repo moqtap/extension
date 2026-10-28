@@ -166,8 +166,38 @@ import type { SupportedDraft } from '@/src/types/common'
 import type { DecodeResult, ObjectProperty } from '@moqtap/codec'
 import {
   createCodecDraftParser,
+  createCodecPrefixParser,
   createPropertiesDecoder,
+  type ParsedPrefix,
 } from './codec-adapter'
+
+export type { ParsedPrefix } from './codec-adapter'
+
+const prefixParsers = new Map<
+  string,
+  (data: Uint8Array, kind: 'subgroup' | 'fetch') => ParsedPrefix | null
+>()
+
+/**
+ * The longest prefix of `data` that frames whole as a `kind` stream of
+ * `draft`, for a stream that ends inside an object: {@link
+ * parseStreamFraming} rejects such a stream outright, and then falls back to
+ * reading it as a datagram, which it never is. Only `draft` and only `kind`
+ * are tried. Null when the draft is unknown here or no prefix frames.
+ */
+export function parseStreamPrefix(
+  data: Uint8Array,
+  draft: string,
+  kind: 'subgroup' | 'fetch',
+): ParsedPrefix | null {
+  let parse = prefixParsers.get(draft)
+  if (!parse) {
+    if (!draftParsers.has(draft)) return null
+    parse = createCodecPrefixParser(draft as SupportedDraft)
+    prefixParsers.set(draft, parse)
+  }
+  return parse(data, kind)
+}
 
 const propertyDecoders = new Map<
   string,

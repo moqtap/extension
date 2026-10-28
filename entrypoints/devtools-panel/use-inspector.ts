@@ -27,9 +27,9 @@ import type {
 import { base64ToBytes } from '@/src/messaging/types'
 import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
 // The panel does not touch IDB directly — data requests go through the background worker.
-import { detectMediaInfo, type PayloadMediaInfo } from '@/src/detect/bmff-boxes'
+import { detectAnnexB } from '@moqtap/media/annexb'
+import { detectMediaInfo, type PayloadMediaInfo } from '@moqtap/media/bmff'
 import {
-  detectAnnexB,
   detectContentType,
   type StreamContentType,
 } from '@/src/detect/content-detect'
@@ -275,7 +275,8 @@ function applySetupImplementation(
   // is the end that sent it: the page is the client.
   const found = setupImplementation(messageType, fields, direction === 'tx')
   if (!found) return
-  if (found.side === 'client') session.clientImplementation = found.implementation
+  if (found.side === 'client')
+    session.clientImplementation = found.implementation
   else session.serverImplementation = found.implementation
 }
 
@@ -1084,6 +1085,16 @@ export function useInspector() {
               byteCount: 0,
               chunkCount: 0,
               contentType: 'binary',
+              // What the stream's header said, as the background reads it
+              // live: the alias on a subgroup stream, the request on a fetch
+              // stream (type 2). They are what attribute a stream to its
+              // track, a catalog's among them.
+              ...(se.streamType !== 2 && se.trackAlias != null
+                ? { trackAlias: Number(se.trackAlias) }
+                : {}),
+              ...(se.streamType === 2 && se.fetchRequestId != null
+                ? { fetchRequestId: Number(se.fetchRequestId) }
+                : {}),
             })
           }
           break

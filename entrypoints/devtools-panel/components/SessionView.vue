@@ -17,6 +17,7 @@ import {
   sessionDraft,
   sessionProblems,
 } from '../requests'
+import { useSessionCatalogs } from '../catalogs'
 import type { SessionEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
 import CopyButton from './CopyButton.vue'
@@ -156,6 +157,18 @@ const hasNewData = computed(() => {
 })
 
 const draft = computed(() => sessionDraft(props.session))
+
+/**
+ * The session's MSF / CMSF catalogs, read as their streams grow: the Tracks
+ * tab shows what they say about each track, and a catalog stream opens on its
+ * catalog.
+ */
+const catalogs = useSessionCatalogs(() => props.session, props.getStreamData)
+const selectedCatalog = computed(() =>
+  selectedStreamId.value == null || selectedStreamId.value < 0
+    ? null
+    : catalogs.catalogForStream(selectedStreamId.value),
+)
 const events = computed(() => messageEvents(props.session.messages))
 const times = computed(() => requestTimes(events.value, draft.value))
 const errorLabels = computed(() => errorCodeLabels(events.value, draft.value))
@@ -307,7 +320,11 @@ const collectorDetail = computed((): string | null => {
 <template>
   <div class="session-view">
     <div class="session-header">
-      <div class="mq-tabs session-tabs" role="tablist" aria-label="Session views">
+      <div
+        class="mq-tabs session-tabs"
+        role="tablist"
+        aria-label="Session views"
+      >
         <button
           v-for="(tab, i) in tabs"
           :id="`tab-${tab.id}`"
@@ -404,7 +421,9 @@ const collectorDetail = computed((): string | null => {
             <span v-if="selectedStream" class="detail-meta">
               <span
                 class="dir"
-                :class="selectedStream.direction === 'tx' ? 'dir-c2s' : 'dir-s2c'"
+                :class="
+                  selectedStream.direction === 'tx' ? 'dir-c2s' : 'dir-s2c'
+                "
                 :title="
                   selectedStream.direction === 'tx'
                     ? 'client to server'
@@ -423,7 +442,10 @@ const collectorDetail = computed((): string | null => {
               >
               {{ formatBytes(selectedStream.byteCount) }}
               <template v-if="selectedStream.datagramGroupKey">
-                · {{ formatCount(selectedStream.datagramCount ?? 0) }}
+                ·
+                {{
+                  formatCount(selectedStream.datagramCount ?? 0)
+                }}
                 datagrams</template
               >
               <template v-else-if="selectedStream.chunkCount > 0">
@@ -460,17 +482,18 @@ const collectorDetail = computed((): string | null => {
             :draft="session.draft"
             :tracks="session.tracks"
             :is-datagram-group="!!selectedStream?.datagramGroupKey"
+            :catalog="selectedCatalog"
             class="detail-viewer"
           />
-          <p v-else class="pane-message">
-            No data recorded for this stream.
-          </p>
+          <p v-else class="pane-message">No data recorded for this stream.</p>
         </section>
       </div>
       <TracksTab
         v-else-if="activeTab === 'tracks'"
         :session="session"
         :times="times"
+        :catalogs="catalogs.catalogs.value"
+        :packaging="catalogs.packaging.value"
       />
       <div v-else-if="activeTab === 'details'" class="details-panel">
         <dl class="mq-kv details-list">
@@ -519,7 +542,9 @@ const collectorDetail = computed((): string | null => {
           </template>
           <template v-if="session.options?.serverCertificateHashes">
             <dt>Pinned certificates</dt>
-            <dd class="mq-mono">{{ session.options.serverCertificateHashes }}</dd>
+            <dd class="mq-mono">
+              {{ session.options.serverCertificateHashes }}
+            </dd>
           </template>
           <dt>Session ID</dt>
           <dd class="detail-copy">
@@ -557,7 +582,9 @@ const collectorDetail = computed((): string | null => {
                     class="problem__time"
                     :title="p.atMs !== null ? isoTitle(p.atMs) : undefined"
                     >{{
-                      p.atMs !== null ? formatOffset(p.atMs, session.createdAt) : ''
+                      p.atMs !== null
+                        ? formatOffset(p.atMs, session.createdAt)
+                        : ''
                     }}</span
                   >
                   <span class="problem__text">

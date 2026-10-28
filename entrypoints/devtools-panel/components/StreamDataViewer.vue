@@ -1,9 +1,10 @@
 <script lang="ts" setup>
-import { detectMediaInfo, type PayloadMediaInfo } from '@/src/detect/bmff-boxes'
+import { detectMediaInfo, type PayloadMediaInfo } from '@moqtap/media/bmff'
 import { decodeCbor } from '@/src/detect/cbor-decode'
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { decodeMsgpack } from '@/src/detect/msgpack-decode'
 import { computed, ref, watch } from 'vue'
+import type { CatalogView } from '../catalogs'
 import { formatBytes, plural } from '../format'
 import { getCachedPref, savePref } from '../prefs'
 import type { HeaderTag } from '../stream-framing'
@@ -13,6 +14,7 @@ import {
   parseStreamFraming,
 } from '../stream-framing'
 import type { TrackEntry } from '../use-inspector'
+import CatalogPanel from './CatalogPanel.vue'
 import HexViewer from './HexViewer.vue'
 import JsonTree from './JsonTree.vue'
 
@@ -31,9 +33,19 @@ const props = defineProps<{
   tracks?: Map<string, TrackEntry>
   /** True when this data is a datagram group (length-prefixed concatenated datagrams) */
   isDatagramGroup?: boolean
+  /**
+   * The catalog this stream carries objects of, when it is on a catalog
+   * track. It is the whole track's catalog, merged across its streams, not
+   * just this stream's objects.
+   */
+  catalog?: CatalogView | null
 }>()
 
-type ViewMode = 'hex' | 'json'
+/**
+ * `catalog` is offered only on a catalog stream and is never saved as the
+ * preference: it would mean nothing on the next stream opened.
+ */
+type ViewMode = 'hex' | 'json' | 'catalog'
 
 /** Content types that can be decoded to a JSON tree view */
 const STRUCTURED_TYPES: Set<string> = new Set(['json', 'cbor', 'msgpack'])
@@ -56,7 +68,21 @@ const preferredMode = getCachedPref('streamViewMode') as ViewMode
  * available, otherwise falls back to hex while keeping the preference intact.
  */
 const viewMode = ref<ViewMode>(
-  preferredMode === 'json' && hasStructuredContent.value ? 'json' : 'hex',
+  props.catalog
+    ? 'catalog'
+    : preferredMode === 'json' && hasStructuredContent.value
+      ? 'json'
+      : 'hex',
+)
+
+// The catalog is read in the background of the panel and may land after the
+// stream is open; a catalog stream opens on what its catalog says.
+watch(
+  () => props.catalog?.key,
+  (key, previous) => {
+    if (key && !previous && viewMode.value === 'hex') viewMode.value = 'catalog'
+    if (!key && viewMode.value === 'catalog') viewMode.value = 'hex'
+  },
 )
 
 /** Lazily parsed JSON — only computed when needed */
@@ -99,7 +125,6 @@ const resolvedTrack = computed((): TrackEntry | null => {
 /** Variant display labels */
 const VARIANT_LABELS: Record<string, string> = {
   cmaf: 'CMAF',
-  loc: 'LOC',
   fmp4: 'fMP4',
 }
 
@@ -147,9 +172,8 @@ const effectiveMediaInfo = computed((): PayloadMediaInfo | null => {
   let variant = infos[0].variant
   for (const info of infos) {
     allBoxes.push(...info.boxes)
-    // Use the most specific variant found
-    if (info.variant === 'cmaf' || info.variant === 'loc')
-      variant = info.variant
+    // CMAF is the more specific variant: one branded object marks the stream
+    if (info.variant === 'cmaf') variant = info.variant
   }
   return { variant: variant as PayloadMediaInfo['variant'], boxes: allBoxes }
 })
@@ -242,6 +266,9 @@ watch(
     jsonParsed.value = false
     jsonData.value = null
 
+    // Reloading a catalog stream keeps it on its catalog.
+    if (viewMode.value === 'catalog' && props.catalog) return
+
     const pref = getCachedPref('streamViewMode') as ViewMode
     if (pref === 'json' && hasStructuredContent.value) {
       // Try to parse; show decoded view if it works, otherwise fall back to hex
@@ -258,6 +285,10 @@ function switchToHex() {
   savePref('streamViewMode', 'hex')
 }
 
+function switchToCatalog() {
+  if (props.catalog) viewMode.value = 'catalog'
+}
+
 function switchToJson() {
   parseJson()
   if (jsonData.value !== null) {
@@ -267,7 +298,7 @@ function switchToJson() {
 }
 
 // Auto-open decoded view on first render if preferred
-if (preferredMode === 'json' && hasStructuredContent.value) {
+if (!props.catalog && preferredMode === 'json' && hasStructuredContent.value) {
   parseJson()
   if (jsonData.value !== null) {
     viewMode.value = 'json'
@@ -293,6 +324,15 @@ if (preferredMode === 'json' && hasStructuredContent.value) {
           @click="switchToJson"
         >
           {{ structuredTabLabel }}
+        </button>
+        <button
+          v-if="catalog"
+          class="mq-btn mq-btn--quiet"
+          :aria-pressed="viewMode === 'catalog'"
+          title="What this catalog track says, across all its streams"
+          @click="switchToCatalog"
+        >
+          Catalog
         </button>
       </div>
       <span
@@ -338,6 +378,10 @@ if (preferredMode === 'json' && hasStructuredContent.value) {
       <div v-else-if="viewMode === 'json' && jsonData" class="json-container">
         <JsonTree :data="jsonData" :initial-expanded="true" />
       </div>
+      <CatalogPanel
+        v-else-if="viewMode === 'catalog' && catalog"
+        :catalog="catalog"
+      />
     </div>
   </div>
 </template>
