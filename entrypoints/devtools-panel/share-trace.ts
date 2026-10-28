@@ -30,7 +30,9 @@ export async function shareTrace(
   req: ShareRequest,
   progress: (step: 'uploading' | 'sharing') => void = () => {},
 ): Promise<ShareResult> {
-  const bytes = writeMoqtrace(redactTrace(req.trace, req.content, req.draft, req.controlStreams))
+  const bytes = writeMoqtrace(
+    await redactTrace(req.trace, req.content, req.draft, req.controlStreams),
+  )
   progress('uploading')
   const trace = await library.upload(req.orgId, bytes, req.title)
   progress('sharing')

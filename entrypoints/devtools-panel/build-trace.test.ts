@@ -338,7 +338,7 @@ describe('a stream that ends inside an object', () => {
     // Shared with payloads, the catalog's key is redacted, auth on or off.
     for (const auth of [false, true]) {
       const shared = writeMoqtrace(
-        redactTrace(trace, { payloads: true, auth }, '22'),
+        await redactTrace(trace, { payloads: true, auth }, '22'),
       )
       expect(new TextDecoder('latin1').decode(shared)).not.toContain(
         'SECRETKEY',

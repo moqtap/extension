@@ -25,6 +25,8 @@ interface DataStreamCodec {
   decodeSubgroupStream(bytes: Uint8Array): DecodeResult<SubgroupResult>
   decodeFetchStream(bytes: Uint8Array): DecodeResult<FetchResult>
   decodeDatagram(bytes: Uint8Array): DecodeResult<DatagramResult>
+  /** Draft-08 to -10, where a status datagram is a type of its own */
+  decodeDatagramStatus?(bytes: Uint8Array): DecodeResult<DatagramStatusResult>
   decodeObjectProperties(bytes: Uint8Array): DecodeResult<ObjectProperty[]>
 }
 
@@ -67,6 +69,19 @@ interface DatagramResult {
   readonly extensionDataByteOffset?: number
 }
 
+/** Minimal shape of DatagramStatusObject from the codec (draft-08 to -10) */
+interface DatagramStatusResult {
+  readonly type: 'datagram_status'
+  readonly streamTypeId: number
+  readonly trackAlias: bigint
+  readonly groupId: bigint
+  readonly objectId: bigint
+  readonly publisherPriority: number
+  readonly objectStatus: bigint
+  readonly extensionData?: Uint8Array
+  readonly extensionDataByteOffset?: number
+}
+
 /** Minimal shape of ObjectPayload from the codec */
 interface ObjectResult {
   readonly objectId: bigint
@@ -81,6 +96,8 @@ interface ObjectResult {
 
 /** Minimal shape of FetchObjectPayload from the codec */
 interface FetchObjectResult extends ObjectResult {
+  /** From draft-15; 128 and above is an End of Range marker */
+  readonly serializationFlags?: number
   readonly groupId?: bigint
   readonly subgroupId?: bigint
   readonly publisherPriority?: number
@@ -256,7 +273,7 @@ function tryDecodeDatagram(
 ): ParsedStreamFraming | null {
   try {
     const result = codec.decodeDatagram(data)
-    if (!result.ok) return null
+    if (!result.ok) return tryDecodeDatagramStatus(codec, data)
 
     const dg = result.value
     const headerFields: Record<string, number> = {
@@ -305,6 +322,50 @@ function tryDecodeDatagram(
     }
   } catch {
     return null
+  }
+}
+
+/**
+ * A draft-08 to -10 status datagram: no payload, a status in its place. Its
+ * type is not the datagram's, so the datagram decoder refuses it. Only a
+ * datagram that is all status is one: it ends where the status does.
+ */
+function tryDecodeDatagramStatus(
+  codec: DataStreamCodec,
+  data: Uint8Array,
+): ParsedStreamFraming | null {
+  const result = codec.decodeDatagramStatus?.(data)
+  if (!result?.ok || result.bytesRead !== data.length) return null
+  const dg = result.value
+  const status = Number(dg.objectStatus)
+  return {
+    streamType: 'datagram',
+    headerEnd: data.length,
+    headerFields: {
+      trackAlias: Number(dg.trackAlias),
+      groupId: Number(dg.groupId),
+      objectId: Number(dg.objectId),
+      publisherPriority: dg.publisherPriority,
+      streamType: dg.streamTypeId,
+      objectStatus: status,
+    },
+    objects: [
+      {
+        offset: data.length,
+        payloadOffset: data.length,
+        payloadLength: 0,
+        objectId: Number(dg.objectId),
+        groupId: Number(dg.groupId),
+        publisherPriority: dg.publisherPriority,
+        status,
+        ...propertiesSpan(dg),
+      },
+    ],
+    tags: [
+      { label: 'group', value: String(dg.groupId), kind: 'group' },
+      { label: 'pri', value: String(dg.publisherPriority), kind: 'priority' },
+      { label: 'status', value: String(dg.objectStatus), kind: 'info' },
+    ],
   }
 }
 
@@ -374,6 +435,9 @@ function mapFetchObjects(codecObjects: FetchObjectResult[]): StreamObject[] {
         : {}),
       ...(obj.publisherPriority !== undefined
         ? { publisherPriority: obj.publisherPriority }
+        : {}),
+      ...(obj.serializationFlags !== undefined && obj.serializationFlags >= 128
+        ? { endOfRange: obj.serializationFlags }
         : {}),
     }
   })

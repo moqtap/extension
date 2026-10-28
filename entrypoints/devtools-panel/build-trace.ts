@@ -228,6 +228,10 @@ export async function buildTrace(
       try {
         if (framing && framing.objects.length > 0) {
           for (const obj of framing.objects) {
+            // An End of Range marker says a range of a fetch holds no objects.
+            // The format has no event for that, and written as an object it
+            // would say the very object it rules out exists, empty.
+            if (obj.endOfRange !== undefined) continue
             const end = Math.min(
               obj.payloadOffset + obj.payloadLength,
               data.length,
@@ -311,23 +315,6 @@ export async function buildTrace(
         if (data) {
           const framing = parseDatagramGroupFraming(data, session.draft)
           if (framing && framing.objects.length > 0) {
-            // Datagrams are not a QUIC stream and have no stream id; the
-            // convention here is 0. Declaring one open as a datagram stream
-            // is how a reader learns that from the format's own stream-type
-            // field rather than inferring it from the id being zero.
-            push(groupAt, {
-              type: 'stream-opened',
-              seq: 0,
-              timestamp: 0,
-              streamId: 0n,
-              direction: dg.direction === 'tx' ? 0 : 1,
-              streamType: STREAM_TYPE_DATAGRAM,
-              // Every datagram stream shares stream id 0, so the alias and the
-              // group are all that tell one track's datagrams from another's.
-              ...optionalId('trackAlias', framing.headerFields.trackAlias),
-              groupId: BigInt(dg.groupId),
-            })
-
             for (const obj of framing.objects) {
               const end = Math.min(
                 obj.payloadOffset + obj.payloadLength,
@@ -337,6 +324,26 @@ export async function buildTrace(
               // Each datagram was timestamped as it arrived, so unlike a
               // stream this needs no offset arithmetic.
               const objectAt = dg.arrivals?.get(obj.objectId) ?? groupAt
+
+              // Datagrams are not a QUIC stream and have no stream id; the
+              // convention here is 0. Declaring one open as a datagram stream
+              // is how a reader learns that from the format's own stream-type
+              // field rather than inferring it from the id being zero.
+              push(objectAt, {
+                type: 'stream-opened',
+                seq: 0,
+                timestamp: 0,
+                streamId: 0n,
+                direction: dg.direction === 'tx' ? 0 : 1,
+                streamType: STREAM_TYPE_DATAGRAM,
+                // Every datagram stream shares stream id 0 and an object event
+                // names only its group, so the alias is all that tells one
+                // track's datagrams from another's. Sorted by time, two
+                // tracks' datagrams of one group id interleave: each is opened
+                // on its own, right before it, so none takes the other's.
+                ...optionalId('trackAlias', framing.headerFields.trackAlias),
+                groupId: BigInt(dg.groupId),
+              })
 
               push(objectAt, {
                 type: 'object-header',

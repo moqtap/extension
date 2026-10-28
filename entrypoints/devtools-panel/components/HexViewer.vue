@@ -12,6 +12,8 @@ const props = withDefaults(
     headerSize?: number
     /** Parsed object boundaries for per-object annotation */
     objects?: StreamObject[]
+    /** A caveat about where the bytes came from, shown in the footer */
+    note?: string
   }>(),
   {
     headerSize: 0,
@@ -533,6 +535,8 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
           v-if="objects && objects.length > 0"
           >, {{ plural(objects.length, 'object') }}</template
         >)</template
+      ><template v-if="note">
+        · <span class="hex-note">{{ note }}</span></template
       >
     </div>
   </div>
@@ -722,5 +726,9 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   color: var(--ink-muted);
   background: var(--surface);
   flex-shrink: 0;
+}
+
+.hex-note {
+  font-style: italic;
 }
 </style>

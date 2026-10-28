@@ -17,28 +17,18 @@
  *     replaced, and the query of any `path` is removed; a message whose
  *     `path` had a query loses its wire bytes as well, since the query is in
  *     them
- *   - any object event on a control or request stream is dropped. A trace
- *     this build exports has none, but an imported one can, and its bytes
- *     hold every SETUP and SUBSCRIBE in clear; their messages are already in
- *     the control events above
+ *   - any object event on a control or request stream is dropped; its
+ *     messages are in the control events
  *   - the session URL loses its query and fragment, where sites put tokens
- * - **Catalogs (payloads on):** an MSF/CMSF catalog object carries its own
- *   secrets in its JSON. Catalogs are found by shape, not by track: an
- *   imported trace has no stream-to-track mapping, and a catalog-shaped
- *   payload on another track is redacted just the same. A catalog's
- *   `trackBaseKey`, a live content key and not a credential, is replaced
- *   whatever the auth toggle says; with auth off, so are its `token`s, its
- *   `authInfo` values and the query and fragment of its `connectionUri` and
- *   DRM system URLs (`redactCatalogText` in @moqtap/media). A payload that
- *   may be a catalog but cannot be redacted (gzip, which MSF_COMPRESSION
- *   allows; JSON that does not parse but names catalog fields; text that is
- *   not UTF-8; a JSON object without a catalog's shape that still has a
- *   member the redactor would replace) loses its payload event and keeps its
- *   header. Re-sending it decompressed would falsify its compression
- *   property, and shipping it as is could ship the key. Neither is any other
- *   payload that names such a member anywhere in its bytes, which is what a
- *   catalog behind framing bytes looks like (a stream exported unframed,
- *   without object headers, also loses its payload when it holds gzip).
+ * - **Catalogs (payloads on):** MSF/CMSF catalogs are found by shape, on any
+ *   track. Their `trackBaseKey` is always replaced; with auth off, so are
+ *   their `token`s, `authInfo` values and the query and fragment of their
+ *   `connectionUri` and DRM system URLs. Other JSON payloads get the same
+ *   fields replaced by name. A gzip payload is decompressed, redacted and
+ *   recompressed. A payload that may hold such a field but cannot be
+ *   redacted (gzip that does not decompress or exceeds 16 MiB decompressed,
+ *   JSON that does not parse, text that is not UTF-8) loses its payload event
+ *   and keeps its header, as does an unframed stream that holds gzip.
  *
  * The result is a new trace; the panel's own session is untouched.
  */
@@ -60,7 +50,7 @@ import { redactAuthTokens as r19 } from '@moqtap/codec/draft19'
 import { redactAuthTokens as r20 } from '@moqtap/codec/draft20'
 import { redactAuthTokens as r21 } from '@moqtap/codec/draft21'
 import { redactAuthTokens as r22 } from '@moqtap/codec/draft22'
-import { redactCatalogText } from '@moqtap/media/catalog'
+import { redactCatalogText, redactJsonText } from '@moqtap/media/catalog'
 import { fitDetail } from '@/src/trace/detail'
 import type { SupportedDraft } from '@/src/types/common'
 import type {
@@ -156,22 +146,22 @@ function redactRaw(
 }
 
 /**
- * A pattern for `"name":` in text that may be UTF-16 (MSF requires UTF-8, but
- * a producer that ignores it still ships the key): a NUL may sit beside each
- * character. Bytes read as Latin-1, one character each, so the pattern runs
- * on any payload without decoding it as UTF-8 first.
+ * A pattern for `"name":` in bytes read as Latin-1, allowing a NUL beside
+ * each character (UTF-16) and any character written as a JSON `\uXXXX` escape.
  */
 function fieldPattern(names: readonly string[]): RegExp {
   const nul = '\\x00*'
-  const spelled = names.map((n) => Array.from(n).join(nul))
+  const hex = (d: string) => (/[a-f]/.test(d) ? `[${d}${d.toUpperCase()}]` : d)
+  const char = (c: string) => {
+    const code = c.charCodeAt(0).toString(16).padStart(4, '0')
+    const escape = ['\\\\', 'u', ...Array.from(code, hex)].join(nul)
+    return `(?:${c}|${escape})`
+  }
+  const spelled = names.map((n) => Array.from(n, char).join(nul))
   return new RegExp(`"${nul}(?:${spelled.join('|')})${nul}"[\\s\\x00]*:`)
 }
 
-/**
- * Field names that only a catalog (or its secrets) would carry. Matched on
- * the text of a payload that does not parse, so a catalog cut short or
- * written loosely is still recognised.
- */
+/** Field names only a catalog or its secrets carry, for payloads that do not parse. */
 const CATALOG_FIELD = fieldPattern([
   'tracks',
   'publishTracks',
@@ -186,9 +176,8 @@ const CATALOG_FIELD = fieldPattern([
 ])
 
 /**
- * The fields whose values `redactCatalogText` replaces: the content key
- * always, the credentials with `credentials`. `drmSystem` stands for the DRM
- * system URLs inside it.
+ * Fields the redactor replaces: the content key always, the credentials with
+ * `credentials`. `drmSystem` holds the DRM system URLs.
  */
 const KEY_FIELDS = ['trackBaseKey']
 const CREDENTIAL_FIELDS = ['token', 'authInfo', 'connectionUri', 'drmSystem']
@@ -202,29 +191,23 @@ const SECRET_OR_CREDENTIAL_FIELD = fieldPattern([
 const GZIP = [0x1f, 0x8b, 0x08]
 
 /**
- * Whether a payload could be a catalog at all: gzip (an MSF_COMPRESSION
- * catalog), or text whose first character, past a byte-order mark and white
- * space, opens a JSON object. Media and other binary data stop here.
+ * Whether a payload could be a catalog: gzip, or text whose first character
+ * past byte-order marks and white space opens a JSON object or array.
  */
 function catalogCandidate(bytes: Uint8Array): 'gzip' | 'json' | null {
   if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) return 'gzip'
-  let i = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0
-  while (i < bytes.length && ' \t\n\r'.includes(String.fromCharCode(bytes[i]!)))
-    i++
-  return bytes[i] === 0x7b ? 'json' : null
-}
-
-/** Whether a parsed JSON value has a member the redactor would have replaced, at any depth. */
-function namesSecret(value: unknown, credentials: boolean): boolean {
-  if (Array.isArray(value))
-    return value.some((v) => namesSecret(v, credentials))
-  if (value === null || typeof value !== 'object') return false
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (KEY_FIELDS.includes(k)) return true
-    if (credentials && CREDENTIAL_FIELDS.includes(k)) return true
-    if (namesSecret(v, credentials)) return true
+  let i = 0
+  for (;;) {
+    if (bytes[i] === 0xef && bytes[i + 1] === 0xbb && bytes[i + 2] === 0xbf)
+      i += 3
+    else if (
+      i < bytes.length &&
+      ' \t\n\r'.includes(String.fromCharCode(bytes[i]!))
+    )
+      i++
+    else break
   }
-  return false
+  return bytes[i] === 0x7b || bytes[i] === 0x5b ? 'json' : null
 }
 
 /** Whether `needle` occurs anywhere in `bytes`. */
@@ -237,63 +220,125 @@ function contains(bytes: Uint8Array, needle: readonly number[]): boolean {
   return false
 }
 
+/** Decompressed size beyond which a gzip payload is dropped unread. */
+const MAX_INFLATED = 16 * 1024 * 1024
+
+async function gunzip(bytes: Uint8Array): Promise<Uint8Array | undefined> {
+  try {
+    const reader = new Blob([bytes as BlobPart])
+      .stream()
+      .pipeThrough(new DecompressionStream('gzip'))
+      .getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.length
+      if (total > MAX_INFLATED) {
+        await reader.cancel().catch(() => {})
+        return undefined
+      }
+      chunks.push(value)
+    }
+    const out = new Uint8Array(total)
+    let at = 0
+    for (const c of chunks) {
+      out.set(c, at)
+      at += c.length
+    }
+    return out
+  } catch {
+    return undefined
+  }
+}
+
+async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as BlobPart])
+    .stream()
+    .pipeThrough(new CompressionStream('gzip'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
 /**
- * One object payload, ready to share: the event as it was when it is not a
- * catalog, with the redacted text (and its size) when it is, and `undefined`
- * (drop it) when it may hold a catalog's secrets that cannot be redacted.
- * `credentials` is the auth toggle off; the content key goes either way.
- *
- * `framed` is false for a payload that is a whole stream rather than one
- * object (an object-payload event with no object-header, which is how a
- * stream that frames as nothing is exported): a catalog object may sit
- * anywhere in it, behind framing bytes, so gzip anywhere in it may be one.
+ * JSON with its secrets replaced: `bytes` itself when nothing changed, null
+ * when it does not parse or is not UTF-8.
  */
-export function redactCatalogPayload(
+function redactJson(
+  bytes: Uint8Array,
+  credentials: boolean,
+): Uint8Array | null {
+  const redacted =
+    redactCatalogText(bytes, { credentials }) ??
+    redactJsonText(bytes, { credentials })
+  if (redacted === null) return null
+  const out = new TextEncoder().encode(redacted)
+  if (out.length === bytes.length && out.every((b, k) => b === bytes[k]))
+    return bytes
+  return out
+}
+
+/**
+ * Whether a payload that is not JSON may hold a catalog's secrets: it names
+ * one, or (`framed` false) it holds gzip, whose content cannot be read.
+ */
+function mayHoldSecret(
+  bytes: Uint8Array,
+  credentials: boolean,
+  framed: boolean,
+): boolean {
+  if (!framed && contains(bytes, GZIP)) return true
+  const secret = credentials ? SECRET_OR_CREDENTIAL_FIELD : SECRET_FIELD
+  return secret.test(new TextDecoder('latin1').decode(bytes))
+}
+
+/**
+ * A gzip payload redacted and recompressed: `bytes` itself when nothing
+ * changed, `undefined` when it cannot be vouched for.
+ */
+async function redactGzip(
+  bytes: Uint8Array,
+  credentials: boolean,
+): Promise<Uint8Array | undefined> {
+  const plain = await gunzip(bytes)
+  if (plain === undefined) return undefined
+  const kind = catalogCandidate(plain)
+  if (kind === null)
+    return mayHoldSecret(plain, credentials, false) ? undefined : bytes
+  if (kind === 'gzip') return undefined
+  const redacted = redactJson(plain, credentials)
+  if (redacted === null) return undefined
+  return redacted === plain ? bytes : gzip(redacted)
+}
+
+/**
+ * One object payload, ready to share: unchanged, with the redacted payload
+ * and size, or `undefined` (drop it) when it may hold catalog secrets that
+ * cannot be redacted. `credentials` is the auth toggle off. `framed` is false
+ * for a payload with no object header, which is a whole stream.
+ */
+export async function redactCatalogPayload(
   e: ObjectPayloadEvent,
   credentials: boolean,
   framed = true,
-): ObjectPayloadEvent | undefined {
+): Promise<ObjectPayloadEvent | undefined> {
   const bytes = e.payload
   if (bytes === undefined) return e
-  const latin1 = (): string => new TextDecoder('latin1').decode(bytes)
-  const secret = credentials ? SECRET_OR_CREDENTIAL_FIELD : SECRET_FIELD
   const kind = catalogCandidate(bytes)
-  if (kind === null) {
-    // Not a catalog by its first byte, but a catalog's secrets can still be
-    // in it: behind framing bytes, when a stream is exported unframed or
-    // framed wrong. Any payload that names one goes, and an unframed one
-    // that holds gzip goes too, since what it compresses cannot be read.
-    if (!framed && contains(bytes, GZIP)) return undefined
-    return secret.test(latin1()) ? undefined : e
-  }
-  // Compressed: it cannot be read, so it cannot be vouched for.
-  if (kind === 'gzip') return undefined
-  const redacted = redactCatalogText(bytes, { credentials })
-  if (redacted !== null) {
-    const out = new TextEncoder().encode(redacted)
-    // Nothing secret in it: the captured bytes go as they are.
-    if (out.length === bytes.length && out.every((b, k) => b === bytes[k]))
-      return e
+  if (kind === null)
+    return mayHoldSecret(bytes, credentials, framed) ? undefined : e
+  const out =
+    kind === 'gzip'
+      ? await redactGzip(bytes, credentials)
+      : redactJson(bytes, credentials)
+  if (out === bytes) return e
+  if (out !== null && out !== undefined)
     return { ...e, payload: out, size: out.length }
-  }
-  // Not a catalog after all, or one that could not be read. A JSON object
-  // without a catalog's shape is application data, and goes untouched unless
-  // it has a member the redactor would have replaced (a catalog written
-  // wrong, or one nested in another document, still carries its key); the
-  // redactor splices only a catalog, so such a payload goes whole. One that
-  // does not parse (or is not UTF-8) goes only if it names no catalog field.
-  // Text that is not UTF-8 is never taken as parsed: decoded loosely, it
-  // could parse as the very catalog the redactor refused.
-  try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    const root: unknown = JSON.parse(text)
-    if (root !== null && typeof root === 'object' && !Array.isArray(root)) {
-      return namesSecret(root, credentials) ? undefined : e
-    }
-  } catch {
-    // Falls through to the field check
-  }
-  return CATALOG_FIELD.test(latin1()) ? undefined : e
+  if (kind === 'gzip') return undefined
+  // Not JSON, or not UTF-8: kept only if it names no catalog field.
+  return CATALOG_FIELD.test(new TextDecoder('latin1').decode(bytes))
+    ? undefined
+    : e
 }
 
 /**
@@ -303,12 +348,12 @@ export function redactCatalogPayload(
  * request stream, including one the panel never marked. An imported trace
  * has no panel markers at all.
  */
-export function redactTrace(
+export async function redactTrace(
   trace: Trace,
   content: ShareContent,
   draft: string | null,
   controlStreams: ReadonlySet<bigint> = new Set(),
-): Trace {
+): Promise<Trace> {
   const known =
     draft !== null && Object.prototype.hasOwnProperty.call(REDACTORS, draft)
       ? (draft as SupportedDraft)
@@ -350,12 +395,19 @@ export function redactTrace(
       if (e.type === 'object-header')
         headed.add(objectKey(e as ObjectHeaderEvent))
     }
-    events = events.flatMap((e) => {
-      if (e.type !== 'object-payload') return [e]
-      const p = e as ObjectPayloadEvent
-      const out = redactCatalogPayload(p, credentials, headed.has(objectKey(p)))
-      return out === undefined ? [] : [out as TraceEvent]
-    })
+    const redacted = await Promise.all(
+      events.map(async (e) => {
+        if (e.type !== 'object-payload') return e
+        const p = e as ObjectPayloadEvent
+        const out = await redactCatalogPayload(
+          p,
+          credentials,
+          headed.has(objectKey(p)),
+        )
+        return out as TraceEvent | undefined
+      }),
+    )
+    events = redacted.filter((e): e is TraceEvent => e !== undefined)
   }
   // With no object left, `control` sheds the stream events too.
   const fitted = fitDetail(events)

@@ -9,8 +9,6 @@ import type { CollectorStatus } from '@/src/intercept/collector-presence'
 
 import {
   displayFields,
-  setupImplementation,
-  TrackRegistry,
   type TrackVia,
   trackDisplayName,
 } from '@moqtap/inspect'
@@ -19,7 +17,6 @@ import {
   MAX_ARRIVALS,
   recordArrival,
 } from '@/src/trace/arrivals'
-import { controlMessageName, draftFromProtocol } from '@/src/trace/message-name'
 import type {
   BackgroundToPanelMsg,
   WebTransportOptionsInfo,
@@ -27,26 +24,13 @@ import type {
 import { base64ToBytes } from '@/src/messaging/types'
 import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
 // The panel does not touch IDB directly — data requests go through the background worker.
-import { detectAnnexB } from '@moqtap/media/annexb'
-import { detectMediaInfo, type PayloadMediaInfo } from '@moqtap/media/bmff'
-import {
-  detectContentType,
-  type StreamContentType,
-} from '@/src/detect/content-detect'
-import type {
-  ControlMessageEvent,
-  ObjectPayloadEvent,
-  StreamClosedEvent,
-  StreamOpenedEvent,
-  Trace,
-} from '@moqtap/trace'
-import {
-  controlMessageFields,
-  readMoqtrace,
-  writeMoqtrace,
-} from '@moqtap/trace'
+import type { PayloadMediaInfo } from '@moqtap/media/bmff'
+import type { StreamContentType } from '@/src/detect/content-detect'
+import type { Trace } from '@moqtap/trace'
+import { readMoqtrace, writeMoqtrace } from '@moqtap/trace'
 import { buildTrace } from './build-trace'
 import { reviveTagged, untagDecoded } from './decoded'
+import { applySetupImplementation, sessionFromTrace } from './import-trace'
 
 export interface SessionEntry {
   sessionId: string
@@ -209,7 +193,17 @@ export interface StreamEntry {
   datagramCount?: number
   /** MoQT group ID (for datagram groups) */
   groupId?: number
+  /**
+   * How an imported stream's framing came about. The trace records no framing
+   * bytes: 'reconstructed' when they were encoded again from its events,
+   * 'unavailable' when the events did not say enough and the bytes are the
+   * payloads alone. Absent for live streams.
+   */
+  importedFraming?: ImportedFraming
 }
+
+/** See {@link StreamEntry.importedFraming}. */
+export type ImportedFraming = 'reconstructed' | 'unavailable'
 
 export interface DatagramGroupEntry {
   /** Unique key: "trackAlias:groupId" */
@@ -232,6 +226,8 @@ export interface DatagramGroupEntry {
    * groups as unbounded.
    */
   arrivals?: Map<number, number>
+  /** As {@link StreamEntry.importedFraming}, for an imported group */
+  importedFraming?: ImportedFraming
 }
 
 export interface MessageEntry {
@@ -254,30 +250,6 @@ export interface MessageEntry {
   raw: Uint8Array
   /** Stack trace from the call site (tx messages only, ephemeral) */
   stack?: string
-}
-
-/**
- * Record the `moqt_implementation` either side advertises in its setup
- * message: the client and relay name themselves on the wire, which beats any
- * fingerprint inferred from traffic.
- *
- * Called from both the live control-message path and the trace import path,
- * so an imported .moqtrace shows the same thing a live session does.
- */
-function applySetupImplementation(
-  session: SessionEntry,
-  messageType: string,
-  fields: Record<string, unknown> | null,
-  direction: 'tx' | 'rx',
-): void {
-  if (!fields) return
-  // Draft-17 merged CLIENT_SETUP and SERVER_SETUP into one SETUP, whose sender
-  // is the end that sent it: the page is the client.
-  const found = setupImplementation(messageType, fields, direction === 'tx')
-  if (!found) return
-  if (found.side === 'client')
-    session.clientImplementation = found.implementation
-  else session.serverImplementation = found.implementation
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -992,247 +964,18 @@ export function useInspector() {
 
   async function loadTraceAsSession(trace: Trace, filename: string) {
     const sessionId = `imported-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const header = trace.header
-
-    // Determine draft from protocol string (e.g. "moq-transport-14")
-    const draft = draftFromProtocol(header.protocol)
-
-    const session: SessionEntry = {
+    const { session, streamData, datagramData } = sessionFromTrace(trace, {
       sessionId,
-      url: header.endpoint ?? filename,
-      createdAt: header.startTime,
-      closed: true,
-      closedReason: 'imported',
-      protocol: draft ? 'moqt' : 'unknown',
-      draft,
-      streams: new Map(),
-      messages: [],
-      tracks: new Map(),
-      datagramGroups: new Map(),
-      bitrateSamples: [],
-      imported: true,
+      filename,
+      nextColorIndex: () => nextColorIndex++,
+    })
+
+    // Imports don't use IDB: their bytes are kept here
+    for (const [streamId, data] of streamData) {
+      importedStreamData.set(`${sessionId}:${streamId}`, data)
     }
-
-    // Collect payload data per stream to write to IndexedDB after session is built
-    const streamPayloads = new Map<number, Uint8Array[]>()
-    // Collect datagram payloads keyed by groupKey ("trackAlias:groupId")
-    // For imported traces, we use trackAlias=0 since we don't have it
-    const dgPayloads = new Map<string, Uint8Array[]>()
-
-    // Tracks are rebuilt from the trace's control messages the same way they
-    // are live, including the stream each message came from — a draft-17+
-    // response identifies its request only by the stream it arrived on.
-    // Traces written before the format carried a stream id have none, and
-    // their draft-17+ subscriptions stay unresolved.
-    const trackRegistry = new TrackRegistry<TrackEntry>(
-      session.tracks,
-      (fields) => ({
-        ...fields,
-        fullName: trackDisplayName(fields),
-        colorIndex: nextColorIndex++,
-      }),
-    )
-
-    // Reconstruct state from trace events
-    for (const event of trace.events) {
-      switch (event.type) {
-        case 'control': {
-          const ce = event as ControlMessageEvent
-          // A conformant writer puts a field map in `message`, but the format
-          // obliges a reader to accept less: a trace may carry a text rendering
-          // of the message there instead. Narrowing decides which of the two
-          // this is, and everything that reads a field off it is skipped for
-          // the other rather than reading `undefined` from it.
-          const fields = controlMessageFields(ce.message)
-          const msgType = controlMessageName(ce.messageType, draft, fields)
-          session.messages.push({
-            timestamp: ce.timestamp,
-            direction: ce.direction === 0 ? 'tx' : 'rx',
-            messageType: msgType,
-            ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
-            decoded: ce.message,
-            decodedPretty: fields ? displayFields(msgType, fields) : ce.message,
-            raw: ce.raw ?? new Uint8Array(0),
-          })
-
-          applySetupImplementation(
-            session,
-            msgType,
-            fields ?? null,
-            ce.direction === 0 ? 'tx' : 'rx',
-          )
-
-          // Extract track info from control messages. Traces recorded before
-          // the stream id existed simply have none.
-          if (fields) {
-            trackRegistry.apply(msgType, fields, {
-              direction: ce.direction === 0 ? 'tx' : 'rx',
-              ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
-              timestamp: ce.timestamp,
-            })
-          }
-          break
-        }
-
-        case 'stream-opened': {
-          const se = event as StreamOpenedEvent
-          const streamId = Number(se.streamId)
-          if (!session.streams.has(streamId)) {
-            session.streams.set(streamId, {
-              streamId,
-              direction: se.direction === 0 ? 'tx' : 'rx',
-              closed: false,
-              byteCount: 0,
-              chunkCount: 0,
-              contentType: 'binary',
-              // What the stream's header said, as the background reads it
-              // live: the alias on a subgroup stream, the request on a fetch
-              // stream (type 2). They are what attribute a stream to its
-              // track, a catalog's among them.
-              ...(se.streamType !== 2 && se.trackAlias != null
-                ? { trackAlias: Number(se.trackAlias) }
-                : {}),
-              ...(se.streamType === 2 && se.fetchRequestId != null
-                ? { fetchRequestId: Number(se.fetchRequestId) }
-                : {}),
-            })
-          }
-          break
-        }
-
-        case 'object-payload': {
-          const op = event as ObjectPayloadEvent
-          const streamId = Number(op.streamId)
-
-          // Detect datagram-style events: streamId=0 with groupId
-          if (streamId === 0 && op.groupId !== undefined) {
-            const groupId = Number(op.groupId)
-            const gk = `0:${groupId}` // trackAlias=0 for imports
-            if (op.payload && op.payload.length > 0) {
-              let payloads = dgPayloads.get(gk)
-              if (!payloads) {
-                payloads = []
-                dgPayloads.set(gk, payloads)
-              }
-              payloads.push(
-                op.payload instanceof Uint8Array
-                  ? op.payload
-                  : new Uint8Array(op.payload as ArrayLike<number>),
-              )
-            }
-            break
-          }
-
-          // Ensure stream entry exists
-          if (!session.streams.has(streamId)) {
-            session.streams.set(streamId, {
-              streamId,
-              direction: 'rx',
-              closed: false,
-              byteCount: 0,
-              chunkCount: 0,
-              contentType: 'binary',
-            })
-          }
-
-          if (op.payload && op.payload.length > 0) {
-            let payloads = streamPayloads.get(streamId)
-            if (!payloads) {
-              payloads = []
-              streamPayloads.set(streamId, payloads)
-            }
-            payloads.push(
-              op.payload instanceof Uint8Array
-                ? op.payload
-                : new Uint8Array(op.payload as ArrayLike<number>),
-            )
-          }
-          break
-        }
-
-        case 'stream-closed': {
-          const sc = event as StreamClosedEvent
-          const streamId = Number(sc.streamId)
-          const stream = session.streams.get(streamId)
-          if (stream) stream.closed = true
-          break
-        }
-      }
-    }
-
-    // Store collected payloads in local map (imports don't use IDB)
-    for (const [streamId, payloads] of streamPayloads) {
-      const stream = session.streams.get(streamId)
-      if (!stream) continue
-
-      // Merge all payloads into a single Uint8Array
-      let totalLen = 0
-      for (const chunk of payloads) totalLen += chunk.length
-      const merged = new Uint8Array(totalLen)
-      let offset = 0
-      for (let i = 0; i < payloads.length; i++) {
-        const chunk = payloads[i]
-        merged.set(chunk, offset)
-        offset += chunk.length
-        if (i === 0) {
-          stream.contentType = detectContentType(chunk)
-          if (stream.contentType === 'fmp4') {
-            // Imported payloads are raw object data — detect BMFF boxes directly
-            stream.mediaInfo = detectMediaInfo(chunk) ?? undefined
-          } else if (
-            stream.contentType === 'h264' ||
-            stream.contentType === 'h265'
-          ) {
-            stream.codecString = detectAnnexB(chunk)?.codecString
-          }
-        }
-      }
-      stream.byteCount = totalLen
-      importedStreamData.set(`${sessionId}:${streamId}`, merged)
-    }
-
-    // Reconstruct datagram groups from imported trace
-    for (const [gk, payloads] of dgPayloads) {
-      const parts = gk.split(':')
-      const trackAlias = Number(parts[0])
-      const groupId = Number(parts[1])
-
-      // Build length-prefixed datagram group data (matching heap store format)
-      let totalLen = 0
-      for (const chunk of payloads) totalLen += 4 + chunk.length
-      const merged = new Uint8Array(totalLen)
-      const dv = new DataView(merged.buffer)
-      let offset = 0
-      for (let i = 0; i < payloads.length; i++) {
-        const chunk = payloads[i]
-        dv.setUint32(offset, chunk.length, true)
-        merged.set(chunk, offset + 4)
-        offset += 4 + chunk.length
-      }
-
-      // Detect content from first payload
-      let ct: StreamContentType = 'binary'
-      let mediaInfo: PayloadMediaInfo | undefined
-      if (payloads.length > 0) {
-        ct = detectContentType(payloads[0])
-        if (ct === 'fmp4') {
-          mediaInfo = detectMediaInfo(payloads[0]) ?? undefined
-        }
-      }
-
-      session.datagramGroups.set(gk, {
-        groupKey: gk,
-        trackAlias,
-        groupId,
-        direction: 'rx',
-        closed: true,
-        byteCount: totalLen,
-        datagramCount: payloads.length,
-        contentType: ct,
-        mediaInfo,
-      })
-
-      importedStreamData.set(`${sessionId}:dg:${gk}`, merged)
+    for (const [gk, data] of datagramData) {
+      importedStreamData.set(`${sessionId}:dg:${gk}`, data)
     }
 
     sessions.value.set(sessionId, session)

@@ -13,7 +13,7 @@ import {
   parseDatagramGroupFraming,
   parseStreamFraming,
 } from '../stream-framing'
-import type { TrackEntry } from '../use-inspector'
+import type { ImportedFraming, TrackEntry } from '../use-inspector'
 import CatalogPanel from './CatalogPanel.vue'
 import HexViewer from './HexViewer.vue'
 import JsonTree from './JsonTree.vue'
@@ -39,6 +39,8 @@ const props = defineProps<{
    * just this stream's objects.
    */
   catalog?: CatalogView | null
+  /** How an imported stream's framing came about; absent for a live stream */
+  importedFraming?: ImportedFraming
 }>()
 
 /**
@@ -96,6 +98,19 @@ const framing = computed(() => {
     return parseDatagramGroupFraming(props.data, props.draft)
   }
   return parseStreamFraming(props.data, props.draft)
+})
+
+/**
+ * What the hex view says about bytes it did not see captured. A trace records
+ * no framing, so an imported stream's is either encoded again from its events
+ * or missing altogether.
+ */
+const framingNote = computed((): string | undefined => {
+  if (props.importedFraming === 'reconstructed')
+    return 'header bytes rebuilt from the trace, not captured'
+  if (props.importedFraming === 'unavailable')
+    return 'payloads only: the trace does not say enough to rebuild the framing'
+  return undefined
 })
 
 /** Header tags for UI display (generic, draft-agnostic) */
@@ -374,6 +389,7 @@ if (!props.catalog && preferredMode === 'json' && hasStructuredContent.value) {
         :data="data"
         :header-size="headerSize"
         :objects="framing?.objects"
+        :note="framingNote"
       />
       <div v-else-if="viewMode === 'json' && jsonData" class="json-container">
         <JsonTree :data="jsonData" :initial-expanded="true" />

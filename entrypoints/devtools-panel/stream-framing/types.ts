@@ -29,6 +29,12 @@ export interface StreamObject {
   /** Publisher Priority, on the same terms as `groupId`. */
   publisherPriority?: number
   /**
+   * The Serialization Flags of an End of Range marker on a fetch stream (from
+   * draft-16): a range that does not exist or is not known, not an object. It
+   * frames like one, a Group and Object ID and no payload, and is no object.
+   */
+  endOfRange?: number
+  /**
    * Byte offset of the Object's property block (Extension Headers before
    * draft-17) in the stream, past its length field. Absent when the Object had
    * no properties field. The block is the wire's own bytes; decode them with

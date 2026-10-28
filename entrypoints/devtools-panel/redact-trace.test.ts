@@ -3,6 +3,7 @@
 import { decodeMessage, encodeMessage } from '@moqtap/codec/draft20'
 import type { LibraryClient } from '@/src/account/library'
 import { readMoqtrace, type Trace, type TraceEvent } from '@moqtap/trace'
+import { redactCatalogText } from '@moqtap/media/catalog'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SHARE_CONTENT,
@@ -165,12 +166,12 @@ function capturingLibrary(): {
 }
 
 describe('redaction for sharing', () => {
-  it('defaults leave both payloads and authorization out', () => {
+  it('defaults leave both payloads and authorization out', async () => {
     expect(DEFAULT_SHARE_CONTENT).toEqual({ payloads: false, auth: false })
   })
 
-  it('payloads off drops every object-payload, keeps the headers, and says so in detail', () => {
-    const out = redactTrace(trace(), { payloads: false, auth: true }, '20')
+  it('payloads off drops every object-payload, keeps the headers, and says so in detail', async () => {
+    const out = await redactTrace(trace(), { payloads: false, auth: true }, '20')
     expect(out.events.map((e) => e.type)).toEqual([
       'control',
       'stream-opened',
@@ -181,7 +182,7 @@ describe('redaction for sharing', () => {
     expect(out.header.detail).toBe('headers')
   })
 
-  it('a session with no data stream, shared with the defaults, is control and carries no stream event', () => {
+  it('a session with no data stream, shared with the defaults, is control and carries no stream event', async () => {
     // A trace that carries the control stream's bytes as one raw object-payload,
     // as an imported trace can; nothing else marks an object.
     const t = trace(false)
@@ -214,22 +215,22 @@ describe('redaction for sharing', () => {
       DEFAULT_SHARE_CONTENT,
       { payloads: true, auth: false },
     ]) {
-      const out = redactTrace(live, content, '20', new Set([0n]))
+      const out = await redactTrace(live, content, '20', new Set([0n]))
       expect(out.header.detail).toBe('control')
       expect(out.events.map((e) => e.type)).toEqual(['control'])
       expect(out.events.map((e) => e.seq)).toEqual([0])
     }
   })
 
-  it('payloads on keeps them at headers+data', () => {
-    const out = redactTrace(trace(), { payloads: true, auth: true }, '20')
+  it('payloads on keeps them at headers+data', async () => {
+    const out = await redactTrace(trace(), { payloads: true, auth: true }, '20')
     expect(out.events.some((e) => e.type === 'object-payload')).toBe(true)
     expect(out.header.detail).toBe('headers+data')
   })
 
-  it('auth off zero-fills the token in the wire bytes, length preserved, and in the decoded map', () => {
+  it('auth off zero-fills the token in the wire bytes, length preserved, and in the decoded map', async () => {
     const before = trace(false)
-    const out = redactTrace(before, { payloads: true, auth: false }, '20')
+    const out = await redactTrace(before, { payloads: true, auth: false }, '20')
     const raw = control(out).raw!
     expect(raw.length).toBe(control(before).raw!.length)
     expect(contains(raw, SECRET)).toBe(false)
@@ -251,26 +252,26 @@ describe('redaction for sharing', () => {
     expect(contains(control(before).raw!, SECRET)).toBe(true)
   })
 
-  it('a SETUP whose path carries a query loses its wire bytes, which hold the query too', () => {
-    const out = redactTrace(trace(true), DEFAULT_SHARE_CONTENT, '20')
+  it('a SETUP whose path carries a query loses its wire bytes, which hold the query too', async () => {
+    const out = await redactTrace(trace(true), DEFAULT_SHARE_CONTENT, '20')
     expect(control(out).raw).toBeUndefined()
     expect(
       (control(out).message as { options: { path: string } }).options.path,
     ).toBe('/moq')
   })
 
-  it('auth on ships the frame as captured', () => {
-    const out = redactTrace(trace(), { payloads: true, auth: true }, '20')
+  it('auth on ships the frame as captured', async () => {
+    const out = await redactTrace(trace(), { payloads: true, auth: true }, '20')
     expect(contains(control(out).raw!, SECRET)).toBe(true)
     expect(out.header.endpoint).toBe(
       'https://relay.example/moq?token=url-secret#frag',
     )
   })
 
-  it('wire bytes the redactor cannot vouch for are dropped, not shipped', () => {
-    const unknownDraft = redactTrace(trace(), DEFAULT_SHARE_CONTENT, null)
+  it('wire bytes the redactor cannot vouch for are dropped, not shipped', async () => {
+    const unknownDraft = await redactTrace(trace(), DEFAULT_SHARE_CONTENT, null)
     expect(control(unknownDraft).raw).toBeUndefined()
-    const notADraft = redactTrace(trace(), DEFAULT_SHARE_CONTENT, '99')
+    const notADraft = await redactTrace(trace(), DEFAULT_SHARE_CONTENT, '99')
     expect(control(notADraft).raw).toBeUndefined()
     // A whole frame of a type the draft does not define: the redactor walks
     // nothing, so "no token found" says nothing about its bytes.
@@ -283,11 +284,11 @@ describe('redaction for sharing', () => {
       ),
     }
     expect(
-      control(redactTrace(odd, DEFAULT_SHARE_CONTENT, '20')).raw,
+      control(await redactTrace(odd, DEFAULT_SHARE_CONTENT, '20')).raw,
     ).toBeUndefined()
   })
 
-  it("draft-07's authorization_info is replaced", () => {
+  it("draft-07's authorization_info is replaced", async () => {
     expect(
       scrubMessage({ params: { authorization_info: 'Bearer x', role: 1n } }),
     ).toEqual({
@@ -295,10 +296,10 @@ describe('redaction for sharing', () => {
     })
   })
 
-  it('an unparseable endpoint is dropped', () => {
+  it('an unparseable endpoint is dropped', async () => {
     expect(stripQuery('not a url ?token=x')).toBeUndefined()
     const t = trace()
-    const out = redactTrace(
+    const out = await redactTrace(
       { ...t, header: { ...t.header, endpoint: '::?k=v' } },
       DEFAULT_SHARE_CONTENT,
       '20',
@@ -364,7 +365,7 @@ describe('redaction for sharing', () => {
     )
   })
 
-  it('a token_value the redactor does not recognise is dropped, not shipped', () => {
+  it('a token_value the redactor does not recognise is dropped, not shipped', async () => {
     const out = scrubMessage({
       t: { token_value: { anything: SECRET }, token_type: 1 },
     })
@@ -435,7 +436,7 @@ describe('redaction for sharing', () => {
     ).toEqual([2n])
   })
 
-  it('auth off drops a request stream the trace itself names, with no panel marker, even with payloads on', () => {
+  it('auth off drops a request stream the trace itself names, with no panel marker, even with payloads on', async () => {
     // An imported trace: the panel marked no stream, but the SUBSCRIBE's own
     // stream id says stream 4 is a request stream, and its bytes are framed
     // as an object holding the token.
@@ -484,7 +485,7 @@ describe('redaction for sharing', () => {
         } as TraceEvent,
       ],
     }
-    const out = redactTrace(imported, { payloads: true, auth: false }, '20')
+    const out = await redactTrace(imported, { payloads: true, auth: false }, '20')
     const objects = out.events
       .filter((e) => e.type === 'object-payload' || e.type === 'object-header')
       .map((e) => (e as { streamId: bigint }).streamId)
@@ -493,7 +494,7 @@ describe('redaction for sharing', () => {
     expect(out.events.filter((e) => e.type === 'control')).toHaveLength(2)
   })
 
-  it('auth on keeps the control stream bytes when payloads are on', () => {
+  it('auth on keeps the control stream bytes when payloads are on', async () => {
     const t = trace(false)
     const live: Trace = {
       ...t,
@@ -511,7 +512,7 @@ describe('redaction for sharing', () => {
         } as TraceEvent,
       ],
     }
-    const out = redactTrace(
+    const out = await redactTrace(
       live,
       { payloads: true, auth: true },
       '20',
@@ -598,9 +599,19 @@ const catalogHeaders = (t: Trace) =>
 
 const text = (b: Uint8Array) => new TextDecoder().decode(b)
 
+async function pipe(
+  b: Uint8Array,
+  t: CompressionStream | DecompressionStream,
+): Promise<Uint8Array> {
+  const stream = new Blob([b as BlobPart]).stream().pipeThrough(t)
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+const gzip = (b: Uint8Array) => pipe(b, new CompressionStream('gzip'))
+const gunzip = (b: Uint8Array) => pipe(b, new DecompressionStream('gzip'))
+
 describe('catalog redaction for sharing', () => {
-  it('auth off replaces credentials and the content key, keeps key ids and init data, and fixes the size', () => {
-    const out = redactTrace(
+  it('auth off replaces credentials and the content key, keeps key ids and init data, and fixes the size', async () => {
+    const out = await redactTrace(
       catalogTrace(enc.encode(CATALOG)),
       { payloads: true, auth: false },
       '20',
@@ -630,8 +641,8 @@ describe('catalog redaction for sharing', () => {
     expect(out.header.detail).toBe('headers+data')
   })
 
-  it('auth on keeps the credentials but still replaces trackBaseKey, a content key', () => {
-    const out = redactTrace(
+  it('auth on keeps the credentials but still replaces trackBaseKey, a content key', async () => {
+    const out = await redactTrace(
       catalogTrace(enc.encode(CATALOG)),
       { payloads: true, auth: true },
       '20',
@@ -651,7 +662,7 @@ describe('catalog redaction for sharing', () => {
     expect(p.size).toBe(p.payload.length)
   })
 
-  it('delta objects of both drafts are redacted too', () => {
+  it('delta objects of both drafts are redacted too', async () => {
     const msf01 = {
       deltaUpdate: [
         {
@@ -673,37 +684,76 @@ describe('catalog redaction for sharing', () => {
       enc.encode(JSON.stringify(msf00)),
     )
     const off = catalogPayloads(
-      redactTrace(t, { payloads: true, auth: false }, '20'),
+      await redactTrace(t, { payloads: true, auth: false }, '20'),
     )
     for (const secret of ['DELTA-TOKEN', 'DELTA-KEY'])
       expect(contains(off.get(0n)!.payload, secret)).toBe(false)
     for (const secret of ['ADD-TOKEN', 'ADD-KEY'])
       expect(contains(off.get(1n)!.payload, secret)).toBe(false)
     const on = catalogPayloads(
-      redactTrace(t, { payloads: true, auth: true }, '20'),
+      await redactTrace(t, { payloads: true, auth: true }, '20'),
     )
     expect(contains(on.get(0n)!.payload, 'DELTA-TOKEN')).toBe(true)
     expect(contains(on.get(0n)!.payload, 'DELTA-KEY')).toBe(false)
     expect(contains(on.get(1n)!.payload, 'ADD-KEY')).toBe(false)
   })
 
-  it('a gzip payload, which cannot be read, loses its payload event and keeps its header, auth on or off', () => {
-    const gzip = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 1, 2, 3, 4])
+  it('a gzip catalog comes back gzip, holding the redacted text, auth on or off', async () => {
+    const t = catalogTrace(await gzip(enc.encode(CATALOG)))
+    const off = catalogPayloads(
+      await redactTrace(t, { payloads: true, auth: false }, '20'),
+    ).get(0n)!
+    expect([off.payload[0], off.payload[1]]).toEqual([0x1f, 0x8b])
+    expect(off.size).toBe(off.payload.length)
+    const offText = text(await gunzip(off.payload))
+    expect(offText).toBe(
+      redactCatalogText(enc.encode(CATALOG), { credentials: true }),
+    )
+    for (const secret of ['TOKEN-SECRET', 'BASEKEY-SECRET', 'URI-SECRET'])
+      expect(offText).not.toContain(secret)
+    expect(offText).toContain('KEYID-KEEP')
+
+    const on = catalogPayloads(
+      await redactTrace(t, { payloads: true, auth: true }, '20'),
+    ).get(0n)!
+    const onText = text(await gunzip(on.payload))
+    expect(onText).toBe(
+      redactCatalogText(enc.encode(CATALOG), { credentials: false }),
+    )
+    expect(onText).toContain('TOKEN-SECRET')
+    expect(onText).not.toContain('BASEKEY-SECRET')
+  })
+
+  it('gzip of text that is not JSON and names no secret goes as captured', async () => {
+    const plain = await gzip(enc.encode('just some text, no fields'))
+    const out = await redactTrace(
+      catalogTrace(plain),
+      { payloads: true, auth: false },
+      '20',
+    )
+    expect(catalogPayloads(out).get(0n)!.payload).toBe(plain)
+  })
+
+  it('gzip that names a secret outside JSON, does not decompress, holds broken JSON or is too large loses its payload and keeps its header', async () => {
+    const named = await gzip(enc.encode('x "trackBaseKey": "K"'))
+    const garbage = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 1, 2, 3, 4])
+    const broken = await gzip(enc.encode('{"a":'))
+    const huge = await gzip(new Uint8Array(16 * 1024 * 1024 + 1).fill(0x20))
     for (const auth of [false, true]) {
-      const out = redactTrace(
-        catalogTrace(gzip),
+      const out = await redactTrace(
+        catalogTrace(named, garbage, broken, huge),
         { payloads: true, auth },
         '20',
       )
       expect(catalogPayloads(out).size).toBe(0)
-      expect(catalogHeaders(out)).toHaveLength(1)
+      expect(catalogHeaders(out)).toHaveLength(4)
     }
   })
 
-  it('a catalog-looking object that does not parse is dropped; one that names no catalog field is kept', () => {
+  it('a catalog-looking object that does not parse is dropped; one that names no catalog field is kept', async () => {
     const broken = enc.encode('{"tracks":[{"name":"v","token":"CUT-SHORT"')
     const other = enc.encode('{not json at all')
-    const out = redactTrace(
+    const out = await redactTrace(
       catalogTrace(broken, other),
       { payloads: true, auth: false },
       '20',
@@ -714,10 +764,10 @@ describe('catalog redaction for sharing', () => {
     expect(catalogHeaders(out)).toHaveLength(2)
   })
 
-  it('a catalog that is not UTF-8 is dropped, not decoded loosely', () => {
+  it('a catalog that is not UTF-8 is dropped, not decoded loosely', async () => {
     const bytes = enc.encode('{"tracks":[{"name":"v","token":"T"}],"x":"ab"}')
     bytes[bytes.length - 3] = 0xff
-    const out = redactTrace(
+    const out = await redactTrace(
       catalogTrace(bytes),
       { payloads: true, auth: false },
       '20',
@@ -725,12 +775,12 @@ describe('catalog redaction for sharing', () => {
     expect(catalogPayloads(out).size).toBe(0)
   })
 
-  it('JSON that is not a catalog, and a catalog with nothing secret, go as captured', () => {
+  it('JSON that is not a catalog, and a catalog with nothing secret, go as captured', async () => {
     const app = enc.encode('{"user":"APP-DATA","score":1}')
     const plain = enc.encode(
       '{"version":"1","tracks":[{"name":"v","keyId":"K"}]}',
     )
-    const out = redactTrace(
+    const out = await redactTrace(
       catalogTrace(app, plain),
       { payloads: true, auth: false },
       '20',
@@ -747,9 +797,10 @@ describe('catalog redaction for sharing', () => {
     expect(text(media.payload)).toBe('media')
   })
 
-  it('JSON without a catalog shape that has a member the redactor would replace is dropped', () => {
+  it('JSON without a catalog shape is kept with the same members redacted', async () => {
     // tracks as an object, a catalog nested in another document, application
-    // data with a token: none can be spliced, so none ships its secret.
+    // data with a token: each is spliced like a catalog, wherever the member
+    // sits.
     const wrongShape = enc.encode(
       '{"version":1,"tracks":{"v":{"trackBaseKey":"SHAPE-KEY"}}}',
     )
@@ -758,21 +809,31 @@ describe('catalog redaction for sharing', () => {
     )
     const appToken = enc.encode('{"token":"APP-TOKEN","score":1}')
     const t = catalogTrace(wrongShape, nested, appToken)
-    const on = catalogPayloads(
-      redactTrace(t, { payloads: true, auth: true }, '20'),
-    )
-    expect([...on.keys()]).toEqual([2n])
-    const off = catalogPayloads(
-      redactTrace(t, { payloads: true, auth: false }, '20'),
-    )
-    expect(off.size).toBe(0)
+    for (const auth of [false, true]) {
+      const left = catalogPayloads(
+        await redactTrace(t, { payloads: true, auth }, '20'),
+      )
+      expect([...left.keys()]).toEqual([0n, 1n, 2n])
+      expect(contains(left.get(0n)!.payload, 'SHAPE-KEY')).toBe(false)
+      expect(contains(left.get(1n)!.payload, 'NESTED-KEY')).toBe(false)
+      for (const p of left.values()) {
+        expect(p.size).toBe(p.payload.length)
+        expect(() => JSON.parse(text(p.payload))).not.toThrow()
+      }
+      const app = left.get(2n)!.payload
+      if (auth) expect(app).toBe(appToken)
+      else {
+        expect(contains(app, 'APP-TOKEN')).toBe(false)
+        expect(JSON.parse(text(app)).score).toBe(1)
+      }
+    }
   })
 
-  it('a UTF-16 catalog, which does not parse as UTF-8, is dropped', () => {
+  it('a UTF-16 catalog, which does not parse as UTF-8, is dropped', async () => {
     const json = '{"tracks":[{"name":"v","trackBaseKey":"WIDE-KEY"}]}'
     const wide = new Uint8Array(json.length * 2)
     for (let i = 0; i < json.length; i++) wide[i * 2] = json.charCodeAt(i)
-    const out = redactTrace(
+    const out = await redactTrace(
       catalogTrace(wide),
       { payloads: true, auth: true },
       '20',
@@ -780,7 +841,7 @@ describe('catalog redaction for sharing', () => {
     expect(catalogPayloads(out).size).toBe(0)
   })
 
-  it('a catalog behind framing bytes is dropped when it names a secret', () => {
+  it('a catalog behind framing bytes is dropped when it names a secret', async () => {
     // A stream exported framed wrong: its JSON does not start at byte 0.
     const framed = (json: string) =>
       new Uint8Array([0x10, 0x05, 0x00, 0x00, ...enc.encode(json)])
@@ -789,22 +850,63 @@ describe('catalog redaction for sharing', () => {
     const plain = framed('{"tracks":[{"name":"v"}]}')
     const t = catalogTrace(key, token, plain)
     const on = catalogPayloads(
-      redactTrace(t, { payloads: true, auth: true }, '20'),
+      await redactTrace(t, { payloads: true, auth: true }, '20'),
     )
     expect([...on.keys()]).toEqual([1n, 2n])
     const off = catalogPayloads(
-      redactTrace(t, { payloads: true, auth: false }, '20'),
+      await redactTrace(t, { payloads: true, auth: false }, '20'),
     )
     expect([...off.keys()]).toEqual([2n])
   })
 
-  it('a stream exported unframed loses its payload when it holds gzip; a framed object does not', () => {
+  it('a member name written in JSON escapes is found at an array root, in text that does not parse and behind a second BOM', async () => {
+    const B = '\\'
+    const BOM = [0xef, 0xbb, 0xbf]
+    const arrayKey = enc.encode(`[{"trackBase${B}u004bey":"ARRAY-KEY"}]`)
+    const arrayToken = enc.encode(`[{"tok${B}u0065n":"ARRAY-TOKEN"}]`)
+    const arrayUri = enc.encode(
+      `[{"connection${B}u0055ri":"https://u:ARRAY-PW@h/?q=ARRAY-Q"}]`,
+    )
+    const ndjson = enc.encode(`{"a":1}\n{"trackBase${B}u004bey":"NDJSON-KEY"}`)
+    const cut = enc.encode(`{"trackBase${B}u004Bey":"CUT-KEY"`)
+    const doubleBom = new Uint8Array([
+      ...BOM,
+      ...BOM,
+      ...enc.encode(`{"trackBase${B}u004bey":"BOM-KEY"}`),
+    ])
+    const t = catalogTrace(
+      arrayKey,
+      arrayToken,
+      arrayUri,
+      ndjson,
+      cut,
+      doubleBom,
+    )
+    for (const auth of [false, true]) {
+      const left = catalogPayloads(
+        await redactTrace(t, { payloads: true, auth }, '20'),
+      )
+      // The arrays are JSON and are redacted in place; the rest are dropped.
+      expect([...left.keys()]).toEqual([0n, 1n, 2n])
+      for (const p of left.values()) {
+        expect(() => JSON.parse(text(p.payload))).not.toThrow()
+        expect(p.size).toBe(p.payload.length)
+      }
+      expect(contains(left.get(0n)!.payload, 'ARRAY-KEY')).toBe(false)
+      for (const secret of ['ARRAY-TOKEN', 'ARRAY-PW', 'ARRAY-Q']) {
+        const at = secret === 'ARRAY-TOKEN' ? 1n : 2n
+        expect(contains(left.get(at)!.payload, secret)).toBe(auth)
+      }
+    }
+  })
+
+  it('a stream exported unframed loses its payload when it holds gzip; a framed object does not', async () => {
     const bytes = new Uint8Array([
       0x10, 0x05, 0x00, 0x00, 0x00, 0x09, 0x1f, 0x8b, 0x08, 0, 1, 2, 3, 4,
     ])
     const t = catalogTrace(bytes)
     const headed = catalogPayloads(
-      redactTrace(t, { payloads: true, auth: true }, '20'),
+      await redactTrace(t, { payloads: true, auth: true }, '20'),
     )
     expect(headed.size).toBe(1)
     // The same bytes with no object header: a whole stream, as build-trace
@@ -820,7 +922,7 @@ describe('catalog redaction for sharing', () => {
       ),
     }
     const out = catalogPayloads(
-      redactTrace(unframed, { payloads: true, auth: true }, '20'),
+      await redactTrace(unframed, { payloads: true, auth: true }, '20'),
     )
     expect(out.size).toBe(0)
   })

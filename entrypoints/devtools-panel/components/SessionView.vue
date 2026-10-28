@@ -131,6 +131,7 @@ const streamList = computed(() => {
       datagramGroupKey: dg.groupKey,
       datagramCount: dg.datagramCount,
       groupId: dg.groupId,
+      importedFraming: dg.importedFraming,
     })
   }
   return items
@@ -482,6 +483,7 @@ const collectorDetail = computed((): string | null => {
             :draft="session.draft"
             :tracks="session.tracks"
             :is-datagram-group="!!selectedStream?.datagramGroupKey"
+            :imported-framing="selectedStream?.importedFraming"
             :catalog="selectedCatalog"
             class="detail-viewer"
           />
