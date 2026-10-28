@@ -71,7 +71,7 @@ describe('sign-in through the bridge', () => {
     expect(w.closed).toEqual([w.opened[0]!.id])
     expect(await svc.view()).toEqual({
       status: 'signed-in',
-      handle: 'alice',
+      person: { name: 'Alice Liddell', email: 'alice@example.com' },
       orgs: ORGS.orgs,
       unreachable: false,
     })

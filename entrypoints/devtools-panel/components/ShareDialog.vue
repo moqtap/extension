@@ -73,7 +73,7 @@ watch(org, (o) => {
   if (o?.kind === 'personal') audience.value = 'link'
 })
 
-const orgLabel = (o: OrgSummary) => (o.kind === 'personal' ? `Personal (@${o.slug})` : o.name)
+const orgLabel = (o: OrgSummary) => (o.kind === 'personal' ? 'Personal' : o.name)
 
 function message(err: unknown): string {
   if (err instanceof AccountTokenError) return err.message

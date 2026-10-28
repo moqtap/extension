@@ -68,9 +68,10 @@ export function tokenBody(n: number, extra: Record<string, unknown> = {}) {
 
 export const ORGS = {
   orgs: [
-    { id: 'ORGPERSONAL', slug: 'alice', name: 'alice', kind: 'personal', role: 'owner' },
+    { id: 'ORGPERSONAL', slug: 'p-0123456789ab', name: 'Personal', kind: 'personal', role: 'owner' },
     { id: 'ORGTEAM', slug: 'acme', name: 'Acme', kind: 'team', role: 'member' },
   ],
+  user: { id: 'USERALICE', name: 'Alice Liddell', email: 'alice@example.com' },
 }
 
 /** A scripted moqtap: `/oauth/token`, `/oauth/revoke` and `/v1/orgs`. */

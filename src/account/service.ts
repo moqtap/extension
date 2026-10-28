@@ -38,6 +38,7 @@ import type {
   BridgeAccountMsg,
   OAuthCallbackPageMsg,
   OrgSummary,
+  Person,
 } from './messages'
 import { challengeFor, newState, newVerifier, randomBytes } from './pkce'
 import type { KeyValueArea, SecretStore } from './stores'
@@ -79,7 +80,7 @@ interface AccessEntry {
 }
 
 interface AccountMeta {
-  readonly handle: string | null
+  readonly person: Person | null
   readonly orgs: readonly OrgSummary[]
 }
 
@@ -140,6 +141,14 @@ const originOf = (url: string | undefined): string | null => {
   }
 }
 
+function personOf(v: unknown): Person | null {
+  if (typeof v !== 'object' || v === null) return null
+  const o = v as Record<string, unknown>
+  const text = (x: unknown) => (typeof x === 'string' && x.trim() !== '' ? x.trim() : null)
+  const person = { name: text(o.name), email: text(o.email) }
+  return person.name === null && person.email === null ? null : person
+}
+
 function isOrgSummary(v: unknown): v is OrgSummary {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
@@ -198,7 +207,7 @@ export class AccountService {
     if (meta !== undefined) {
       return {
         status: 'signed-in',
-        handle: meta.handle,
+        person: meta.person ?? null,
         orgs: meta.orgs,
         unreachable: this.unreachable,
       }
@@ -410,7 +419,7 @@ export class AccountService {
     if (previous !== null && previous !== refresh) {
       void this.post('/oauth/revoke', { token: previous, client_id: CLIENT_ID }).catch(() => {})
     }
-    const meta: AccountMeta = { handle: null, orgs: [] }
+    const meta: AccountMeta = { person: null, orgs: [] }
     await this.deps.local.set(META_KEY, meta)
     await this.setNotice(null)
     this.unreachable = false
@@ -432,13 +441,11 @@ export class AccountService {
       referrerPolicy: 'no-referrer',
     })
     if (!res.ok) throw new Error(`orgs answered ${res.status}`)
-    const body = (await res.json()) as { orgs?: unknown }
+    const body = (await res.json()) as { orgs?: unknown; user?: unknown }
     const orgs = Array.isArray(body.orgs) ? body.orgs.filter(isOrgSummary) : []
     const meta = (await this.deps.local.get(META_KEY)) as AccountMeta | undefined
     if (meta === undefined) return
-    const personal = orgs.find((o) => o.kind === 'personal')
-    // A personal org's slug is the user's handle.
-    await this.deps.local.set(META_KEY, { ...meta, orgs, handle: personal?.slug ?? null })
+    await this.deps.local.set(META_KEY, { ...meta, orgs, person: personOf(body.user) })
     await this.publish()
   }
 

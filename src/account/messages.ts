@@ -35,6 +35,12 @@ export interface BridgeAccountMsg {
 
 // ── panel ↔ background (port ACCOUNT_PORT) ───────────────────────────────
 
+/** Who is signed in, as `GET /v1/orgs` names them. */
+export interface Person {
+  readonly name: string | null
+  readonly email: string | null
+}
+
 export interface OrgSummary {
   readonly id: string
   readonly slug: string
@@ -67,7 +73,7 @@ export type AccountView =
     }
   | {
       readonly status: 'signed-in'
-      readonly handle: string | null
+      readonly person: Person | null
       readonly orgs: readonly OrgSummary[]
       /** The last refresh could not reach the server; credentials are kept. */
       readonly unreachable: boolean

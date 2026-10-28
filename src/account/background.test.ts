@@ -113,7 +113,7 @@ describe('the panel port', () => {
       view: { status: 'signed-out', signingIn: false, notice: null },
     })
     await signIn(h.w, h.svc)
-    expect(port.sent.at(-1)).toMatchObject({ type: 'account:state', view: { status: 'signed-in', handle: 'alice' } })
+    expect(port.sent.at(-1)).toMatchObject({ type: 'account:state', view: { status: 'signed-in', person: { name: 'Alice Liddell', email: 'alice@example.com' } } })
     port.close()
     const count = port.sent.length
     await h.svc.disconnect()

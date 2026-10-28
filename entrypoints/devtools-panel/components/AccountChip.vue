@@ -24,23 +24,33 @@ const notice = computed(() =>
     : null,
 )
 
-const label = computed(() => {
-  const v = props.view
-  if (v?.status !== 'signed-in') return ''
-  return v.handle !== null ? `@${v.handle}` : 'Signed in'
-})
+const person = computed(() => (props.view?.status === 'signed-in' ? props.view.person : null))
+
+/** The name, else the email. */
+const label = computed(() => person.value?.name ?? person.value?.email ?? 'Signed in')
 
 const initials = computed(() => {
-  const v = props.view
-  if (v?.status !== 'signed-in' || v.handle === null) return '?'
-  return v.handle.slice(0, 2).toUpperCase()
+  const name = person.value?.name
+  if (name) {
+    const words = name.split(/\s+/).filter(Boolean)
+    return words.slice(0, 2).map((w) => w[0]!.toUpperCase()).join('')
+  }
+  return person.value?.email?.slice(0, 1).toUpperCase() ?? '?'
 })
 
-const chipTitle = computed(() =>
-  props.view?.status === 'signed-in' && props.view.unreachable
-    ? `Signed in as ${label.value}. moqtap can't be reached right now.`
-    : `Signed in as ${label.value}`,
-)
+/** "Name (email)", else whichever exists. */
+const fullLabel = computed(() => {
+  const p = person.value
+  if (p?.name && p.email) return `${p.name} (${p.email})`
+  return label.value
+})
+
+const chipTitle = computed(() => {
+  const who = person.value === null ? 'Signed in' : `Signed in as ${fullLabel.value}`
+  return props.view?.status === 'signed-in' && props.view.unreachable
+    ? `${who}. moqtap can't be reached right now.`
+    : who
+})
 
 function onDocPointer(e: PointerEvent) {
   if (root.value && !root.value.contains(e.target as Node)) menuOpen.value = false
@@ -103,7 +113,7 @@ function disconnect() {
         @click="menuOpen = !menuOpen"
       >
         <span class="mq-avatar mq-avatar--sm" aria-hidden="true">{{ initials }}</span>
-        <span v-if="!compact" class="account-label mq-mono">{{ label }}</span>
+        <span v-if="!compact" class="account-label">{{ label }}</span>
         <span v-else class="mq-sr">{{ chipTitle }}</span>
         <span
           v-if="view.unreachable"
