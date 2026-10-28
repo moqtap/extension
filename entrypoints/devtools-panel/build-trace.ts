@@ -15,7 +15,11 @@ import { getMessageIdMap } from '@/src/codec/message-ids'
 import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
 import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
-import { parseDatagramGroupFraming, parseStreamFraming } from './stream-framing'
+import {
+  parseDatagramGroupFraming,
+  parseStreamFraming,
+  type StreamObject,
+} from './stream-framing'
 import { arrivalAt } from '@/src/trace/arrivals'
 import { fitDetail } from '@/src/trace/detail'
 import {
@@ -58,6 +62,29 @@ interface PendingEvent {
 const STREAM_TYPE_SUBGROUP = 0
 const STREAM_TYPE_DATAGRAM = 1
 const STREAM_TYPE_FETCH = 2
+
+/** `{ [key]: bigint }` when the id is known, nothing otherwise. */
+function optionalId<K extends string>(
+  key: K,
+  id: number | string | bigint | null | undefined,
+): { [P in K]?: bigint } {
+  if (id == null) return {}
+  return { [key]: BigInt(id) } as { [P in K]?: bigint }
+}
+
+/**
+ * The object's property block as the wire carried it, for Event 3's `"props"`.
+ * Nothing when the object had no properties field — not an empty block, which
+ * is a field that carried nothing.
+ */
+function propertiesOf(
+  data: Uint8Array,
+  obj: StreamObject,
+): { properties?: Uint8Array } {
+  if (obj.propertiesOffset === undefined) return {}
+  const end = obj.propertiesOffset + (obj.propertiesLength ?? 0)
+  return { properties: data.slice(obj.propertiesOffset, end) }
+}
 
 /**
  * Build a complete Trace from a session, including stream payload data.
@@ -137,6 +164,22 @@ export async function buildTrace(
     // no data falls back to session start.
     const openedAt = stream.firstDataAt ?? startTime
 
+    // Load stream data via callback (background serves from memory + IDB)
+    let data: Uint8Array | null = null
+    if (stream.byteCount > 0 && !controlStreams.has(stream.streamId)) {
+      try {
+        data = await getStreamData(session.sessionId, stream.streamId)
+      } catch {
+        // Stream data load failed — the stream is still exported, without objects
+      }
+    }
+    // The session's own draft first: a parser for another draft can accept the
+    // same bytes and read different fields out of them.
+    const framing = data ? parseStreamFraming(data, session.draft) : null
+    const hf = framing?.headerFields ?? {}
+    const isFetch =
+      framing?.streamType === 'fetch' || stream.fetchRequestId != null
+
     push(openedAt, {
       type: 'stream-opened',
       seq: 0,
@@ -145,81 +188,80 @@ export async function buildTrace(
       direction: stream.direction === 'tx' ? 0 : 1,
       // A fetch stream carries a request id in its framing header where a
       // subgroup stream carries a track alias; that is what tells them apart.
-      streamType:
-        stream.fetchRequestId != null
-          ? STREAM_TYPE_FETCH
-          : STREAM_TYPE_SUBGROUP,
+      streamType: isFetch ? STREAM_TYPE_FETCH : STREAM_TYPE_SUBGROUP,
+      // What the stream header carried, so a reader can attribute the stream to
+      // its track: by alias on a subgroup stream, by request on a fetch stream.
+      ...(isFetch
+        ? optionalId('fetchRequestId', stream.fetchRequestId ?? hf.requestId)
+        : {
+            ...optionalId('trackAlias', stream.trackAlias ?? hf.trackAlias),
+            ...optionalId('subgroupId', hf.subgroupId),
+          }),
     })
 
-    // Load stream data via callback (background serves from memory + IDB)
-    if (stream.byteCount > 0 && !controlStreams.has(stream.streamId)) {
+    if (data) {
       try {
-        const data = await getStreamData(session.sessionId, stream.streamId)
-        if (data) {
-          // Try to parse MoQT framing to extract individual objects
-          const framing = parseStreamFraming(data)
-          if (framing && framing.objects.length > 0) {
-            const hf = framing.headerFields
-            for (const obj of framing.objects) {
-              const end = Math.min(
-                obj.payloadOffset + obj.payloadLength,
-                data.length,
-              )
-              const payload = data.slice(obj.payloadOffset, end)
-              // When this object's bytes actually arrived, resolved through the
-              // chunk-boundary index the panel keeps. Absent for streams
-              // replayed from IDB, which nobody watched arrive.
-              const objectAt =
-                arrivalAt(stream.arrivals, obj.payloadOffset) ?? openedAt
+        if (framing && framing.objects.length > 0) {
+          for (const obj of framing.objects) {
+            const end = Math.min(
+              obj.payloadOffset + obj.payloadLength,
+              data.length,
+            )
+            const payload = data.slice(obj.payloadOffset, end)
+            // When this object's bytes actually arrived, resolved through the
+            // chunk-boundary index the panel keeps. Absent for streams
+            // replayed from IDB, which nobody watched arrive.
+            const objectAt =
+              arrivalAt(stream.arrivals, obj.payloadOffset) ?? openedAt
 
-              // A fetch object carries its own Group ID and Priority; a
-              // subgroup object inherits the stream header's. Preferring the
-              // object's own is what makes a fetch stream export correctly,
-              // and is a no-op on a subgroup stream, where they are absent.
-              const objectGroupId = BigInt(obj.groupId ?? hf.groupId ?? 0)
-              const objectPriority =
-                obj.publisherPriority ?? hf.publisherPriority ?? 0
+            // A fetch object carries its own Group ID and Priority; a
+            // subgroup object inherits the stream header's. Preferring the
+            // object's own is what makes a fetch stream export correctly,
+            // and is a no-op on a subgroup stream, where they are absent.
+            const objectGroupId = BigInt(obj.groupId ?? hf.groupId ?? 0)
+            const objectPriority =
+              obj.publisherPriority ?? hf.publisherPriority ?? 0
 
-              push(objectAt, {
-                type: 'object-header',
-                seq: 0,
-                timestamp: 0,
-                streamId: BigInt(stream.streamId),
-                groupId: objectGroupId,
-                objectId: BigInt(obj.objectId),
-                publisherPriority: objectPriority,
-                // Only a zero-length object has a status, and it is the
-                // difference between "carried no bytes" and "ended the group".
-                objectStatus: obj.status ?? 0,
-              })
+            push(objectAt, {
+              type: 'object-header',
+              seq: 0,
+              timestamp: 0,
+              streamId: BigInt(stream.streamId),
+              groupId: objectGroupId,
+              objectId: BigInt(obj.objectId),
+              publisherPriority: objectPriority,
+              // Only a zero-length object has a status, and it is the
+              // difference between "carried no bytes" and "ended the group".
+              objectStatus: obj.status ?? 0,
+              ...propertiesOf(data, obj),
+            })
 
-              push(objectAt, {
-                type: 'object-payload',
-                seq: 0,
-                timestamp: 0,
-                streamId: BigInt(stream.streamId),
-                groupId: objectGroupId,
-                objectId: BigInt(obj.objectId),
-                size: payload.length,
-                payload: toBytes(payload),
-              })
-            }
-          } else {
-            // No MoQT framing — store raw as a single object-payload
-            push(openedAt, {
+            push(objectAt, {
               type: 'object-payload',
               seq: 0,
               timestamp: 0,
               streamId: BigInt(stream.streamId),
-              groupId: 0n,
-              objectId: 0n,
-              size: data.length,
-              payload: toBytes(data),
+              groupId: objectGroupId,
+              objectId: BigInt(obj.objectId),
+              size: payload.length,
+              payload: toBytes(payload),
             })
           }
+        } else {
+          // No MoQT framing — store raw as a single object-payload
+          push(openedAt, {
+            type: 'object-payload',
+            seq: 0,
+            timestamp: 0,
+            streamId: BigInt(stream.streamId),
+            groupId: 0n,
+            objectId: 0n,
+            size: data.length,
+            payload: toBytes(data),
+          })
         }
       } catch {
-        // Stream data load failed — skip
+        // Framing could not be read — the stream is still exported, without objects
       }
     }
 
@@ -255,6 +297,10 @@ export async function buildTrace(
               streamId: 0n,
               direction: dg.direction === 'tx' ? 0 : 1,
               streamType: STREAM_TYPE_DATAGRAM,
+              // Every datagram stream shares stream id 0, so the alias and the
+              // group are all that tell one track's datagrams from another's.
+              ...optionalId('trackAlias', framing.headerFields.trackAlias),
+              groupId: BigInt(dg.groupId),
             })
 
             for (const obj of framing.objects) {
@@ -279,6 +325,7 @@ export async function buildTrace(
                   framing.headerFields.publisherPriority ??
                   0,
                 objectStatus: obj.status ?? 0,
+                ...propertiesOf(data, obj),
               })
 
               push(objectAt, {

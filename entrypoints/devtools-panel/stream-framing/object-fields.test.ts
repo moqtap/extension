@@ -22,8 +22,12 @@
  */
 
 import { encodeFetchStream, encodeSubgroupStream } from '@moqtap/codec/draft14'
+import {
+  encodeObjectProperties as encodeObjectProperties22,
+  encodeSubgroupStream as encodeSubgroupStream22,
+} from '@moqtap/codec/draft22'
 import { describe, expect, it } from 'vitest'
-import { parseStreamFraming } from './index'
+import { decodeObjectProperties, parseStreamFraming } from './index'
 
 // The codec's per-draft stream types are nominal and this file builds fixtures
 // for them rather than consuming them.
@@ -84,7 +88,9 @@ describe('an exported object keeps its own identity', () => {
   it('distinguishes an empty object from one that ended the group', () => {
     // The property the status exists for, stated as the question a reader asks.
     const framing = parseStreamFraming(subgroupWithStatusObject(), '14')
-    const zeroLength = (framing?.objects ?? []).filter((o) => o.payloadLength === 0)
+    const zeroLength = (framing?.objects ?? []).filter(
+      (o) => o.payloadLength === 0,
+    )
     expect(zeroLength).toHaveLength(1)
     // `not.toBe(0)` alone would pass when the field is absent -- undefined is
     // not 0 either. The status has to be *there*.
@@ -100,7 +106,11 @@ describe('a fetch object keeps the group and priority it carries itself', () => 
    * which is what makes those fields per-object rather than per-stream.
    */
   function fetchStream(): Uint8Array {
-    const obj = (groupId: bigint, objectId: bigint, priority: number): AnyStream => ({
+    const obj = (
+      groupId: bigint,
+      objectId: bigint,
+      priority: number,
+    ): AnyStream => ({
       type: 'object',
       byteOffset: 0,
       payloadByteOffset: 0,
@@ -137,6 +147,82 @@ describe('a fetch object keeps the group and priority it carries itself', () => 
 
   it('gives each object its own Publisher Priority', () => {
     const framing = parseStreamFraming(fetchStream(), '14')
-    expect(framing?.objects.map((o) => o.publisherPriority)).toEqual([10, 10, 200])
+    expect(framing?.objects.map((o) => o.publisherPriority)).toEqual([
+      10, 10, 200,
+    ])
+  })
+})
+
+describe('object properties', () => {
+  // draft-22 subgroup stream, PROPERTIES set: one object whose property block is
+  // 0x0D (odd, bytes cafe) then 0x3C = 2, written as the delta 0x2F.
+  const stream = encodeSubgroupStream22({
+    type: 'subgroup',
+    headerType: 0x11,
+    trackAlias: 1n,
+    groupId: 0n,
+    subgroupId: 0n,
+    publisherPriority: 128,
+    objects: [
+      {
+        type: 'object',
+        byteOffset: 0,
+        payloadByteOffset: 0,
+        objectId: 0n,
+        payloadLength: 2,
+        payload: new Uint8Array([0xbe, 0xef]),
+        extensionData: encodeObjectProperties22([
+          { type: 0x0dn, bytes: new Uint8Array([0xca, 0xfe]) },
+          { type: 0x3cn, value: 2n },
+        ]),
+      },
+    ],
+  } as AnyStream)
+
+  it('locates the property block in the stream', () => {
+    const framing = parseStreamFraming(stream, '22')
+    const obj = framing?.objects[0]
+    expect(obj?.propertiesLength).toBe(6)
+    const block = stream.subarray(
+      obj!.propertiesOffset!,
+      obj!.propertiesOffset! + 6,
+    )
+    expect(Array.from(block)).toEqual([0x0d, 0x02, 0xca, 0xfe, 0x2f, 0x02])
+  })
+
+  it('decodes the block with the draft that framed it', () => {
+    const obj = parseStreamFraming(stream, '22')!.objects[0]!
+    const block = stream.subarray(
+      obj.propertiesOffset!,
+      obj.propertiesOffset! + obj.propertiesLength!,
+    )
+    const result = decodeObjectProperties(block, '22')
+    expect(result?.ok).toBe(true)
+    if (!result?.ok) return
+    expect(result.value.map((p) => p.type)).toEqual([0x0dn, 0x3cn])
+    expect(result.value[1]?.value).toBe(2n)
+  })
+
+  it('leaves both fields off an object that has no properties field', () => {
+    const framing = parseStreamFraming(subgroupWithStatusObject(), '14')
+    expect(framing?.objects[0]).not.toHaveProperty('propertiesOffset')
+  })
+})
+
+describe('datagram status and type', () => {
+  // draft-22 OBJECT_DATAGRAM, STATUS set (0x20): alias 1, group 0, object 5,
+  // priority 0x80, status 3 (End of Group). The codec reports these as
+  // `datagramType` and `objectStatus`; reading `streamTypeId` and `status`
+  // lost both.
+  const bytes = new Uint8Array([0x20, 0x01, 0x00, 0x05, 0x80, 0x03])
+
+  it('reports the datagram type', () => {
+    expect(parseStreamFraming(bytes, '22')?.headerFields.streamType).toBe(0x20)
+  })
+
+  it('reports the object status', () => {
+    const framing = parseStreamFraming(bytes, '22')
+    expect(framing?.headerFields.objectStatus).toBe(3)
+    expect(framing?.objects[0]?.status).toBe(3)
   })
 })

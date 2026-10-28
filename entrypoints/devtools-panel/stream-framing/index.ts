@@ -126,6 +126,13 @@ export function parseDatagramGroupFraming(
           payloadOffset: offset + 4 + obj.payloadOffset,
           payloadLength: obj.payloadLength,
           objectId: obj.objectId,
+          ...(obj.status !== undefined ? { status: obj.status } : {}),
+          ...(obj.propertiesOffset !== undefined
+            ? {
+                propertiesOffset: offset + 4 + obj.propertiesOffset,
+                propertiesLength: obj.propertiesLength ?? 0,
+              }
+            : {}),
         })
       }
     } else {
@@ -155,7 +162,35 @@ export function parseDatagramGroupFraming(
 
 // ─── Register all draft parsers ────────────────────────────────────
 
-import { createCodecDraftParser } from './codec-adapter'
+import type { SupportedDraft } from '@/src/types/common'
+import type { DecodeResult, ObjectProperty } from '@moqtap/codec'
+import {
+  createCodecDraftParser,
+  createPropertiesDecoder,
+} from './codec-adapter'
+
+const propertyDecoders = new Map<
+  string,
+  (bytes: Uint8Array) => DecodeResult<ObjectProperty[]>
+>()
+
+/**
+ * Decode one Object's property block — `data.subarray(propertiesOffset,
+ * propertiesOffset + propertiesLength)` — by the rules of `draft`. Null when the
+ * draft is unknown here; a malformed block is the codec's error result.
+ */
+export function decodeObjectProperties(
+  bytes: Uint8Array,
+  draft: string,
+): DecodeResult<ObjectProperty[]> | null {
+  let decode = propertyDecoders.get(draft)
+  if (!decode) {
+    if (!draftParsers.has(draft)) return null
+    decode = createPropertiesDecoder(draft as SupportedDraft)
+    propertyDecoders.set(draft, decode)
+  }
+  return decode(bytes)
+}
 
 // All drafts use the codec adapter — each gets its own codec instance
 registerDraftParser('07', createCodecDraftParser('07'))

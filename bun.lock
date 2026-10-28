@@ -5,14 +5,14 @@
     "": {
       "name": "@moqtap/extension",
       "dependencies": {
-        "@moqtap/codec": "^0.13.3",
+        "@moqtap/codec": "^0.14.0",
         "@moqtap/inspect": "^0.2.0",
-        "@moqtap/trace": "^0.4.2",
+        "@moqtap/trace": "^0.5.0",
         "lucide-static": "1.50.0",
         "vue": "^3.5.42",
       },
       "devDependencies": {
-        "@moqtap/test-vectors": "0.18.2",
+        "@moqtap/test-vectors": "0.19.0",
         "@types/chrome": "^0.0.280",
         "@wxt-dev/module-vue": "^1.0.3",
         "typescript": "^5.9.3",
@@ -119,13 +119,13 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@moqtap/codec": ["@moqtap/codec@0.13.3", "", {}, "sha512-uWpn6+3EQ4rFAMb9/kZTAXE3CyWmeafJTeByQMdB/ACMgZ087bkRz3C1BqHNsQH8UHqEVNFMEanp+6dWf85g2w=="],
+    "@moqtap/codec": ["@moqtap/codec@0.14.0", "", {}, "sha512-hH3LjVguMNuLJtuzEIzJdgs1NYHtUP+UZCv9wc09U4UQgdqqpdzQK4wG7gdqq55Up46b+EHmOuGaM6yRWsc0vQ=="],
 
     "@moqtap/inspect": ["@moqtap/inspect@0.2.0", "", { "peerDependencies": { "@moqtap/codec": ">=0.13.2" } }, "sha512-7oRapxrdMbQ4xHhVLZLjGrPbXI34tf9ygfwFAzu4qtuJcmb569bioYzbVJOxvLdwjAWzhXkSOcI1j94tuJIafA=="],
 
-    "@moqtap/test-vectors": ["@moqtap/test-vectors@0.18.2", "", {}, "sha512-zKthi2tt2IpnaXrUByxXf8nZz+lTMNiiVfNPq8qdZ58P9j3y/zovUKSeCnu5CMJCUUd5mxwH7vkhBGI8v+Dxag=="],
+    "@moqtap/test-vectors": ["@moqtap/test-vectors@0.19.0", "", {}, "sha512-hLKYC/C/ck/eMrv703BlAtx9lQIFyedfU9V5udGxwTATPVoz3SSZm1S42TguERJ7X0ipoafmV+rnrdGAYoG+3Q=="],
 
-    "@moqtap/trace": ["@moqtap/trace@0.4.2", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": ">=0.11.0" } }, "sha512-i47tHU3achdTWDgVHe87P28LjplYxcuUEN38ARPxA7l9MBxB60Z9pp9P9pCLwcwrI7MfGX+uJBQUGXbe5HAohw=="],
+    "@moqtap/trace": ["@moqtap/trace@0.5.0", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": ">=0.11.0" } }, "sha512-KsolUs2Cr1+1A913LYH1OB7rzTbTI9T49e8VGZQfTO7s8e56th97wvKfgofKEXBv4LvhXR1/u4svLedWcVXSmA=="],
 
     "@pnpm/config.env-replace": ["@pnpm/config.env-replace@1.1.0", "", {}, "sha512-htyl8TWnKL7K/ESFa1oW2UB5lVDxuF5DpM7tBi6Hu2LNL3mWkIzNLG6N4zoCUP1lCKNxWy/3iu8mS8MvToGd6w=="],
 

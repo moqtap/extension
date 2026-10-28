@@ -28,6 +28,15 @@ export interface StreamObject {
   subgroupId?: number
   /** Publisher Priority, on the same terms as `groupId`. */
   publisherPriority?: number
+  /**
+   * Byte offset of the Object's property block (Extension Headers before
+   * draft-17) in the stream, past its length field. Absent when the Object had
+   * no properties field. The block is the wire's own bytes; decode them with
+   * {@link decodeObjectProperties} when they are wanted, not before.
+   */
+  propertiesOffset?: number
+  /** Length of the property block. Present exactly when `propertiesOffset` is. */
+  propertiesLength?: number
 }
 
 export interface ParsedStreamFraming {

@@ -8,7 +8,11 @@
  */
 
 import type { SupportedDraft } from '@/src/types/common'
-import { createCodec, type DecodeResult } from '@moqtap/codec'
+import {
+  createCodec,
+  type DecodeResult,
+  type ObjectProperty,
+} from '@moqtap/codec'
 import type {
   DraftParser,
   HeaderTag,
@@ -21,12 +25,15 @@ interface DataStreamCodec {
   decodeSubgroupStream(bytes: Uint8Array): DecodeResult<SubgroupResult>
   decodeFetchStream(bytes: Uint8Array): DecodeResult<FetchResult>
   decodeDatagram(bytes: Uint8Array): DecodeResult<DatagramResult>
+  decodeObjectProperties(bytes: Uint8Array): DecodeResult<ObjectProperty[]>
 }
 
 /** Minimal shape of SubgroupStream result from the codec */
 interface SubgroupResult {
   readonly type: 'subgroup'
+  /** The stream type: `streamTypeId` up to draft-13, `headerType` from draft-14. */
   readonly streamTypeId?: number
+  readonly headerType?: number
   readonly trackAlias: bigint
   readonly groupId: bigint
   readonly subgroupId: bigint
@@ -45,14 +52,19 @@ interface FetchResult {
 /** Minimal shape of DatagramObject from the codec */
 interface DatagramResult {
   readonly type: 'datagram'
+  /** The datagram type: `streamTypeId` up to draft-13, `datagramType` from draft-14. */
   readonly streamTypeId?: number
+  readonly datagramType?: number
   readonly trackAlias: bigint
   readonly groupId: bigint
   readonly objectId: bigint
   readonly publisherPriority: number
-  readonly payloadLength: number
-  readonly status?: bigint
+  readonly payloadLength?: number
+  /** `objectStatus` from draft-08; draft-07's datagram has no status at all. */
+  readonly objectStatus?: bigint
   readonly payload: Uint8Array
+  readonly extensionData?: Uint8Array
+  readonly extensionDataByteOffset?: number
 }
 
 /** Minimal shape of ObjectPayload from the codec */
@@ -63,6 +75,8 @@ interface ObjectResult {
   readonly payload: Uint8Array
   readonly byteOffset: number
   readonly payloadByteOffset: number
+  readonly extensionData?: Uint8Array
+  readonly extensionDataByteOffset?: number
 }
 
 /** Minimal shape of FetchObjectPayload from the codec */
@@ -103,8 +117,9 @@ function tryDecodeSubgroup(
     const headerFields: Record<string, number> = {}
     const tags: HeaderTag[] = []
 
-    if (stream.streamTypeId !== undefined) {
-      headerFields.streamType = stream.streamTypeId
+    const streamType = stream.headerType ?? stream.streamTypeId
+    if (streamType !== undefined) {
+      headerFields.streamType = streamType
     }
     headerFields.trackAlias = Number(stream.trackAlias)
     headerFields.groupId = Number(stream.groupId)
@@ -179,8 +194,9 @@ function tryDecodeDatagram(
       objectId: Number(dg.objectId),
       publisherPriority: dg.publisherPriority,
     }
-    if (dg.streamTypeId !== undefined) {
-      headerFields.streamType = dg.streamTypeId
+    const datagramType = dg.datagramType ?? dg.streamTypeId
+    if (datagramType !== undefined) {
+      headerFields.streamType = datagramType
     }
 
     const tags: HeaderTag[] = [
@@ -188,9 +204,10 @@ function tryDecodeDatagram(
       { label: 'pri', value: String(dg.publisherPriority), kind: 'priority' },
     ]
 
-    if (dg.status !== undefined && dg.status !== 0n) {
-      headerFields.objectStatus = Number(dg.status)
-      tags.push({ label: 'status', value: String(dg.status), kind: 'info' })
+    const status = dg.objectStatus
+    if (status !== undefined && status !== 0n) {
+      headerFields.objectStatus = Number(status)
+      tags.push({ label: 'status', value: String(status), kind: 'info' })
     }
 
     // Datagram payload offset: total size minus payload length
@@ -199,11 +216,12 @@ function tryDecodeDatagram(
       {
         offset: payloadOffset,
         payloadOffset,
-        payloadLength: dg.payloadLength,
+        payloadLength: dg.payloadLength ?? dg.payload.length,
         objectId: Number(dg.objectId),
         groupId: Number(dg.groupId),
         publisherPriority: dg.publisherPriority,
-        ...(dg.status !== undefined ? { status: Number(dg.status) } : {}),
+        ...(status !== undefined ? { status: Number(status) } : {}),
+        ...propertiesSpan(dg),
       },
     ]
 
@@ -234,7 +252,35 @@ function mapObjects(codecObjects: ObjectResult[]): StreamObject[] {
     payloadLength: obj.payloadLength,
     objectId: Number(obj.objectId),
     ...(obj.status !== undefined ? { status: Number(obj.status) } : {}),
+    ...propertiesSpan(obj),
   }))
+}
+
+/**
+ * Where an Object's property block sits, from the codec's offset and the length
+ * of the raw block. The block itself is not kept: it is a view into the stream,
+ * and the stream is already held.
+ */
+function propertiesSpan(obj: {
+  readonly extensionData?: Uint8Array
+  readonly extensionDataByteOffset?: number
+}): Pick<StreamObject, 'propertiesOffset' | 'propertiesLength'> {
+  if (obj.extensionDataByteOffset === undefined) return {}
+  return {
+    propertiesOffset: obj.extensionDataByteOffset,
+    propertiesLength: obj.extensionData?.length ?? 0,
+  }
+}
+
+/**
+ * The draft's decoder for an Object's property block, the bytes at
+ * `propertiesOffset` for `propertiesLength`.
+ */
+export function createPropertiesDecoder(
+  draft: SupportedDraft,
+): (bytes: Uint8Array) => DecodeResult<ObjectProperty[]> {
+  const codec = createCodec({ draft }) as unknown as DataStreamCodec
+  return (bytes) => codec.decodeObjectProperties(bytes)
 }
 
 /**
@@ -252,7 +298,9 @@ function mapFetchObjects(codecObjects: FetchObjectResult[]): StreamObject[] {
     return {
       ...mapped,
       ...(obj.groupId !== undefined ? { groupId: Number(obj.groupId) } : {}),
-      ...(obj.subgroupId !== undefined ? { subgroupId: Number(obj.subgroupId) } : {}),
+      ...(obj.subgroupId !== undefined
+        ? { subgroupId: Number(obj.subgroupId) }
+        : {}),
       ...(obj.publisherPriority !== undefined
         ? { publisherPriority: obj.publisherPriority }
         : {}),

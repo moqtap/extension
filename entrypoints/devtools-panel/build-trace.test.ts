@@ -68,7 +68,9 @@ describe('the exported trace declares the capture level it actually has', () => 
   it('says "headers+data" when payloads are present', async () => {
     // A draft-14 subgroup stream: type 0x10, track alias 1, group 0,
     // subgroup 0, priority 128, then one object (id 0, length 2).
-    const bytes = new Uint8Array([0x10, 0x01, 0x00, 0x00, 0x80, 0x00, 0x02, 0xde, 0xad])
+    const bytes = new Uint8Array([
+      0x10, 0x01, 0x00, 0x00, 0x80, 0x00, 0x02, 0xde, 0xad,
+    ])
     const trace = await buildTrace(
       session({
         streams: [
@@ -115,7 +117,11 @@ describe('the exported trace never carries control-plane bytes as objects', () =
     const p = enc.encode(payload)
     return new Uint8Array([0x10, 0x01, 0x00, 0x00, 0x80, 0x00, p.length, ...p])
   }
-  const stream = (streamId: number, byteCount: number, extra: Record<string, unknown> = {}) => ({
+  const stream = (
+    streamId: number,
+    byteCount: number,
+    extra: Record<string, unknown> = {},
+  ) => ({
     streamId,
     byteCount,
     closed: true,
@@ -141,11 +147,27 @@ describe('the exported trace never carries control-plane bytes as objects', () =
     const trace = await buildTrace(
       session({
         messages: [
-          { messageType: 'client_setup', direction: 'tx', timestamp: 1005, decoded: {}, raw: new Uint8Array() },
-          { messageType: 'subscribe', direction: 'tx', timestamp: 1011, decoded: {}, raw: new Uint8Array(), streamId: 4 },
+          {
+            messageType: 'client_setup',
+            direction: 'tx',
+            timestamp: 1005,
+            decoded: {},
+            raw: new Uint8Array(),
+          },
+          {
+            messageType: 'subscribe',
+            direction: 'tx',
+            timestamp: 1011,
+            decoded: {},
+            raw: new Uint8Array(),
+            streamId: 4,
+          },
         ],
         streams: [
-          stream(0, setupBytes.length, { isControl: true, controlRole: 'control' }),
+          stream(0, setupBytes.length, {
+            isControl: true,
+            controlRole: 'control',
+          }),
           stream(4, requestBytes.length),
           stream(6, mediaBytes.length),
         ],
@@ -160,5 +182,91 @@ describe('the exported trace never carries control-plane bytes as objects', () =
     expect(trace.events.filter((e) => e.type === 'control')).toHaveLength(2)
     expect(contains(writeMoqtrace(trace), SECRET)).toBe(false)
     expect(contains(writeMoqtrace(trace), 'media')).toBe(true)
+  })
+})
+
+describe('the exported trace carries what the stream header and object said', () => {
+  function stream(
+    streamId: number,
+    bytes: Uint8Array,
+    extra: Record<string, unknown> = {},
+  ) {
+    return {
+      streamId,
+      byteCount: bytes.length,
+      closed: true,
+      direction: 'rx',
+      firstDataAt: 1010,
+      lastDataAt: 1020,
+      arrivals: [],
+      ...extra,
+    }
+  }
+
+  it('names the track alias and subgroup of a subgroup stream', async () => {
+    // draft-22 SUBGROUP_HEADER type 0x14 (explicit Subgroup ID): alias 7,
+    // group 3, subgroup 2, priority 0x80, then object 0 with 2 payload bytes.
+    const bytes = new Uint8Array([
+      0x14, 0x07, 0x03, 0x02, 0x80, 0x00, 0x02, 0xde, 0xad,
+    ])
+    const trace = await buildTrace(
+      session({ draft: '22', streams: [stream(1, bytes)] }),
+      async () => bytes,
+    )
+    const opened = trace.events.find((e) => e.type === 'stream-opened')
+    expect(opened).toMatchObject({ trackAlias: 7n, subgroupId: 2n })
+    expect(opened).not.toHaveProperty('fetchRequestId')
+  })
+
+  it('names the request of a fetch stream, and no alias', async () => {
+    // draft-22 FETCH_HEADER: type 0x05, request id 9, then one object with
+    // flags 0x1c (group, object, priority), group 4, object 0, priority 10,
+    // and 1 payload byte.
+    const bytes = new Uint8Array([
+      0x05, 0x09, 0x1c, 0x04, 0x00, 0x0a, 0x01, 0xff,
+    ])
+    const trace = await buildTrace(
+      session({
+        draft: '22',
+        streams: [stream(5, bytes, { fetchRequestId: 9 })],
+      }),
+      async () => bytes,
+    )
+    const opened = trace.events.find((e) => e.type === 'stream-opened')
+    expect(opened).toMatchObject({ streamType: 2, fetchRequestId: 9n })
+    expect(opened).not.toHaveProperty('trackAlias')
+  })
+
+  it("keeps each object's property block byte for byte, and an empty one as empty", async () => {
+    // draft-22 SUBGROUP_HEADER type 0x11 (PROPERTIES): alias 1, group 0,
+    // priority 0x80. Object 0 carries the block 3c02 (Prior Group ID Gap = 2);
+    // object 1 (delta 0) carries an empty block.
+    const bytes = new Uint8Array([
+      0x11, 0x01, 0x00, 0x80, 0x00, 0x02, 0x3c, 0x02, 0x01, 0xaa, 0x00, 0x00,
+      0x01, 0xbb,
+    ])
+    const trace = await buildTrace(
+      session({ draft: '22', streams: [stream(1, bytes)] }),
+      async () => bytes,
+    )
+    const headers = trace.events.filter((e) => e.type === 'object-header')
+    expect(
+      headers.map(
+        (h) => h.type === 'object-header' && Array.from(h.properties ?? []),
+      ),
+    ).toEqual([[0x3c, 0x02], []])
+  })
+
+  it('leaves the block off an object whose stream has no properties field', async () => {
+    const bytes = new Uint8Array([
+      0x10, 0x01, 0x00, 0x80, 0x00, 0x02, 0xde, 0xad,
+    ])
+    const trace = await buildTrace(
+      session({ draft: '22', streams: [stream(1, bytes)] }),
+      async () => bytes,
+    )
+    const header = trace.events.find((e) => e.type === 'object-header')
+    expect(header).toBeDefined()
+    expect(header).not.toHaveProperty('properties')
   })
 })
