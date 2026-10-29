@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { formatBytes, plural } from '../format'
+import { formatBytes } from '../format'
 import {
   decodedLines,
   hexBytes,
@@ -13,6 +13,7 @@ import {
   trackTimescaleText,
 } from '../loc'
 import type { ParsedStreamFraming, StreamObject } from '../stream-framing'
+import ObjectIds from './ObjectIds.vue'
 
 /**
  * The objects of one LOC stream, each decoded when opened: its properties
@@ -80,18 +81,10 @@ const items = computed(() =>
   }),
 )
 
-const profileBadge = computed(() => {
+const profileText = computed(() => {
   const r = props.state.resolution
-  if ('profile' in r) {
-    return {
-      text: props.state.pinned ? `${r.profile} (pinned)` : r.profile,
-      cls: 'mq-badge--ok',
-    }
-  }
-  return {
-    text: resolutionLabel(r),
-    cls: r.candidates.length === 0 ? 'mq-badge--error' : 'mq-badge--check',
-  }
+  if ('profile' in r) return { text: props.state.pinned ? `${r.profile} (pinned)` : r.profile, tone: null }
+  return { text: resolutionLabel(r), tone: r.candidates.length === 0 ? 'bad' : 'warn' }
 })
 
 function offsetText(n: number): string {
@@ -124,25 +117,13 @@ function statusNote(view: LocObjectView['properties'][number]): string | null {
 
 <template>
   <div ref="root" class="loc-panel">
-    <div class="loc-summary">
-      <span class="mq-badge mq-badge--mono">LOC</span>
-      <span class="mq-badge mq-badge--mono" :class="profileBadge.cls">{{
-        profileBadge.text
-      }}</span>
-      <span v-if="state.codec" class="mq-badge mq-badge--mono">{{
-        state.codec
-      }}</span>
-      <span
-        v-for="t in state.trackTimescales.map(trackTimescaleText)"
-        :key="t.text"
-        class="mq-badge mq-badge--mono"
-        :title="t.title"
-        >{{ t.text }}</span
+    <p class="loc-summary">
+      LOC · <span :class="profileText.tone">{{ profileText.text }}</span
+      ><template v-if="state.codec"> · {{ state.codec }}</template
+      ><template v-for="t in state.trackTimescales.map(trackTimescaleText)" :key="t.text">
+        · <span :title="t.title">{{ t.text }}</span></template
       >
-      <span class="mq-badge mq-badge--mono">{{
-        plural(framing.objects.length, 'object')
-      }}</span>
-    </div>
+    </p>
 
     <ul class="loc-objects">
       <li v-for="{ obj, whole, view } in items" :key="obj.offset" :data-offset="obj.offset">
@@ -151,7 +132,7 @@ function statusNote(view: LocObjectView['properties'][number]): string | null {
           @toggle="toggle(obj.offset, $event)"
         >
           <summary class="loc-object">
-            <span class="mono">g{{ groupOf(obj) }} · o{{ obj.objectId }}</span>
+            <ObjectIds :group="groupOf(obj)" :object="obj.objectId" />
             <span class="muted"
               >{{ formatBytes(obj.payloadLength)
               }}<template v-if="obj.status !== undefined">
@@ -276,10 +257,14 @@ function statusNote(view: LocObjectView['properties'][number]): string | null {
 }
 
 .loc-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1);
+  margin: 0;
+  color: var(--ink-muted);
+}
+.loc-summary .warn {
+  color: var(--warning);
+}
+.loc-summary .bad {
+  color: var(--danger);
 }
 
 .loc-objects {
@@ -293,8 +278,9 @@ function statusNote(view: LocObjectView['properties'][number]): string | null {
 
 .loc-object {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
   cursor: pointer;
 }
 

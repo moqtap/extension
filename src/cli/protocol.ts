@@ -229,6 +229,49 @@ export function parseStatus(raw: unknown): CliTab[] | null {
   return tabs.every((t) => t !== null) ? (tabs as CliTab[]) : null
 }
 
+/** The kinds of profile refusal the CLI names; anything else reads as unnamed. */
+export const REFUSAL_REASONS = ['unknown_scenario', 'invalid_scenario', 'plan_required', 'account'] as const
+export type RefusalReason = (typeof REFUSAL_REASONS)[number]
+
+/** Why the CLI refused a profile, and for a plan refusal the plan that runs it and where to upgrade. */
+export interface Refusal {
+  readonly error: string
+  readonly reason: RefusalReason | null
+  /** The cheapest plan that runs it, for `plan_required`. */
+  readonly plan: string | null
+  readonly upgrade: { readonly plan: string; readonly url: string } | null
+}
+
+const MAX_REFUSAL = 600
+const MAX_PLAN = 40
+
+function httpsUrl(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  try {
+    return new URL(v).protocol === 'https:' ? v : null
+  } catch {
+    return null
+  }
+}
+
+/** A refusal's body, `{error, reason?, plan?, upgrade?: {plan, url}}`; null without an error to show. */
+export function parseRefusal(raw: unknown): Refusal | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.error !== 'string' || o.error.trim() === '') return null
+  const error = o.error.length > MAX_REFUSAL ? `${o.error.slice(0, MAX_REFUSAL)}…` : o.error
+  const u = o.upgrade as Record<string, unknown> | null | undefined
+  const plan = typeof u === 'object' && u !== null ? u.plan : undefined
+  const url = typeof u === 'object' && u !== null ? httpsUrl(u.url) : null
+  const upgrade = planName(plan) !== null && url !== null ? { plan: plan as string, url } : null
+  const reason = REFUSAL_REASONS.find((r) => r === o.reason) ?? null
+  return { error, reason, plan: planName(o.plan) ?? upgrade?.plan ?? null, upgrade }
+}
+
+function planName(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' && v.length <= MAX_PLAN ? v : null
+}
+
 /** A tab `POST tab` opened: where its sessions connect and the token their paths carry. */
 export interface CreatedTab {
   readonly id: string
@@ -246,7 +289,13 @@ export function parseCreatedTab(raw: unknown): CreatedTab | null {
 export interface ProfileChoice {
   readonly name: string
   readonly profile: Profile
+  /** A scenario's own short name, 1-4 letters or digits, when its file sets one. */
+  readonly shortLabel?: string
+  /** The folders a scenario sits in, outermost first, when it is not at the top. */
+  readonly folder?: readonly string[]
 }
+
+const SHORT_LABEL = /^[A-Za-z0-9]{1,4}$/
 
 /** `GET profiles`. */
 export interface Profiles {
@@ -261,6 +310,9 @@ export interface Profiles {
   /** The plan has more profiles to offer. */
   readonly more: boolean
 }
+
+const isFolder = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every((s) => typeof s === 'string' && s.length > 0)
 
 const isNullableString = (v: unknown): v is string | null => v === null || typeof v === 'string'
 
@@ -280,7 +332,19 @@ export function parseProfiles(raw: unknown): Profiles | null {
     const e = p as Record<string, unknown> | null
     if (typeof e !== 'object' || e === null || typeof e.name !== 'string' || e.name === '') return null
     if (!isProfile(e.profile)) return null
-    profiles.push({ name: e.name, profile: e.profile })
+    const choice: { name: string; profile: Profile; shortLabel?: string; folder?: string[] } = {
+      name: e.name,
+      profile: e.profile,
+    }
+    if (e.short_label !== undefined) {
+      if (typeof e.short_label !== 'string' || !SHORT_LABEL.test(e.short_label)) return null
+      choice.shortLabel = e.short_label
+    }
+    if (e.folder !== undefined) {
+      if (!isFolder(e.folder)) return null
+      if (e.folder.length > 0) choice.folder = [...e.folder]
+    }
+    profiles.push(choice)
   }
   return { account: { signedIn, org: a.org, plan: a.plan, error }, profiles, more: o.more }
 }

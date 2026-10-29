@@ -3,7 +3,7 @@
  * packaging or pin: ISO BMFF boxes, and Annex-B NAL units.
  */
 
-import { detectMediaInfo, type InitSegment, parseInitSegment } from '@moqtap/media/bmff'
+import { detectMediaInfo, type InitSegment, parseBoxes, parseInitSegment } from '@moqtap/media/bmff'
 
 // ─── ISO BMFF ─────────────────────────────────────────────────────
 
@@ -12,6 +12,11 @@ export function payloadInit(payload: Uint8Array): InitSegment | null {
   const boxes = detectMediaInfo(payload)?.boxes
   if (!boxes?.includes('ftyp') || !boxes.includes('moov')) return null
   return parseInitSegment(payload)
+}
+
+/** The top-level box types read from the start of a payload, up to the first box that is not one. */
+export function payloadBoxes(payload: Uint8Array): string[] {
+  return parseBoxes(payload).map((b) => b.type)
 }
 
 /** An init segment's tracks in a few words. */

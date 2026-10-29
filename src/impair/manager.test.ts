@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { KeyValueArea } from '@/src/account/stores'
-import type { TabImpairment } from '@/src/cli/messages'
-import type { CliTab, Profile } from '@/src/cli/protocol'
+import type { SessionFailure, TabImpairment } from '@/src/cli/messages'
+import type { CliTab, Profile, Refusal } from '@/src/cli/protocol'
 import type { CliTarget, CreateError, SwitchResult } from '@/src/cli/service'
 import { ImpairManager, LEASE_MS, PROFILES_KEY, type ImpairCli } from './manager'
 import type { TabAnswerMsg } from './messages'
@@ -23,6 +23,7 @@ class FakeCli implements ImpairCli {
   /** Switches apply but their replies are lost. */
   lostReply = false
   createError: CreateError | null = null
+  refusal: Refusal | null = null
   switchResult: SwitchResult | null = null
   probes = 0
   /** createTab waits on this while set. */
@@ -49,6 +50,7 @@ class FakeCli implements ImpairCli {
     this.log.push('createTab')
     if (this.gate !== null) await this.gate
     if (this.current === null) return { error: 'unreachable' as const }
+    if (this.createError === 'refused') return { error: 'refused' as const, refused: this.refusal }
     if (this.createError !== null) return { error: this.createError }
     const id = `t${++this.n}`.padEnd(22, '0')
     const port = 50000 + this.n
@@ -175,7 +177,7 @@ describe('ImpairManager', () => {
     expect(last(3, 0)).toEqual({ on: true, route: routeOf(cli, 1) })
     expect(last(3, 5)).toEqual({ on: true, route: routeOf(cli, 1) })
     expect(flags).toEqual([false, true])
-    expect(manager.view(3)).toEqual({ tabId: 3, profile: G3, name: '3G', sessions: [], unknown: [], sessionErrors: [], failure: null, error: null })
+    expect(manager.view(3)).toEqual({ tabId: 3, profile: G3, name: '3G', sessions: [], unknown: [], sessionErrors: [], failure: null, error: null, refusal: null, refusedName: null })
   })
 
   it('keeps the tab port across reloads and answers each new document with it', async () => {
@@ -455,10 +457,37 @@ describe('ImpairManager: a session with its own profile', () => {
   it('keeps session profiles when the CLI refuses the tab switch', async () => {
     const { cli, manager } = await withSessions()
     await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
-    cli.switchResult = 'refused'
+    cli.switchResult = { refused: null }
     await manager.setProfile(3, OFF, 'Off')
     expect(manager.view(3).sessions).toEqual([{ session: S1, profile: G4, name: '4G' }])
     expect(manager.view(3).error).toBe('refused')
+  })
+
+  it("keeps what the CLI said when it refuses a tab's profile, until one is taken", async () => {
+    const { cli, manager, tick } = await withSessions()
+    const before = manager.view(3)
+    const said: Refusal = { error: 'There is no scenario named "x".', reason: 'unknown_scenario', plan: null, upgrade: null }
+    cli.switchResult = { refused: said }
+    await manager.setProfile(3, { scenario: 'x' }, 'x')
+    expect(manager.view(3)).toEqual(
+      expect.objectContaining({ profile: before.profile, name: before.name, error: 'refused', refusal: said, refusedName: 'x' }),
+    )
+    await tick()
+    expect(manager.view(3)).toEqual(expect.objectContaining({ error: 'refused', refusal: said }))
+    cli.switchResult = null
+    await manager.setProfile(3, G4, '4G')
+    expect(manager.view(3)).toEqual(expect.objectContaining({ error: null, refusal: null }))
+  })
+
+  it("keeps what the CLI said when it refuses to open a tab port", async () => {
+    const cli = new FakeCli()
+    cli.createError = 'refused'
+    cli.refusal = { error: 'Pro plan is required to run this scenario.', upgrade: { plan: 'Pro', url: 'https://moqtap.com/x' } }
+    const { manager } = setup({ cli })
+    await manager.setProfile(3, { scenario: 'lte' }, 'lte')
+    expect(manager.view(3)).toEqual(
+      expect.objectContaining({ profile: OFF, name: 'Off', error: 'refused', refusal: cli.refusal, refusedName: 'lte' }),
+    )
   })
 
   it('forgets a session the CLI no longer has', async () => {
@@ -477,14 +506,18 @@ describe('ImpairManager: a session with its own profile', () => {
 
   it('records nothing and reports it for that session when the CLI does not take it', async () => {
     const { cli, manager, tabs } = await withSessions()
-    for (const r of ['unreachable', 'refused'] as const) {
+    const said: Refusal = { error: 'Pro plan is required to run this scenario.', upgrade: { plan: 'Pro', url: 'https://moqtap.com/x' } }
+    const results: [SwitchResult, SessionFailure][] = [
+      ['unreachable', { session: S1, error: 'unreachable', refusal: null }],
+      [{ refused: null }, { session: S1, error: 'refused', refusal: null }],
+      [{ refused: said }, { session: S1, error: 'refused', refusal: said }],
+    ]
+    for (const [r, failed] of results) {
       cli.sessionResult = r
       const before = tabs.length
       await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
       expect(tabs.length).toBeGreaterThan(before)
-      expect(manager.view(3)).toEqual(
-        expect.objectContaining({ sessions: [], sessionErrors: [{ session: S1, error: r }], error: null }),
-      )
+      expect(manager.view(3)).toEqual(expect.objectContaining({ sessions: [], sessionErrors: [failed], error: null }))
     }
     cli.sessionResult = null
     await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
@@ -493,12 +526,12 @@ describe('ImpairManager: a session with its own profile', () => {
 
   it('clears a session error once the tab profile changes or the session ends', async () => {
     const { cli, manager, tick } = await withSessions()
-    cli.sessionResult = 'refused'
+    cli.sessionResult = { refused: null }
     await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
     await manager.setSessionProfile(3, S2, { profile: G4, name: '4G' })
     cli.dropSession(S1)
     await tick()
-    expect(manager.view(3).sessionErrors).toEqual([{ session: S2, error: 'refused' }])
+    expect(manager.view(3).sessionErrors).toEqual([{ session: S2, error: 'refused', refusal: null }])
     await manager.setProfile(3, G4, '4G')
     expect(manager.view(3).sessionErrors).toEqual([])
   })

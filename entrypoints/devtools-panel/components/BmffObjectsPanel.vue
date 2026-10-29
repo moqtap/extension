@@ -1,11 +1,12 @@
 <script lang="ts" setup>
 import { parseCmafObject } from '@moqtap/media/cmaf'
 import { computed, ref, watch } from 'vue'
-import { initTracksText, payloadInit } from '../byte-media'
+import { initTracksText, payloadBoxes, payloadInit } from '../byte-media'
 import { syncText } from '../cmaf'
-import { formatBytes, plural } from '../format'
+import { formatBytes } from '../format'
 import type { ParsedStreamFraming, StreamObject } from '../stream-framing'
 import FragmentTable from './FragmentTable.vue'
+import ObjectIds from './ObjectIds.vue'
 
 /** The ISO BMFF boxes and movie fragments of each object, each read on its own when opened. */
 const props = defineProps<{
@@ -35,7 +36,7 @@ function toggle(offset: number, event: Event) {
 
 interface Item {
   offset: number
-  label: string | null
+  ids: { group: number; object: number } | null
   payloadOffset: number
   payloadLength: number
   status?: number
@@ -44,13 +45,13 @@ interface Item {
 const objects = computed((): Item[] => {
   const f = props.framing
   if (!f) {
-    return [{ offset: 0, label: null, payloadOffset: 0, payloadLength: props.data.length }]
+    return [{ offset: 0, ids: null, payloadOffset: 0, payloadLength: props.data.length }]
   }
   return f.objects.map((obj: StreamObject) => {
     const groupId = obj.groupId ?? f.headerFields.groupId ?? 0
     return {
       offset: obj.offset,
-      label: `g${groupId} · o${obj.objectId}`,
+      ids: { group: groupId, object: obj.objectId },
       payloadOffset: obj.payloadOffset,
       payloadLength: obj.payloadLength,
       ...(obj.status !== undefined ? { status: obj.status } : {}),
@@ -64,26 +65,24 @@ const NO_TIMESCALES = new Map<number, number | null>()
 const items = computed(() =>
   objects.value.map((item) => {
     const whole = item.payloadOffset + item.payloadLength <= props.data.length
-    if (!whole || item.payloadLength === 0 || !open.value.has(item.offset)) {
-      return { item, whole, view: null, own: null }
-    }
     const payload = props.data.subarray(item.payloadOffset, item.payloadOffset + item.payloadLength)
-    return { item, whole, view: parseCmafObject(payload), own: payloadInit(payload) }
+    const boxes = payloadBoxes(payload)
+    if (!whole || item.payloadLength === 0 || !open.value.has(item.offset)) {
+      return { item, whole, boxes, view: null, own: null }
+    }
+    return { item, whole, boxes, view: parseCmafObject(payload), own: payloadInit(payload) }
   }),
 )
 </script>
 
 <template>
   <div class="bmff-panel">
-    <div v-if="framing" class="bmff-summary">
-      <span class="mq-badge mq-badge--mono">{{ plural(framing.objects.length, 'object') }}</span>
-    </div>
-
     <ul class="bmff-objects">
-      <li v-for="{ item, whole, view, own } in items" :key="item.offset">
+      <li v-for="{ item, whole, boxes, view, own } in items" :key="item.offset">
         <details :open="open.has(item.offset)" @toggle="toggle(item.offset, $event)">
           <summary class="bmff-object">
-            <span v-if="item.label" class="mono">{{ item.label }}</span>
+            <ObjectIds v-if="item.ids" :group="item.ids.group" :object="item.ids.object" />
+            <span v-for="(box, i) in boxes" :key="i" class="mq-badge mq-badge--mono">{{ box }}</span>
             <span class="muted"
               >{{ formatBytes(item.payloadLength)
               }}<template v-if="item.status !== undefined">
@@ -131,13 +130,6 @@ const items = computed(() =>
   padding: var(--space-2);
 }
 
-.bmff-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1);
-}
-
 .bmff-objects {
   list-style: none;
   padding: 0;
@@ -149,8 +141,9 @@ const items = computed(() =>
 
 .bmff-object {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
   cursor: pointer;
 }
 

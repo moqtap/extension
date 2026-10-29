@@ -15,6 +15,7 @@ import {
   catalogConflictProblems,
   catalogProblems,
   consolidateProblems,
+  groupProblems,
   type PanelProblem,
   protocolProblems,
   severityCounts,
@@ -205,5 +206,35 @@ describe('catalogs that disagree on a track', () => {
       }),
       expect.objectContaining({ title: 'Catalogs disagree on the codec of live / times' }),
     ])
+  })
+})
+
+describe('kinds', () => {
+  it('makes one row per source, severity and title, counting every place', () => {
+    const kinds = groupProblems([
+      problem({ title: 'bad box', detail: 'track a', places: [at('s:1', 0), at('s:1', 9)], atMs: 20 }),
+      problem({ title: 'bad box', detail: 'track b', places: [at('s:5', 0)], atMs: 5 }),
+      problem({ title: 'bad box', severity: 'warning' }),
+      problem({ title: 'no places' }),
+    ])
+    expect(kinds.map((k) => [k.title, k.severity, k.problems.length, k.count, k.atMs])).toEqual([
+      ['bad box', 'error', 2, 3, 5],
+      ['bad box', 'warning', 1, 1, null],
+      ['no places', 'error', 1, 1, null],
+    ])
+  })
+
+  it('keeps the order the problems come in', () => {
+    const kinds = groupProblems([problem({ title: 'b' }), problem({ title: 'a' }), problem({ title: 'b' })])
+    expect(kinds.map((k) => k.title)).toEqual(['b', 'a'])
+  })
+
+  it('counts kinds by severity for the tab and the toolbar', () => {
+    const kinds = groupProblems([
+      problem({ title: 'x' }),
+      problem({ title: 'x', detail: 'other' }),
+      problem({ title: 'y', severity: 'warning' }),
+    ])
+    expect(severityCounts(kinds)).toEqual({ error: 1, warning: 1, info: 0 })
   })
 })

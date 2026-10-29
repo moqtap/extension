@@ -8,9 +8,10 @@ import {
   sapText,
   syncText,
 } from '../cmaf'
-import { formatBytes, plural } from '../format'
+import { formatBytes } from '../format'
 import type { ParsedStreamFraming, StreamObject } from '../stream-framing'
 import FragmentTable from './FragmentTable.vue'
+import ObjectIds from './ObjectIds.vue'
 
 /**
  * The objects of one CMAF stream, each parsed when opened, under the CMAF
@@ -73,32 +74,21 @@ const items = computed(() =>
   }),
 )
 
-const initBadge = computed(() => ({
-  text: initText(props.state.init),
-  cls: props.state.init.status === 'known' ? 'mq-badge--ok' : 'mq-badge--check',
-}))
+const initWarn = computed(() => props.state.init.status !== 'known')
 </script>
 
 <template>
   <div ref="root" class="cmaf-panel">
-    <div class="cmaf-summary">
-      <span class="mq-badge mq-badge--mono">CMAF</span>
-      <span class="mq-badge mq-badge--mono" :class="initBadge.cls">{{
-        initBadge.text
-      }}</span>
-      <span v-if="state.draft" class="mq-badge mq-badge--mono">{{
-        state.draft.toUpperCase()
-      }}</span>
-      <span class="mq-badge mq-badge--mono">{{
-        plural(framing.objects.length, 'object')
-      }}</span>
-    </div>
+    <p class="cmaf-summary">
+      CMAF<template v-if="state.draft"> · {{ state.draft.toUpperCase() }}</template> ·
+      <span :class="{ warn: initWarn }">{{ initText(state.init) }}</span>
+    </p>
 
     <ul class="cmaf-objects">
       <li v-for="{ obj, whole, view } in items" :key="obj.offset" :data-offset="obj.offset">
         <details :open="open.has(obj.offset)" @toggle="toggle(obj.offset, $event)">
           <summary class="cmaf-object">
-            <span class="mono">g{{ groupOf(obj) }} · o{{ obj.objectId }}</span>
+            <ObjectIds :group="groupOf(obj)" :object="obj.objectId" />
             <span class="muted"
               >{{ formatBytes(obj.payloadLength)
               }}<template v-if="obj.status !== undefined">
@@ -157,10 +147,11 @@ const initBadge = computed(() => ({
 }
 
 .cmaf-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1);
+  margin: 0;
+  color: var(--ink-muted);
+}
+.warn {
+  color: var(--warning);
 }
 
 .cmaf-objects {
@@ -174,8 +165,9 @@ const initBadge = computed(() => ({
 
 .cmaf-object {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
   cursor: pointer;
 }
 

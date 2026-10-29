@@ -6,7 +6,8 @@ import { computed, ref, watch } from 'vue'
 import type { CatalogView } from '../catalogs'
 import type { CmafObjectView, CmafTrackState } from '../cmaf'
 import type { LocObjectView, LocTrackState } from '../loc'
-import { formatBytes, plural } from '../format'
+import { framingSummary } from '../detail-text'
+import { plural } from '../format'
 import { getCachedPref, savePref } from '../prefs'
 import type { HeaderTag, StreamObject } from '../stream-framing'
 import type { StreamFormat } from '../stream-format'
@@ -167,23 +168,20 @@ const framingTags = computed((): HeaderTag[] => framing.value?.tags ?? [])
 /** Header size for hex viewer annotation */
 const headerSize = computed(() => framing.value?.headerEnd ?? 0)
 
-/**
- * Resolve the framing header to a known track — by track alias, or by request
- * id for a fetch stream, which carries no alias.
- */
-const resolvedTrack = computed((): TrackEntry | null => {
-  const f = framing.value
-  if (!f || !props.tracks) return null
-  if (f.streamType === 'fetch') {
-    const track = props.tracks.get(String(f.headerFields.requestId))
-    return track?.via === 'fetch' ? track : null
-  }
-  const alias = String(f.headerFields.trackAlias)
-  for (const track of props.tracks.values()) {
-    if (track.trackAlias === alias) return track
-  }
+/** What the bytes are, as plain text after the view modes. */
+const mediaText = computed((): string | null => {
+  const info = effectiveMediaInfo.value
+  if (info) return `${VARIANT_LABELS[info.variant] ?? 'fMP4'} · ${plural(info.boxes.length, 'box', 'boxes')}`
+  const b = bytes.value
+  if (b?.contentType === 'fmp4') return 'fMP4'
+  if (b?.contentType === 'h264' || b?.contentType === 'h265')
+    return b.codecString ?? (b.contentType === 'h265' ? 'H.265' : 'H.264')
   return null
 })
+const metaText = computed(() =>
+  framingSummary(mediaText.value, framingTags.value, framing.value ? framing.value.objects.length : null),
+)
+const metaTitle = computed(() => effectiveMediaInfo.value?.boxes.join(' · ') ?? bytes.value?.codecString ?? undefined)
 
 /** Variant display labels */
 const VARIANT_LABELS: Record<string, string> = {
@@ -447,6 +445,18 @@ function switchToNal() {
   if (nalCodec.value) viewMode.value = 'nal'
 }
 
+/** Arrow keys move between the view modes. */
+function onModeKey(e: KeyboardEvent) {
+  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
+  const tabs = Array.from((e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]'))
+  const i = tabs.indexOf(document.activeElement as HTMLElement)
+  const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]
+  if (!next) return
+  e.preventDefault()
+  next.click()
+  next.focus()
+}
+
 // Auto-open decoded view on first render if preferred
 if (!trackMode() && preferredMode === 'json') openDecoded()
 </script>
@@ -454,26 +464,32 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
 <template>
   <div class="stream-data-viewer">
     <div class="filter-bar viewer-toolbar">
-      <div class="view-modes" role="group" aria-label="Show stream as">
+      <div class="mq-tabs view-modes" role="tablist" aria-label="Show stream as" @keydown="onModeKey">
         <button
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'hex'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'hex'"
+          :tabindex="viewMode === 'hex' ? 0 : -1"
           @click="switchToHex"
         >
           Hex
         </button>
         <button
           v-if="hasStructuredContent"
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'json'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'json'"
+          :tabindex="viewMode === 'json' ? 0 : -1"
           @click="switchToJson"
         >
           {{ structuredTabLabel }}
         </button>
         <button
           v-if="catalog"
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'catalog'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'catalog'"
+          :tabindex="viewMode === 'catalog' ? 0 : -1"
           title="What this catalog track says, across all its streams"
           @click="switchToCatalog"
         >
@@ -481,8 +497,10 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         </button>
         <button
           v-if="loc && framing"
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'loc'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'loc'"
+          :tabindex="viewMode === 'loc' ? 0 : -1"
           title="Each object's LOC properties and payload"
           @click="switchToLoc"
         >
@@ -490,8 +508,10 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         </button>
         <button
           v-if="cmaf && framing"
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'cmaf'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'cmaf'"
+          :tabindex="viewMode === 'cmaf' ? 0 : -1"
           title="Each object's CMAF boxes, track_IDs, timing and SAP"
           @click="switchToCmaf"
         >
@@ -499,8 +519,10 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         </button>
         <button
           v-if="timeline && framing"
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'timeline'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'timeline'"
+          :tabindex="viewMode === 'timeline' ? 0 : -1"
           title="Each object's timeline records"
           @click="switchToTimeline"
         >
@@ -508,8 +530,10 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         </button>
         <button
           v-if="fragmentsAvailable"
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'fragments'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'fragments'"
+          :tabindex="viewMode === 'fragments' ? 0 : -1"
           title="Each object's boxes and movie fragments"
           @click="switchToFragments"
         >
@@ -517,46 +541,17 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         </button>
         <button
           v-if="nalCodec"
-          class="mq-btn mq-btn--quiet"
-          :aria-pressed="viewMode === 'nal'"
+          class="mq-tab"
+          role="tab"
+          :aria-selected="viewMode === 'nal'"
+          :tabindex="viewMode === 'nal' ? 0 : -1"
           title="Each object's NAL units"
           @click="switchToNal"
         >
           NAL units
         </button>
       </div>
-      <span
-        v-if="effectiveMediaInfo"
-        class="mq-badge mq-badge--mono"
-        :title="effectiveMediaInfo.boxes.join(' · ')"
-        >{{ VARIANT_LABELS[effectiveMediaInfo.variant] ?? 'fMP4' }} ·
-        {{ effectiveMediaInfo.boxes.length }} boxes</span
-      >
-      <span v-else-if="bytes?.contentType === 'fmp4'" class="mq-badge mq-badge--mono"
-        >fMP4</span
-      >
-      <span
-        v-else-if="bytes?.contentType === 'h264' || bytes?.contentType === 'h265'"
-        class="mq-badge mq-badge--mono"
-        :title="bytes.codecString ?? undefined"
-        >{{ bytes.codecString ?? (bytes.contentType === 'h265' ? 'H.265' : 'H.264') }}</span
-      >
-      <span
-        v-if="resolvedTrack"
-        class="mq-badge mq-badge--mono track-badge"
-        :title="resolvedTrack.fullName"
-        >{{ resolvedTrack.fullName }}</span
-      >
-      <span
-        v-for="tag in framingTags"
-        :key="tag.label"
-        class="mq-badge mq-badge--mono"
-        >{{ tag.label }}={{ tag.value }}</span
-      >
-      <span v-if="framing" class="mq-badge mq-badge--mono">{{
-        plural(framing.objects.length, 'object')
-      }}</span>
-      <span class="viewer-size">{{ formatBytes(data.length) }}</span>
+      <span v-if="metaText" class="viewer-meta" :title="metaTitle">{{ metaText }}</span>
     </div>
     <p v-if="template" class="viewer-template" title="The catalog's media timeline template">
       template · {{ templateText(template) }}
@@ -574,6 +569,7 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         :note="framingNote"
         :mark-properties="!!loc"
         :media-boxes="!!bytes"
+        :draft="draft"
       />
       <div v-else-if="viewMode === 'json' && jsonData" class="json-container">
         <JsonTree :data="jsonData" :initial-expanded="true" />
@@ -629,23 +625,31 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
   height: 100%;
 }
 
+/* A toolbar's height, so the labels clear the underline. */
 .view-modes {
-  display: flex;
-  gap: var(--space-1);
-  margin-right: var(--space-1);
+  align-self: stretch;
+  min-height: var(--header-tool);
+  margin: -2px var(--space-1) -2px calc(-1 * var(--space-1));
+  border-bottom: 0;
+  gap: 0;
+}
+.view-modes .mq-tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-2);
 }
 
-.track-badge {
-  max-width: 24ch;
+.viewer-toolbar {
+  flex-wrap: nowrap;
+}
+.viewer-meta {
+  flex: 1 1 0;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.viewer-size {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .viewer-template {

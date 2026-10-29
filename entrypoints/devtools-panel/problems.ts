@@ -110,7 +110,7 @@ export function consolidateProblems(lists: readonly (readonly PanelProblem[])[])
 }
 
 /** How many problems there are of each severity. */
-export function severityCounts(problems: readonly PanelProblem[]): Record<ProblemSeverity, number> {
+export function severityCounts(problems: readonly { severity: ProblemSeverity }[]): Record<ProblemSeverity, number> {
   const counts = { error: 0, warning: 0, info: 0 }
   for (const p of problems) counts[p.severity]++
   return counts
@@ -211,4 +211,35 @@ export function catalogConflictProblems(
     }
   }
   return out
+}
+
+// ─── Kinds ────────────────────────────────────────────────────────
+
+/** Problems that say the same thing, as one row with a count. */
+export interface ProblemKind {
+  key: string
+  severity: ProblemSeverity
+  title: string
+  /** In the order given: most severe and first seen first */
+  problems: PanelProblem[]
+  /** How many places it was seen; a problem with none counts once */
+  count: number
+  atMs: number | null
+}
+
+/** One kind for each source, severity and title, in the order the problems come. */
+export function groupProblems(problems: readonly PanelProblem[]): ProblemKind[] {
+  const kinds = new Map<string, ProblemKind>()
+  for (const p of problems) {
+    const key = JSON.stringify([p.source, p.severity, p.title])
+    let kind = kinds.get(key)
+    if (!kind) {
+      kind = { key, severity: p.severity, title: p.title, problems: [], count: 0, atMs: null }
+      kinds.set(key, kind)
+    }
+    kind.problems.push(p)
+    kind.count += Math.max(1, p.places.length)
+    if (p.atMs !== null && (kind.atMs === null || p.atMs < kind.atMs)) kind.atMs = p.atMs
+  }
+  return [...kinds.values()]
 }

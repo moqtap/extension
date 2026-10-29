@@ -10,9 +10,9 @@
  */
 
 import type { KeyValueArea } from '@/src/account/stores'
-import type { ImpairFailure, SessionError, SessionImpairment, TabError, TabImpairment } from '@/src/cli/messages'
-import { isId16, isOff, isProfile, OFF, sameProfile, type CliTab, type CreatedTab, type Profile } from '@/src/cli/protocol'
-import type { CliTarget, CreateError, SwitchResult } from '@/src/cli/service'
+import type { ImpairFailure, SessionFailure, SessionImpairment, TabError, TabImpairment } from '@/src/cli/messages'
+import { isId16, isOff, isProfile, OFF, sameProfile, type CliTab, type Profile, type Refusal } from '@/src/cli/protocol'
+import type { CliTarget, CreateResult, SwitchResult } from '@/src/cli/service'
 import type { TabAnswer, TabAnswerMsg } from './messages'
 
 export const PROFILES_KEY = 'moqtap-impair-tabs'
@@ -23,7 +23,7 @@ export interface ImpairCli {
   target(): CliTarget | null
   probe(): Promise<void>
   onChange(fn: () => void): () => void
-  createTab(owner: string, profile: Profile): Promise<CreatedTab | { error: CreateError }>
+  createTab(owner: string, profile: Profile): Promise<CreateResult>
   setTabProfile(id: string, profile: Profile): Promise<SwitchResult>
   setSessionProfile(id: string, profile: Profile | null): Promise<SwitchResult>
   deleteTab(id: string): Promise<void>
@@ -64,7 +64,7 @@ interface TabProfile {
   /** Sessions with their own profile at the CLI, by CLI session id. */
   own: Map<string, Own>
   /** Sessions whose last profile change the CLI did not take. */
-  failed: Map<string, SessionError>
+  failed: Map<string, Omit<SessionFailure, 'session'>>
   /** Sessions the CLI last listed with a profile that is neither the tab's nor their own. */
   unknown: Set<string>
   /** No tab port yet and none has failed to open; frames wait instead of hearing route null. */
@@ -74,7 +74,12 @@ interface TabProfile {
 interface TabState {
   failure: ImpairFailure | null
   error: TabError | null
+  refusal: Refusal | null
+  refusedName: string | null
 }
+
+const sameRefusal = (a: Refusal | null, b: Refusal | null) =>
+  a?.error === b?.error && a?.upgrade?.plan === b?.upgrade?.plan && a?.upgrade?.url === b?.upgrade?.url
 
 const isHeld = (v: unknown): v is Held => {
   if (typeof v !== 'object' || v === null) return false
@@ -111,15 +116,19 @@ export class ImpairManager {
   view(tabId: number): TabImpairment {
     const p = this.profiles.get(tabId)
     const s = this.states.get(tabId)
+    // A tab port the CLI refused to open impairs nothing.
+    const none = p === undefined || (p.held === null && s?.error === 'refused')
     return {
       tabId,
-      profile: p?.profile ?? OFF,
-      name: p?.name ?? OFF_NAME,
+      profile: none ? OFF : p.profile,
+      name: none ? OFF_NAME : p.name,
       sessions: [...(p?.own ?? [])].map(([session, o]) => ({ session, ...o })),
       unknown: [...(p?.unknown ?? [])],
-      sessionErrors: [...(p?.failed ?? [])].map(([session, error]) => ({ session, error })),
+      sessionErrors: [...(p?.failed ?? [])].map(([session, f]) => ({ session, ...f })),
       failure: s?.failure ?? null,
       error: s?.error ?? (this.flagFailed && p !== undefined && !isOff(p.profile) ? 'flag' : null),
+      refusal: s?.refusal ?? null,
+      refusedName: s?.refusedName ?? null,
     }
   }
 
@@ -188,12 +197,18 @@ export class ImpairManager {
       this.profiles.set(tabId, p)
       this.ensureLease()
     } else {
+      const before = { profile: p.profile, name: p.name }
       p.profile = profile
       p.name = name
       if (p.held !== null) {
         const r = await this.deps.cli.setTabProfile(p.held.id, profile)
         if (r === 'gone') drop(p)
-        else this.setError(tabId, r === 'ok' ? null : r)
+        else if (typeof r === 'object') {
+          // The CLI keeps the tab's previous profile.
+          p.profile = before.profile
+          p.name = before.name
+          this.setError(tabId, 'refused', r.refused, name)
+        } else this.setError(tabId, r === 'ok' ? null : r)
         // The CLI drops sessions' own profiles on a tab switch.
         if (r === 'ok') {
           p.own.clear()
@@ -226,7 +241,8 @@ export class ImpairManager {
     if (r === 'ok') p.unknown.delete(session)
     if (r === 'ok' && own !== null) p.own.set(session, own)
     else if (r === 'ok' || r === 'gone') p.own.delete(session)
-    else p.failed.set(session, r)
+    else if (typeof r === 'object') p.failed.set(session, { error: 'refused', refusal: r.refused })
+    else p.failed.set(session, { error: r, refusal: null })
     await this.persist()
     this.emit(tabId)
   }
@@ -241,7 +257,7 @@ export class ImpairManager {
       }
       const r = await this.deps.cli.createTab(p.owner, p.profile)
       if ('error' in r) {
-        this.setError(tabId, r.error)
+        this.setError(tabId, r.error, 'refused' in r ? r.refused : null, r.error === 'refused' ? p.name : null)
         return
       }
       p.held = { id: r.id, port: r.port, token: r.token, certHash: t.certHash, cli: t.identity }
@@ -329,7 +345,9 @@ export class ImpairManager {
         continue
       }
       const ok = await this.deps.cli.renewLease(p.owner)
-      this.setError(tabId, ok ? null : 'unreachable')
+      // A lease says nothing about a refused switch: that stays until a profile is taken.
+      if (!ok) this.setError(tabId, 'unreachable')
+      else if (this.states.get(tabId)?.error === 'unreachable') this.setError(tabId, null)
     }
     const listed = t === null ? null : await this.deps.cli.tabs()
     const changed = new Set<number>()
@@ -426,17 +444,24 @@ export class ImpairManager {
     for (const tabId of this.profiles.keys()) this.emit(tabId)
   }
 
-  private setError(tabId: number, error: TabError | null): void {
+  private setError(
+    tabId: number,
+    error: TabError | null,
+    refusal: Refusal | null = null,
+    refusedName: string | null = null,
+  ): void {
     const s = this.state(tabId)
-    if (s.error === error) return
+    if (s.error === error && sameRefusal(s.refusal, refusal) && s.refusedName === refusedName) return
     s.error = error
+    s.refusal = refusal
+    s.refusedName = refusedName
     this.emit(tabId)
   }
 
   private state(tabId: number): TabState {
     let s = this.states.get(tabId)
     if (s === undefined) {
-      s = { failure: null, error: null }
+      s = { failure: null, error: null, refusal: null, refusedName: null }
       this.states.set(tabId, s)
     }
     return s

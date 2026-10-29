@@ -1,6 +1,6 @@
 /** Messages between the background's CLI bridge and extension pages. */
 
-import type { Profile, Profiles } from './protocol'
+import type { Profile, Profiles, Refusal } from './protocol'
 
 /** Port name the panel and the options page open. */
 export const CLI_PORT = 'moqtap-cli'
@@ -76,6 +76,13 @@ export interface SessionImpairment {
 /** Why the CLI did not take a session's profile: as {@link TabError}. */
 export type SessionError = 'refused' | 'unreachable'
 
+export interface SessionFailure {
+  readonly session: string
+  readonly error: SessionError
+  /** What the CLI said, for `refused`. */
+  readonly refusal: Refusal | null
+}
+
 export interface TabImpairment {
   readonly tabId: number
   readonly profile: Profile
@@ -86,9 +93,13 @@ export interface TabImpairment {
   /** Sessions the CLI lists with a profile that is neither the tab's nor one picked for them. */
   readonly unknown: readonly string[]
   /** Sessions whose last profile change the CLI did not take. */
-  readonly sessionErrors: readonly { readonly session: string; readonly error: SessionError }[]
+  readonly sessionErrors: readonly SessionFailure[]
   readonly failure: ImpairFailure | null
   readonly error: TabError | null
+  /** What the CLI said, for `refused`. */
+  readonly refusal: Refusal | null
+  /** The name of the pick the CLI refused, for `refused`; `profile` stays what is in force. */
+  readonly refusedName: string | null
 }
 
 export type PageCliMsg =

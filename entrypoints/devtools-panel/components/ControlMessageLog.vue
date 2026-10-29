@@ -1,17 +1,14 @@
 <script lang="ts" setup>
 import { computed, nextTick, ref, toRaw, watch } from 'vue'
-import {
-  formatBytes,
-  formatDuration,
-  formatOffset,
-  isoTitle,
-  messageTypeName,
-} from '../format'
+import { formatBytes, formatDuration, formatOffset, isoTitle, messageTypeName } from '../format'
+import type { GridColumn } from '../grid'
 import { messageMatches } from '../requests'
-import { useAutoScroll } from '../use-auto-scroll'
 import type { MessageEntry } from '../use-inspector'
+import DataGrid from './DataGrid.vue'
+import DirMark from './DirMark.vue'
 import Icon from './Icon.vue'
 import PayloadViewer from './PayloadViewer.vue'
+import SplitView from './SplitView.vue'
 
 const props = defineProps<{
   messages: MessageEntry[]
@@ -24,145 +21,149 @@ const props = defineProps<{
   errorLabels: Map<MessageEntry, string>
   /** A message to open and scroll to */
   focus?: { message: MessageEntry; seq: number } | null
+  /** Each message's track name, where its request names one */
+  tracks: Map<MessageEntry, string>
+  /** The toolbar's filter text, matched against message and track names */
+  filter: string
 }>()
 
-const filterText = ref('')
-const shownMessages = computed(() =>
-  filterText.value.trim() === ''
-    ? props.messages
-    : props.messages.filter((msg) =>
-        messageMatches(msg.messageType, filterText.value, props.draft),
-      ),
+interface Row {
+  msg: MessageEntry
+  /** Index in the session's messages: the row's key */
+  i: number
+}
+
+const rows = computed((): Row[] => {
+  const q = props.filter.trim().toLowerCase()
+  const out: Row[] = []
+  props.messages.forEach((msg, i) => {
+    if (
+      q === '' ||
+      messageMatches(msg.messageType, q, props.draft) ||
+      (props.tracks.get(msg)?.toLowerCase().includes(q) ?? false)
+    ) {
+      out.push({ msg, i })
+    }
+  })
+  return out
+})
+
+const isError = (type: string) => /_error$/i.test(type)
+
+const columns: GridColumn<Row>[] = [
+  {
+    id: 'time',
+    label: 'Time',
+    width: 92,
+    minWidth: 60,
+    mono: true,
+    title: 'From session start',
+    sort: (r) => r.msg.timestamp,
+  },
+  { id: 'dir', label: 'Dir', width: 36, align: 'center', showFrom: 480, sort: (r) => r.msg.direction },
+  { id: 'message', label: 'Message', minWidth: 120, pinned: true, sort: (r) => messageTypeName(r.msg.messageType) },
+  { id: 'track', label: 'Track', width: 200, showFrom: 760, sort: (r) => props.tracks.get(r.msg) },
+  { id: 'size', label: 'Size', width: 72, align: 'end', mono: true, showFrom: 360, sort: (r) => r.msg.raw.length },
+]
+
+const selected = ref<number | null>(null)
+const selectedMsg = computed(() => (selected.value === null ? null : (props.messages[selected.value] ?? null)))
+watch(
+  () => props.filter,
+  () => {
+    if (selected.value !== null && !rows.value.some((r) => r.i === selected.value)) selected.value = null
+  },
 )
 
-const expandedIndex = ref<number | null>(null)
-watch(filterText, () => {
-  expandedIndex.value = null
-})
-const logContainer = ref<HTMLElement | null>(null)
-useAutoScroll(logContainer)
-
+const grid = ref<{ reveal(key: number): void } | null>(null)
 watch(
   () => props.focus,
   async (focus) => {
     if (!focus) return
-    filterText.value = ''
-    await nextTick()
     const target = toRaw(focus.message)
-    const index = shownMessages.value.findIndex((m) => toRaw(m) === target)
-    if (index < 0) return
-    expandedIndex.value = index
+    const i = props.messages.findIndex((m) => toRaw(m) === target)
+    if (i < 0) return
+    selected.value = i
     await nextTick()
-    logContainer.value
-      ?.querySelectorAll('.message-row')
-      [index]?.scrollIntoView({ block: 'nearest' })
+    grid.value?.reveal(i)
   },
   { immediate: true },
 )
 
-function toggle(index: number) {
-  expandedIndex.value = expandedIndex.value === index ? null : index
+function pick(row: Row) {
+  selected.value = row.i
 }
-
-/** Up and down move between rows; Enter and Space expand (native button). */
-function onRowKey(e: KeyboardEvent) {
-  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
-  const rows = logContainer.value?.querySelectorAll<HTMLButtonElement>(
-    '.mq-log__row',
-  )
-  if (!rows) return
-  const list = Array.from(rows)
-  const i = list.indexOf(e.currentTarget as HTMLButtonElement)
-  const next = list[e.key === 'ArrowDown' ? i + 1 : i - 1]
-  if (next) {
-    e.preventDefault()
-    next.focus()
-  }
-}
-
-const isError = (type: string) => /_error$/i.test(type)
 </script>
 
 <template>
   <div class="message-pane">
-    <div v-if="messages.length > 0" class="filter-bar message-filter">
-      <div class="filter-field">
-        <input
-          v-model="filterText"
-          class="mq-input mq-input--mono filter-input"
-          type="search"
-          aria-label="Filter messages by name"
-          placeholder="Filter by message"
-          spellcheck="false"
-        />
-        <button
-          v-if="filterText"
-          class="mq-btn mq-btn--quiet mq-btn--icon filter-clear"
-          aria-label="Clear filter"
-          title="Clear filter"
-          @click="filterText = ''"
+    <p v-if="messages.length === 0" class="pane-message">No control messages yet.</p>
+    <p v-else-if="rows.length === 0" class="pane-message">No messages match this filter.</p>
+    <SplitView
+      v-else
+      split-id="messages"
+      label="Resize message detail"
+      :second="selectedMsg !== null"
+      :initial="0.5"
+      :min-first="120"
+      :min-second="160"
+    >
+      <template #first>
+        <DataGrid
+          ref="grid"
+          grid-id="messages"
+          label="Control messages"
+          :columns="columns"
+          :rows="rows"
+          :row-key="(r) => r.i"
+          :selected-key="selected"
+          :row-class="(r) => (isError(r.msg.messageType) ? 'row-error' : undefined)"
+          follow
+          @activate="pick"
         >
-          <Icon name="x" />
-        </button>
-      </div>
-    </div>
-    <div ref="logContainer" class="message-log mq-log">
-      <p v-if="messages.length === 0" class="pane-message">
-        No control messages yet.
-      </p>
-      <p v-else-if="shownMessages.length === 0" class="pane-message">
-        No messages match this filter.
-      </p>
-      <template v-else>
-        <div class="mq-log__head" aria-hidden="true">
-          <span>Time</span><span></span><span>Message</span><span>Size</span>
-        </div>
-        <ul class="message-list" aria-label="Control messages">
-          <li
-            v-for="(msg, i) in shownMessages"
-            :key="`${msg.timestamp}-${i}`"
-            class="message-row"
-          >
-            <button
-              class="mq-log__row"
-              :class="{ 'mq-log__row--error': isError(msg.messageType) }"
-              :aria-expanded="expandedIndex === i"
-              @click="toggle(i)"
-              @keydown="onRowKey"
+          <template #cell="{ row, column }">
+            <span v-if="column.id === 'time'" :title="isoTitle(row.msg.timestamp)">{{
+              formatOffset(row.msg.timestamp, startedAt)
+            }}</span>
+            <DirMark v-else-if="column.id === 'dir'" :dir="row.msg.direction" />
+            <template v-else-if="column.id === 'message'"
+              >{{ messageTypeName(row.msg.messageType)
+              }}<span v-if="errorLabels.has(row.msg)" class="row-note">{{ errorLabels.get(row.msg) }}</span
+              ><span v-else-if="responseTimes.has(row.msg)" class="row-note" title="Response time">{{
+                formatDuration(responseTimes.get(row.msg)!)
+              }}</span></template
             >
-              <span class="mq-log__time" :title="isoTitle(msg.timestamp)">{{
-                formatOffset(msg.timestamp, startedAt)
-              }}</span>
-              <span
-                class="mq-log__dir"
-                :class="msg.direction === 'tx' ? 'mq-log__dir--c2s' : 'mq-log__dir--s2c'"
-                :title="msg.direction === 'tx' ? 'client to server' : 'server to client'"
-                ><span aria-hidden="true">{{ msg.direction === 'tx' ? '→' : '←' }}</span
-                ><span class="mq-sr">{{
-                  msg.direction === 'tx' ? 'client to server' : 'server to client'
-                }}</span></span
-              >
-              <span class="mq-log__type"
-                >{{ messageTypeName(msg.messageType)
-                }}<span v-if="errorLabels.has(msg)" class="row-note">{{
-                  errorLabels.get(msg)
-                }}</span
-                ><span
-                  v-else-if="responseTimes.has(msg)"
-                  class="row-note"
-                  title="Response time"
-                  >{{ formatDuration(responseTimes.get(msg)!) }}</span
-                ></span
-              >
-              <span class="mq-log__meta">{{ formatBytes(msg.raw.length) }}</span>
-            </button>
-            <div v-if="expandedIndex === i" class="message-detail">
-              <PayloadViewer :data="msg.decodedPretty" :raw="msg.raw" :stack="msg.stack" />
-            </div>
-          </li>
-        </ul>
+            <span v-else-if="column.id === 'track'" :title="tracks.get(row.msg)">{{ tracks.get(row.msg) }}</span>
+            <template v-else-if="column.id === 'size'">{{ formatBytes(row.msg.raw.length) }}</template>
+          </template>
+        </DataGrid>
       </template>
-    </div>
+      <template #second>
+        <section v-if="selectedMsg" class="message-detail" aria-labelledby="message-detail-title">
+          <div class="tool-bar detail-bar">
+            <h2 id="message-detail-title" class="detail-title">
+              {{ messageTypeName(selectedMsg.messageType) }}
+            </h2>
+            <button
+              class="mq-btn mq-btn--quiet mq-btn--icon"
+              aria-label="Close message"
+              title="Close"
+              @click="selected = null"
+            >
+              <Icon name="x" />
+            </button>
+          </div>
+          <div class="detail-body">
+            <PayloadViewer
+              :key="selected!"
+              :data="selectedMsg.decodedPretty"
+              :raw="selectedMsg.raw"
+              :stack="selectedMsg.stack"
+            />
+          </div>
+        </section>
+      </template>
+    </SplitView>
   </div>
 </template>
 
@@ -174,66 +175,38 @@ const isError = (type: string) => /_error$/i.test(type)
   min-height: 0;
 }
 
-.filter-field {
-  position: relative;
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-}
-.filter-input {
-  padding-right: var(--control-tool);
-}
-.filter-input::-webkit-search-cancel-button {
-  display: none;
-}
-.filter-clear {
-  position: absolute;
-  right: 0;
-}
-
 /* What the row's message says beyond its name: an error's code, a response's time. */
 .row-note {
   margin-left: var(--space-2);
-  font-weight: 400;
   color: var(--ink-muted);
 }
-
-.message-log {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.mq-log__head {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.message-list {
-  list-style: none;
-  padding: 0;
-}
-
-.mq-log__row {
-  width: 100%;
-  border-top: 0;
-  border-left: 0;
-  border-right: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  text-align: left;
-}
-.mq-log__row[aria-expanded='true'] {
-  background: var(--surface-selected);
+.row-error .row-note {
+  color: inherit;
 }
 
 .message-detail {
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-6);
-  background: var(--surface-sunken);
-  border-bottom: 1px solid var(--line);
-  font-family: var(--font-sans);
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--surface);
+}
+.detail-bar {
+  justify-content: space-between;
+}
+.detail-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  font-weight: 400;
+  padding-left: var(--space-1);
+}
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2);
 }
 </style>

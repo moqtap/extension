@@ -7,6 +7,7 @@ import {
   parseCreatedTab,
   parseHello,
   parseProfiles,
+  parseRefusal,
   parseStatus,
   parseTab,
   signedMessage,
@@ -159,5 +160,44 @@ describe('bridge protocol', () => {
     expect(parseProfiles({ ...raw, more: 'yes' })).toBeNull()
     expect(parseProfiles({ ...raw, profiles: [{ name: 'Slow', profile: { preset: 'slow' } }] })).toBeNull()
     expect(parseProfiles({ ...raw, profiles: [{ name: '', profile: { preset: 'none' } }] })).toBeNull()
+  })
+
+  it('reads a scenario short label of 1-4 letters or digits', () => {
+    const lte = { name: 'lte', profile: { scenario: 'lte' } }
+    const at = (short_label: unknown) =>
+      parseProfiles({ account: { signed_in: true, org: null, plan: null }, profiles: [{ ...lte, short_label }], more: false })
+    expect(at('LTE')?.profiles).toEqual([{ ...lte, shortLabel: 'LTE' }])
+    for (const bad of ['', 'LTE-A', 'lte!', 4, null]) expect(at(bad)).toBeNull()
+  })
+
+  it("reads a scenario's folders, outermost first", () => {
+    const lte = { name: 'lte', profile: { scenario: 'lte' } }
+    const at = (folder: unknown) =>
+      parseProfiles({ account: { signed_in: true, org: null, plan: null }, profiles: [{ ...lte, folder }], more: false })
+    expect(at(['Mobile', 'Europe'])?.profiles).toEqual([{ ...lte, folder: ['Mobile', 'Europe'] }])
+    expect(at([])?.profiles).toEqual([lte])
+    for (const bad of ['Mobile', [''], [1], null]) expect(at(bad)).toBeNull()
+  })
+
+  it('reads a refusal, keeping an upgrade only with a plan and an https URL', () => {
+    const upgrade = { plan: 'Pro', url: 'https://moqtap.com/up' }
+    expect(parseRefusal({ error: 'no', upgrade })).toEqual({ error: 'no', reason: null, plan: 'Pro', upgrade })
+    expect(parseRefusal({ error: 'no' })).toEqual({ error: 'no', reason: null, plan: null, upgrade: null })
+    expect(parseRefusal({ error: 'no', upgrade: { ...upgrade, url: 'http://moqtap.com/up' } })?.upgrade).toBeNull()
+    expect(parseRefusal({ error: 'no', upgrade: { ...upgrade, plan: '' } })?.upgrade).toBeNull()
+    expect(parseRefusal({ error: 'x'.repeat(700) })?.error).toHaveLength(601)
+    for (const bad of [null, {}, { error: '' }, { error: 1 }, 'no']) expect(parseRefusal(bad)).toBeNull()
+  })
+
+  it('reads the reason the CLI names, and the plan a refusal without an upgrade link names', () => {
+    expect(parseRefusal({ error: 'no', reason: 'unknown_scenario' })?.reason).toBe('unknown_scenario')
+    expect(parseRefusal({ error: 'no', reason: 'plan_required', plan: 'Business' })).toEqual({
+      error: 'no',
+      reason: 'plan_required',
+      plan: 'Business',
+      upgrade: null,
+    })
+    expect(parseRefusal({ error: 'no', reason: 'later_kind' })?.reason).toBeNull()
+    expect(parseRefusal({ error: 'no', plan: 'x'.repeat(41) })?.plan).toBeNull()
   })
 })

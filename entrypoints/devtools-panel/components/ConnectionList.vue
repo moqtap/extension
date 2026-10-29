@@ -1,16 +1,11 @@
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
-import {
-  formatBitrate,
-  formatBytes,
-  formatClock,
-  isoTitle,
-  plural,
-  shortSessionId,
-} from '../format'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { connectionTitle } from '../connection-name'
+import { formatBitrate, formatBytes, shortSessionId } from '../format'
+import { sidebarShowsRate } from '../layout'
 import type { TabImpairment } from '@/src/cli/messages'
 import Icon from './Icon.vue'
-import { sessionProfile } from '../impair-choices'
+import { impairsSession, profileShortLabel, sessionProfile } from '../impair-choices'
 import { computeRecentBitrate, type SessionEntry } from '../use-inspector'
 
 /* Reactive tick that drives the bitrate decay animation.
@@ -26,18 +21,43 @@ onBeforeUnmount(() => clearInterval(bitrateTickInterval))
 const props = defineProps<{
   sessions: SessionEntry[]
   selectedId: string | null
-  /** The narrow sidebar: a status glyph and the short ID per connection. */
-  compact?: boolean
   /** The tab has an impairment profile. */
   impaired?: boolean
   /** The tab's impairment, for the profile of each session through the CLI. */
   tab?: TabImpairment | null
+  /** Scenario short labels, by scenario name. */
+  shortLabels?: ReadonlyMap<string, string>
+  /** Down to the state and #id; the rest goes to the tooltip. */
+  collapsed?: boolean
 }>()
+
+const listEl = ref<HTMLElement | null>(null)
+const listWidth = ref(0)
+const showRate = computed(() => !props.collapsed && sidebarShowsRate(listWidth.value))
+let ro: ResizeObserver | null = null
+onMounted(() => {
+  const el = listEl.value
+  if (!el) return
+  listWidth.value = el.clientWidth
+  ro = new ResizeObserver(() => (listWidth.value = el.clientWidth))
+  ro.observe(el)
+})
+onBeforeUnmount(() => ro?.disconnect())
+
+/** A row's tooltip; it carries the rate when the row has no room for it. */
+function rowTitle(session: SessionEntry): string {
+  const st = sessionStats.value.get(session.sessionId)!
+  return showRate.value ? st.title : `${st.title}\n${st.rate}`
+}
+
+const NO_LABELS: ReadonlyMap<string, string> = new Map()
+const shortLabel = (session: SessionEntry) =>
+  profileShortLabel(cliProfile(session)?.profile ?? null, props.shortLabels ?? NO_LABELS)
 
 const emit = defineEmits<{
   select: [id: string]
-  /** Pick the profile of the session with this CLI id. */
-  impair: [cliSession: string]
+  /** Pick the profile of the session with this CLI id, in a menu at `anchor`. */
+  impair: [cliSession: string, anchor: HTMLElement]
 }>()
 
 /** The profile of an open session through the CLI, or null when it has none to pick. */
@@ -52,6 +72,9 @@ function impairLabel(session: SessionEntry): string {
   return `Impairment for this connection: ${p.name}${p.own ? '' : ', same as tab'}`
 }
 
+/** The gauge is blue while a known profile impairs the connection. */
+const impairActive = (session: SessionEntry) => impairsSession(cliProfile(session))
+
 function formatUrl(url: string): { host: string; path: string } {
   try {
     const u = new URL(url)
@@ -60,37 +83,6 @@ function formatUrl(url: string): { host: string; path: string } {
     return { host, path }
   } catch {
     return { host: url, path: '' }
-  }
-}
-
-function protocolBadge(session: SessionEntry): {
-  label: string
-  class: string
-  title: string
-} {
-  switch (session.protocol) {
-    case 'moqt':
-      return session.draft
-        ? {
-            label: `draft-${session.draft}`,
-            class: 'mq-badge--draft',
-            title: `MoQT draft-${session.draft}`,
-          }
-        : { label: 'MoQT', class: 'mq-badge--mono', title: 'MoQT' }
-    case 'moqt-unknown-draft':
-      return {
-        label: 'MoQT ?',
-        class: 'mq-badge--mono',
-        title: 'MoQT, draft not identified',
-      }
-    case 'detecting':
-      return {
-        label: 'detecting',
-        class: '',
-        title: 'Reading the first bytes to identify the protocol',
-      }
-    default:
-      return { label: 'WT', class: 'mq-badge--mono', title: 'WebTransport, not MoQT' }
   }
 }
 
@@ -112,13 +104,13 @@ function collectorBadge(session: SessionEntry): {
   switch (c.state) {
     case 'collected':
       return {
-        label: '✓ collected',
+        label: 'Collected',
         class: 'mq-badge--ok',
         title: `@moqtap/collector ${c.version} is instrumenting this connection`,
       }
     case 'dormant':
       return {
-        label: '▲ SDK idle',
+        label: 'SDK idle',
         class: 'mq-badge--check',
         title:
           `@moqtap/collector ${c.version} is on the page but not transmitting. ` +
@@ -126,7 +118,7 @@ function collectorBadge(session: SessionEntry): {
       }
     case 'predates':
       return {
-        label: '▲ SDK late',
+        label: 'SDK late',
         class: 'mq-badge--check',
         title:
           `This connection opened before @moqtap/collector ${c.version} attached, ` +
@@ -140,23 +132,12 @@ function notImpaired(session: SessionEntry): boolean {
   return props.impaired === true && !session.closed && !session.imported && !session.cli
 }
 
-function statusOf(session: SessionEntry): {
-  word: string
-  glyph: string
-  class: string
-} {
-  if (session.imported) return { word: 'imported', glyph: '◆', class: 'st-imported' }
-  if (session.closed) return { word: 'closed', glyph: '○', class: 'st-closed' }
-  return { word: 'open', glyph: '●', class: 'st-open' }
-}
-
 interface SessionStats {
-  totalBytes: number
-  bitrate: string | null
-  /** The same rate in four characters or so, for the 56px sidebar. */
-  shortRate: string | null
+  /** Bitrate while open, "0 bps" with no traffic; size once closed */
+  rate: string
   urlHost: string
   urlPath: string
+  title: string
 }
 
 /** Pre-compute per-session stats once per tick, avoiding double iteration in template */
@@ -168,233 +149,142 @@ const sessionStats = computed(() => {
     let bytes = 0
     for (const stream of session.streams.values()) bytes += stream.byteCount
 
-    let bitrate: string | null = null
-    let shortRate: string | null = null
-    if (!session.closed && !session.imported) {
-      const bps = computeRecentBitrate(session, now)
-      if (bps != null && bps >= 1) {
-        bitrate = formatBitrate(bps)
-        shortRate =
-          bps >= 1_000_000
-            ? `${(bps / 1_000_000).toFixed(1)}M`
-            : bps >= 1_000
-              ? `${(bps / 1_000).toFixed(0)}k`
-              : `${Math.round(bps)}`
-      }
-    }
+    const live = !session.closed && !session.imported
+    const rate = live ? formatBitrate(computeRecentBitrate(session, now) ?? 0) : formatBytes(bytes)
 
     const { host: urlHost, path: urlPath } = formatUrl(session.url)
     map.set(session.sessionId, {
-      totalBytes: bytes,
-      bitrate,
-      shortRate,
+      rate,
       urlHost,
       urlPath,
+      title: connectionTitle({
+        url: session.url,
+        protocol: session.protocol,
+        draft: session.draft,
+        closed: session.closed,
+        imported: session.imported,
+        frameId: session.frameId,
+        createdAt: session.createdAt,
+        streams: session.streams.size,
+      }),
     })
   }
   return map
 })
 
-function compactLabel(session: SessionEntry): string {
-  const s = sessionStats.value.get(session.sessionId)
-  const rate = s?.bitrate ? ` · ${s.bitrate}` : ''
-  return `${s?.urlHost ?? session.url} ${shortSessionId(session.sessionId)} · ${protocolBadge(session).title} · ${statusOf(session).word}${rate}`
-}
 </script>
 
 <template>
-  <div class="connection-list" :class="{ compact }">
-    <p v-if="sessions.length === 0 && !compact" class="empty-list">
-      No connections yet.
-    </p>
-    <ul v-else-if="sessions.length > 0" class="connection-items">
-      <li v-for="session in sessions" :key="session.sessionId">
-        <button
-          v-if="compact"
-          class="connection-item compact-item"
-          :aria-current="session.sessionId === selectedId ? 'true' : undefined"
-          :aria-label="compactLabel(session)"
-          :title="compactLabel(session)"
-          @click="emit('select', session.sessionId)"
-        >
-          <span class="status-glyph" :class="statusOf(session).class" aria-hidden="true">{{
-            statusOf(session).glyph
+  <ul ref="listEl" class="connection-list" :class="{ 'is-collapsed': collapsed }" aria-label="Connections">
+    <li
+      v-for="(session, i) in sessions"
+      :key="session.sessionId"
+      class="connection-row"
+      :class="{ 'row-selected': session.sessionId === selectedId, 'row-alt': i % 2 === 1 }"
+    >
+      <button
+        class="connection-item"
+        :aria-current="session.sessionId === selectedId ? 'true' : undefined"
+        :title="rowTitle(session)"
+        @click="emit('select', session.sessionId)"
+      >
+        <span
+          class="state-dot"
+          :class="{ 'is-open': !session.closed && !session.imported }"
+          aria-hidden="true"
+        />
+        <span v-if="!collapsed" class="url-text">
+          <span class="url-host">{{ sessionStats.get(session.sessionId)!.urlHost }}</span
+          ><span v-if="sessionStats.get(session.sessionId)!.urlPath" class="url-path">{{
+            sessionStats.get(session.sessionId)!.urlPath
           }}</span>
-          <span class="compact-id">{{ shortSessionId(session.sessionId) }}</span>
-          <span
-            v-if="sessionStats.get(session.sessionId)?.shortRate"
-            class="compact-rate"
-            >{{ sessionStats.get(session.sessionId)!.shortRate }}</span
-          >
-        </button>
-        <button
-          v-else
-          class="connection-item"
-          :aria-current="session.sessionId === selectedId ? 'true' : undefined"
-          @click="emit('select', session.sessionId)"
+        </span>
+        <span class="url-id">{{ shortSessionId(session.sessionId) }}</span>
+        <span
+          v-if="notImpaired(session)"
+          class="row-warning-icon"
+          title="Opened before the profile was set. Reload the page to impair it."
+          ><Icon name="warning" /><span class="mq-sr">Not impaired</span></span
         >
-          <span class="connection-header">
-            <span
-              class="mq-badge"
-              :class="protocolBadge(session).class"
-              :title="protocolBadge(session).title"
-            >
-              {{ protocolBadge(session).label }}
-            </span>
-            <span class="mq-badge" :class="statusOf(session).class">
-              <span aria-hidden="true">{{ statusOf(session).glyph }}</span>
-              {{ statusOf(session).word }}
-            </span>
-            <span v-if="session.frameId" class="mq-badge">iframe</span>
-            <span
-              v-if="notImpaired(session)"
-              class="mq-badge mq-badge--check"
-              title="Opened before the profile was set. Reload the page to impair it."
-            >
-              not impaired
-            </span>
-            <span
-              v-if="collectorBadge(session)"
-              class="mq-badge"
-              :class="collectorBadge(session)!.class"
-              :title="collectorBadge(session)!.title"
-            >
-              {{ collectorBadge(session)!.label }}
-            </span>
-            <span
-              v-if="sessionStats.get(session.sessionId)?.bitrate"
-              class="data-stat"
-              >{{ sessionStats.get(session.sessionId)!.bitrate }}</span
-            >
-            <span
-              v-else-if="
-                (session.closed || session.imported) &&
-                sessionStats.get(session.sessionId)!.totalBytes > 0
-              "
-              class="data-stat"
-              >{{
-                formatBytes(sessionStats.get(session.sessionId)!.totalBytes)
-              }}</span
-            >
-          </span>
-          <span class="connection-url">
-            <span class="url-text" :title="session.url">
-              <span class="url-host">{{
-                sessionStats.get(session.sessionId)!.urlHost
-              }}</span
-              ><span
-                v-if="sessionStats.get(session.sessionId)!.urlPath"
-                class="url-path"
-                >{{ sessionStats.get(session.sessionId)!.urlPath }}</span
-              >
-            </span>
-            <span class="url-id" :title="session.sessionId">{{ shortSessionId(session.sessionId) }}</span>
-          </span>
-          <span class="connection-meta">
-            <span :title="isoTitle(session.createdAt)">{{
-              formatClock(session.createdAt)
-            }}</span>
-            <span>{{ plural(session.streams.size, 'stream') }}</span>
-          </span>
-        </button>
-        <div v-if="!compact && cliProfile(session)" class="session-impair">
-          <button
-            class="mq-badge session-impair__btn"
-            :class="{ 'mq-badge--tap': cliProfile(session)!.own }"
-            aria-haspopup="dialog"
-            :aria-label="impairLabel(session)"
-            title="Impairment for this connection"
-            @click="emit('impair', session.cliSession!)"
-          >
-            <Icon name="gauge" />
-            {{ cliProfile(session)!.name }}
-          </button>
-        </div>
-      </li>
-    </ul>
-  </div>
+        <span
+          v-if="collectorBadge(session) && collectorBadge(session)!.class === 'mq-badge--check'"
+          class="row-warning-icon"
+          :title="collectorBadge(session)!.title"
+          ><Icon name="warning" /><span class="mq-sr">{{ collectorBadge(session)!.label }}</span></span
+        >
+      </button>
+      <button
+        v-if="!collapsed && cliProfile(session)"
+        class="impair-btn"
+        :class="{ 'is-active': impairActive(session) }"
+        aria-haspopup="menu"
+        :aria-label="impairLabel(session)"
+        :title="impairLabel(session)"
+        @click="emit('impair', session.cliSession!, $event.currentTarget as HTMLElement)"
+      >
+        <Icon name="gauge" />
+        <span v-if="shortLabel(session)" class="impair-short">{{ shortLabel(session) }}</span>
+      </button>
+      <span v-if="showRate" class="data-stat">{{ sessionStats.get(session.sessionId)!.rate }}</span>
+    </li>
+  </ul>
 </template>
 
 <style scoped>
 .connection-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-}
-
-.empty-list {
-  padding: var(--space-4) var(--space-2);
-  text-align: center;
-  color: var(--ink-muted);
-}
-
-.connection-items {
   list-style: none;
   padding: 0;
+  margin: 0;
+}
+
+/* One fixed-height line per connection, with or without traffic. */
+.connection-row {
+  display: flex;
+  align-items: center;
+  height: var(--row-side, var(--row-tool));
+  padding-right: var(--space-2);
+  gap: var(--space-1);
+}
+.connection-row.row-alt:not(.row-selected) {
+  background: var(--host-zebra, transparent);
+}
+.connection-row:hover:not(.row-selected) {
+  background: var(--surface-hover);
 }
 
 .connection-item {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  width: 100%;
-  padding: var(--space-2);
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color 120ms;
-}
-.connection-item:hover {
-  background: var(--surface-hover);
-}
-.connection-item[aria-current='true'] {
-  background: var(--tap-soft);
-}
-.connection-item:has(+ .session-impair) {
-  border-bottom: 0;
-}
-
-.session-impair {
-  display: flex;
-  padding: 0 var(--space-2) var(--space-2);
-  border-bottom: 1px solid var(--line);
-}
-li:has(> .connection-item[aria-current='true']) .session-impair {
-  background: var(--tap-soft);
-}
-.session-impair__btn {
-  cursor: pointer;
-}
-li:has(> .connection-item[aria-current='true']) .session-impair__btn.mq-badge--tap {
-  border-color: var(--tap);
-}
-
-.connection-header {
-  display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
-}
-
-.st-open {
-  color: var(--success);
-}
-.st-closed,
-.st-imported {
-  color: var(--ink-muted);
-}
-.mq-badge.st-open {
-  background: var(--success-soft);
-  border-color: transparent;
-}
-
-.connection-url {
-  display: flex;
-  gap: var(--space-2);
+  flex: 1 1 0;
   min-width: 0;
-  font-family: var(--font-mono);
-  color: var(--ink);
+  height: 100%;
+  padding: 0 0 0 var(--space-2);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.state-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--ink-muted);
+}
+.state-dot.is-open {
+  background: var(--tap);
+  border-color: var(--tap);
+}
+html.host--firefox .row-selected .state-dot.is-open {
+  background: currentColor;
+  border-color: currentColor;
 }
 
 .url-text {
@@ -404,18 +294,17 @@ li:has(> .connection-item[aria-current='true']) .session-impair__btn.mq-badge--t
 }
 
 /* An address in a one-line slot keeps its host and port: the path is cut
-   from its end first, and the host only once no path is left. The full URL
-   is the tooltip. */
+   from its end first, and the host only once no path is left. */
 .url-host {
-  /* Shrinks at 1/10000 of the path's rate rather than not at all: a zero
-     shrink would push the short ID out of a narrow sidebar instead. */
   flex: 0 0.0001 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
+.url-host:last-child {
+  flex-shrink: 1;
+}
 .url-path {
   flex: 0 1 auto;
   min-width: 0;
@@ -424,50 +313,57 @@ li:has(> .connection-item[aria-current='true']) .session-impair__btn.mq-badge--t
   white-space: nowrap;
   color: var(--ink-muted);
 }
-
 .url-id {
   flex-shrink: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
   color: var(--ink-muted);
 }
+.row-selected :is(.url-path, .url-id, .data-stat) {
+  color: inherit;
+}
 
-.connection-meta {
-  display: flex;
-  justify-content: space-between;
+.row-warning-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--warning);
+}
+.row-warning-icon :deep(svg),
+.impair-btn :deep(svg) {
+  width: 12px;
+  height: 12px;
+}
+
+.impair-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  height: calc(var(--row-side, var(--row-tool)) - 6px);
+  padding: 0 3px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
+  font: inherit;
+  cursor: pointer;
+}
+.impair-btn:hover {
+  background: var(--surface-hover);
+}
+.impair-btn.is-active {
+  color: var(--tap);
+}
+html.host--firefox .row-selected .impair-btn.is-active {
+  color: inherit;
 }
 
 .data-stat {
-  margin-left: auto;
+  flex: none;
+  min-width: 52px;
+  text-align: right;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
-}
-
-/* ── Compact: glyph and short ID ─────────────────────────────── */
-
-.compact-item {
-  align-items: center;
-  gap: 2px;
-  padding: var(--space-2) var(--space-1);
-  font-family: var(--type-data-xs-family);
-  font-size: var(--type-data-xs-size);
-  line-height: var(--type-data-xs-line);
-  text-align: center;
-}
-.status-glyph {
-  line-height: 1;
-}
-.compact-id {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink);
-}
-.compact-rate {
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 </style>

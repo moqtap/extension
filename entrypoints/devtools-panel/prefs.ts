@@ -3,6 +3,9 @@
  * Uses chrome.storage.local for persistence across sessions.
  */
 
+import type { GridPrefs } from './grid'
+import { FIRST_TAB, type SessionTab } from './session-tabs'
+
 const STORAGE_KEY = 'moqtap-prefs'
 
 export type DirectionFilter = 'all' | 'tx' | 'rx'
@@ -10,22 +13,29 @@ export type DirectionFilter = 'all' | 'tx' | 'rx'
 interface Prefs {
   payloadViewMode: 'decoded' | 'hex' | 'stack'
   streamViewMode: 'hex' | 'json'
-  sidebarCollapsed: boolean
-  /** True once the user has manually toggled the sidebar (overrides auto-collapse) */
-  sidebarManual: boolean
+  /** The view last picked, shown for the next connection and the next DevTools */
+  sessionTab: SessionTab
   trackActiveOnly: boolean
   trackGroupByNs: boolean
   trackDirectionFilter: DirectionFilter
+  /** Each grid's column widths, shown columns and sort, by grid */
+  grids: Record<string, GridPrefs>
+  /** Each split's first pane, by split and orientation */
+  splits: Record<string, number>
+  /** The connections sidebar is down to its buttons' width */
+  sidebarCollapsed: boolean
 }
 
 const defaults: Prefs = {
   payloadViewMode: 'decoded',
   streamViewMode: 'json',
-  sidebarCollapsed: false,
-  sidebarManual: false,
+  sessionTab: FIRST_TAB,
   trackActiveOnly: false,
   trackGroupByNs: false,
   trackDirectionFilter: 'all',
+  grids: {},
+  splits: {},
+  sidebarCollapsed: false,
 }
 
 let cached: Prefs | null = null

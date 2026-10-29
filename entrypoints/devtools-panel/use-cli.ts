@@ -14,6 +14,7 @@ import {
 } from '@/src/cli/messages'
 import { isProfile, type Profile, type ProfileChoice, type Profiles } from '@/src/cli/protocol'
 import { onBeforeUnmount, ref } from 'vue'
+import { scenarioLabels } from './impair-choices'
 
 export function useCli(tabId?: number) {
   const view = ref<CliView | null>(null)
@@ -21,6 +22,9 @@ export function useCli(tabId?: number) {
   const tab = ref<TabImpairment | null>(null)
   /** The CLI's profiles as last read; undefined until the answer arrives. */
   const profiles = ref<Profiles | null | undefined>(undefined)
+  /** Scenario short labels from the last list read, kept while the list is read again. */
+  const shortLabels = ref<ReadonlyMap<string, string>>(new Map())
+  let labelsAsked = false
   let port: Browser.runtime.Port | null = null
   let closed = false
 
@@ -32,10 +36,15 @@ export function useCli(tabId?: number) {
       if (msg.type === 'cli:state') {
         view.value = msg.view
         trusted.value = msg.trusted
+        if (msg.view.state === 'connected' && !labelsAsked) {
+          labelsAsked = true
+          send({ type: 'cli:profiles' })
+        }
       } else if (msg.type === 'cli:tab' && msg.tab.tabId === tabId) {
         tab.value = msg.tab
       } else if (msg.type === 'cli:profiles') {
         profiles.value = msg.profiles
+        if (msg.profiles !== null) shortLabels.value = scenarioLabels(msg.profiles)
       }
     })
     port.onDisconnect.addListener(() => {
@@ -66,6 +75,7 @@ export function useCli(tabId?: number) {
     trusted,
     tab,
     profiles,
+    shortLabels,
     readProfiles: () => {
       profiles.value = undefined
       send({ type: 'cli:profiles' })

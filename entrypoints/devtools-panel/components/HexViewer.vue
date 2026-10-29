@@ -2,6 +2,7 @@
 import { detectMediaInfo } from '@moqtap/media/bmff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes, formatCount, plural } from '../format'
+import { objectContentText } from '../object-status'
 import type { StreamObject } from '../stream-framing'
 import Icon from './Icon.vue'
 
@@ -18,6 +19,8 @@ const props = withDefaults(
     markProperties?: boolean
     /** Name each object's ISO BMFF boxes */
     mediaBoxes?: boolean
+    /** The session's draft, which names an object's status */
+    draft?: string
   }>(),
   {
     headerSize: 0,
@@ -35,19 +38,18 @@ const OVERSCAN = 10
 
 /**
  * Per-byte annotation:
- *   'header'  — stream-level protocol header (dimmed)
- *   'framing' — per-object framing bytes (objectId, length varints — dimmed)
+ *   'header'  — the stream header
+ *   'framing' — an object's header (Object ID, lengths, status)
  *   'props'   — an object's property block, when `markProperties` is set
- *   'even'    — payload byte in an even-indexed object
- *   'odd'     — payload byte in an odd-indexed object
- *   'none'    — no annotation
+ *   'none'    — payload, or bytes outside any object
  */
-type ByteKind = 'header' | 'framing' | 'props' | 'even' | 'odd' | 'none'
+type ByteKind = 'header' | 'framing' | 'props' | 'none'
 
 // ── Per-object media annotation ──────────────────────────────────
 interface ObjectAnnotation {
   objectId: number
-  payloadSize: number
+  /** Payload size, or the status of an empty object that marks one */
+  content: string
   boxes: string[] | null
   variant: string | null
 }
@@ -67,7 +69,7 @@ const objectAnnotations = computed((): ObjectAnnotation[] => {
       props.mediaBoxes && payload && payload.length >= 8 ? detectMediaInfo(payload) : null
     return {
       objectId: obj.objectId,
-      payloadSize: obj.payloadLength,
+      content: objectContentText(obj, props.draft, formatBytes),
       boxes: media?.boxes ?? null,
       variant: media?.variant ?? null,
     }
@@ -90,7 +92,7 @@ function formatBannerContent(ann: ObjectAnnotation): string {
         : ann.boxes.join(' + '),
     )
   }
-  parts.push(formatBytes(ann.payloadSize))
+  parts.push(ann.content)
   return parts.join(' · ')
 }
 
@@ -201,8 +203,18 @@ const endVRow = computed(() =>
 )
 
 const topSpacer = computed(() => startVRow.value * ROW_HEIGHT)
-const bottomSpacer = computed(() =>
-  Math.max(0, (totalVirtualRows.value - endVRow.value) * ROW_HEIGHT),
+/** Room below the last row, so Next can bring the last object's divider to the top. */
+const tailRoom = computed(() => {
+  const positions = bannerPositions.value
+  if (positions.length < 2) return 0
+  const last = positions[positions.length - 1].virtualRow * ROW_HEIGHT
+  const content = totalVirtualRows.value * ROW_HEIGHT + 2 * BODY_PAD_TOP
+  return Math.max(0, last - BODY_PAD_TOP + viewportHeight.value - content)
+})
+const bottomSpacer = computed(
+  () =>
+    Math.max(0, (totalVirtualRows.value - endVRow.value) * ROW_HEIGHT) +
+    tailRoom.value,
 )
 
 // ── Byte annotation ─────────────────────────────────────────────
@@ -228,7 +240,6 @@ function computeByteKinds(from: number, to: number): ByteKind[] {
   if (objs && objs.length > 0) {
     for (let idx = 0; idx < objs.length; idx++) {
       const obj = objs[idx]
-      const payloadKind: ByteKind = idx % 2 === 0 ? 'even' : 'odd'
 
       const framingEnd = Math.min(obj.payloadOffset, len, to)
       for (let i = Math.max(obj.offset, from); i < framingEnd; i++) {
@@ -243,15 +254,6 @@ function computeByteKinds(from: number, to: number): ByteKind[] {
         for (let i = Math.max(obj.propertiesOffset, from); i < propsEnd; i++) {
           kinds[i - from] = 'props'
         }
-      }
-
-      const payloadEnd = Math.min(
-        obj.payloadOffset + obj.payloadLength,
-        len,
-        to,
-      )
-      for (let i = Math.max(obj.payloadOffset, from); i < payloadEnd; i++) {
-        kinds[i - from] = payloadKind
       }
     }
   }
@@ -333,7 +335,7 @@ const visibleEntries = computed<VisibleEntry[]>(() => {
         objectIdx: pos.objectIdx,
         content: ann
           ? formatBannerContent(ann)
-          : formatBytes(obj.payloadLength),
+          : objectContentText(obj, props.draft, formatBytes),
         label: ann ? formatBannerLabel(ann) : `obj ${obj.objectId}`,
         byteColumn: obj.offset % BYTES_PER_ROW,
       })
@@ -452,10 +454,8 @@ function formatOffset(n: number): string {
 function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
   return {
     'hex-gap': colIdx === 7,
-    'hex-proto': kind === 'header' || kind === 'framing',
+    'hex-proto': kind === 'header' || kind === 'framing' || kind === 'props',
     'hex-props': kind === 'props',
-    'hex-obj-even': kind === 'even',
-    'hex-obj-odd': kind === 'odd',
   }
 }
 
@@ -729,20 +729,23 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
   margin-right: 6px;
 }
 
-/* Stream header and per-object framing bytes */
+/* The stream header and each object's header, on one band that spans the
+   gaps between bytes; the payload stays plain. */
 .hex-proto {
-  color: var(--ink-muted);
+  background: var(--hex-framing, var(--surface-hover));
+  box-shadow:
+    -2px 0 0 var(--hex-framing, var(--surface-hover)),
+    2px 0 0 var(--hex-framing, var(--surface-hover));
+}
+.hex-proto.hex-gap {
+  box-shadow:
+    -2px 0 0 var(--hex-framing, var(--surface-hover)),
+    5px 0 0 var(--hex-framing, var(--surface-hover));
 }
 
 /* Object property blocks, inside the framing */
 .hex-props {
   color: var(--info);
-}
-
-/* Odd-indexed object payloads sit on a tint so neighbouring objects part. */
-.hex-obj-odd {
-  background: var(--surface-hover);
-  border-radius: var(--radius-xs);
 }
 
 .hex-ascii {

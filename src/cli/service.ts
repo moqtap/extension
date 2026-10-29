@@ -20,6 +20,7 @@ import {
   parseCreatedTab,
   parseHello,
   parseProfiles,
+  parseRefusal,
   parseSession,
   parseStatus,
   parseTab,
@@ -30,6 +31,7 @@ import {
   type Hello,
   type Profile,
   type Profiles,
+  type Refusal,
 } from './protocol'
 
 export const CONSENT_KEY = 'moqtap-cli-consent'
@@ -66,8 +68,22 @@ export interface CliTarget {
  */
 export type CreateError = 'limit' | 'refused' | 'unreachable'
 
+/** The CLI refused a profile; `refusal` is null when its reply says no more. */
+export interface Refused {
+  readonly refused: Refusal | null
+}
+
+export type CreateResult =
+  | CreatedTab
+  | { readonly error: 'limit' | 'unreachable' }
+  | ({ readonly error: 'refused' } & Refused)
+
 /** How a profile change went: `gone` when the CLI no longer has the tab or session. */
-export type SwitchResult = 'ok' | 'gone' | 'refused' | 'unreachable'
+export type SwitchResult = 'ok' | 'gone' | 'unreachable' | Refused
+
+const refusedBy = async (res: Response): Promise<Refused> => ({
+  refused: parseRefusal(await res.json().catch(() => null)),
+})
 
 export class CliBridge {
   private current: CliView = { state: 'searching' }
@@ -157,15 +173,15 @@ export class CliBridge {
   }
 
   /** Opens a tab port for `owner`, impaired with `profile`. */
-  async createTab(owner: string, profile: Profile): Promise<CreatedTab | { error: CreateError }> {
+  async createTab(owner: string, profile: Profile): Promise<CreateResult> {
     const t = this.target()
     if (t === null || !isOwner(owner) || !isProfile(profile)) return { error: 'unreachable' }
     const res = await this.post(t, 'tab', { profile, owner })
     if (res === null) return { error: 'unreachable' }
     if (res.status === 429) return { error: 'limit' }
-    if (!res.ok) return { error: 'refused' }
+    if (!res.ok) return { error: 'refused', ...(await refusedBy(res)) }
     const created = parseCreatedTab(await res.json().catch(() => null))
-    return created ?? { error: 'refused' }
+    return created ?? { error: 'refused', refused: null }
   }
 
   /** Switches a tab and every session in it, live. */
@@ -174,9 +190,9 @@ export class CliBridge {
     if (t === null || !isId16(id) || !isProfile(profile)) return 'unreachable'
     const res = await this.post(t, `tab/${id}/profile`, { profile })
     if (res === null) return 'unreachable'
-    if (res.status === 404) return 'gone'
-    if (!res.ok || parseTab(await res.json().catch(() => null)) === null) return 'refused'
-    return 'ok'
+    if (res.status === 404 && !(await this.missingScenario(profile, (tab) => tab.id === id))) return 'gone'
+    if (!res.ok) return refusedBy(res)
+    return parseTab(await res.json().catch(() => null)) === null ? { refused: null } : 'ok'
   }
 
   /** Gives one session its own profile, live, or with null the tab's again. */
@@ -185,9 +201,19 @@ export class CliBridge {
     if (t === null || !isId16(id) || (profile !== null && !isProfile(profile))) return 'unreachable'
     const res = await this.post(t, `session/${id}/profile`, { profile })
     if (res === null) return 'unreachable'
-    if (res.status === 404) return 'gone'
-    if (!res.ok || parseSession(await res.json().catch(() => null)) === null) return 'refused'
-    return 'ok'
+    const listed = (tab: CliTab) => tab.sessions.some((s) => s.id === id)
+    if (res.status === 404 && !(await this.missingScenario(profile, listed))) return 'gone'
+    if (!res.ok) return refusedBy(res)
+    return parseSession(await res.json().catch(() => null)) === null ? { refused: null } : 'ok'
+  }
+
+  /**
+   * Whether a 404 to a profile change means the scenario has no file rather
+   * than the tab or session being gone: the CLI answers both with 404.
+   */
+  private async missingScenario(profile: Profile | null, has: (tab: CliTab) => boolean): Promise<boolean> {
+    if (profile === null || !('scenario' in profile)) return false
+    return (await this.tabs())?.some(has) === true
   }
 
   async deleteTab(id: string): Promise<void> {

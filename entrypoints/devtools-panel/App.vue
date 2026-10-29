@@ -1,18 +1,30 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import AccountChip from './components/AccountChip.vue'
+import AccountMenu from './components/AccountMenu.vue'
+import BrandLink from './components/BrandLink.vue'
 import ConnectionList from './components/ConnectionList.vue'
-import ImpairmentDialog from './components/ImpairmentDialog.vue'
-import SessionImpairmentDialog from './components/SessionImpairmentDialog.vue'
+import ConnectionPicker from './components/ConnectionPicker.vue'
+import Icon from './components/Icon.vue'
+import ImpairmentMenu from './components/ImpairmentMenu.vue'
+import Infobar from './components/Infobar.vue'
+import PopupMenu from './components/PopupMenu.vue'
 import SessionView from './components/SessionView.vue'
+import SettingsView from './components/SettingsView.vue'
 import ShareDialog from './components/ShareDialog.vue'
-import { DIRECT_NOTICE, impairmentProblem } from './cli-copy'
-import { isOff } from '@/src/cli/protocol'
+import SplitView from './components/SplitView.vue'
+import TabStrip from './components/TabStrip.vue'
+import { DIRECT_NOTICE, impairmentProblem, refusalAction, refusalUpgrade } from './cli-copy'
+import { connectionName } from './connection-name'
+import { formatCount } from './format'
+import { impairmentButtonLabel } from './impair-choices'
+import { logoPlace, panelLayout, SIDEBAR_COLLAPSED_WIDTH, tabMenuHasConnection } from './layout'
 import { getCachedPref, savePref } from './prefs'
+import type { ProblemSeverity } from './problems'
+import { FIRST_TAB, filters, isSessionTab, type SessionTab, shownTab, tabList } from './session-tabs'
+import { isOff } from '@/src/cli/protocol'
 import { useAccount } from './use-account'
 import { useCli } from './use-cli'
 import { useInspector } from './use-inspector'
-import Icon from './components/Icon.vue'
 import logo from './moqtap-logo.svg?raw'
 
 const {
@@ -35,89 +47,55 @@ const {
 } = useInspector()
 
 const account = useAccount()
+const accountView = account.view
 const cli = useCli(browser.devtools.inspectedWindow.tabId)
 const cliView = cli.view
-const cliConfirm = computed(() =>
-  cliView.value?.state === 'confirm' ? cliView.value : null,
-)
-const impairmentOpen = ref(false)
-/** The CLI id of the session whose profile is being picked. */
-const sessionImpairment = ref<string | null>(null)
-const impairmentLabel = computed(() => `Impairment: ${cli.tab.value?.name ?? 'Off'}`)
-const impairmentOn = computed(() => cli.tab.value !== null && !isOff(cli.tab.value.profile))
-const impairmentIssue = computed(() => impairmentProblem(cli.tab.value, cliView.value))
-/** Open connections that bypass the CLI while the tab has a profile. */
-const directSessions = computed(() =>
-  impairmentOn.value ? sessionList.value.some((s) => !s.closed && !s.imported && !s.cli) : false,
-)
-const accountView = account.view
-/** The session the share dialog is open for. */
-const sharingSessionId = ref<string | null>(null)
-const sharingSession = computed(() =>
-  sharingSessionId.value
-    ? (sessions.value.get(sharingSessionId.value) ?? null)
-    : null,
-)
+const cliConfirm = computed(() => (cliView.value?.state === 'confirm' ? cliView.value : null))
 
-const showExclusions = ref(false)
-const newExclusionOrigin = ref('')
-const exclusionError = ref<string | null>(null)
+// ── Layout ────────────────────────────────────────────────────────
+const rootEl = ref<HTMLElement | null>(null)
+const width = ref(window.innerWidth)
+const height = ref(window.innerHeight)
+const layout = computed(() => panelLayout(width.value, height.value))
+let ro: ResizeObserver | null = null
+onMounted(() => {
+  ro = new ResizeObserver((entries) => {
+    const r = entries[0]?.contentRect
+    if (r && r.width > 0) width.value = r.width
+    if (r && r.height > 0) height.value = r.height
+  })
+  if (rootEl.value) ro.observe(rootEl.value)
+})
+onBeforeUnmount(() => ro?.disconnect())
 
-function handleAddExclusion() {
-  const origin = newExclusionOrigin.value.trim()
-  if (!origin) return
-  // Normalise: ensure it looks like an origin (https://host)
-  try {
-    const url = new URL(origin.includes('://') ? origin : `https://${origin}`)
-    addWorkerExclusion(url.origin)
-    newExclusionOrigin.value = ''
-    exclusionError.value = null
-  } catch {
-    exclusionError.value = 'That is not an origin. Enter one like https://example.com.'
-  }
+/** The sidebar shows beside the main pane; the chrome above it lines up with its width. */
+const sidebarShown = computed(() => !layout.value.narrow && sessionList.value.length > 0)
+const collapsed = ref(getCachedPref('sidebarCollapsed'))
+watch(collapsed, (c) => void savePref('sidebarCollapsed', c))
+const sideWidth = ref(0)
+const sideStyle = computed(() => (sideWidth.value > 0 ? { '--side-w': `${sideWidth.value}px` } : undefined))
+const sideHead = computed(() => sidebarShown.value && sideWidth.value > 0)
+const logoAt = computed(() => logoPlace(sideHead.value, collapsed.value))
+
+// ── Connections ───────────────────────────────────────────────────
+const sessionList = computed(() => Array.from(sessions.value.values()))
+const selectedSession = computed(() =>
+  selectedSessionId.value ? (sessions.value.get(selectedSessionId.value) ?? null) : null,
+)
+const live = computed(() => {
+  const s = selectedSession.value
+  return s !== null && !s.imported
+})
+const recording = computed(() => selectedSession.value?.streamRecording !== false)
+const exportable = computed(() => selectedSession.value?.protocol === 'moqt' && !selectedSession.value.imported)
+
+function toggleRecording() {
+  const s = selectedSession.value
+  if (s) setStreamRecording(s.sessionId, !recording.value)
 }
 
-const exclusionCount = computed(
-  () => Object.keys(workerExclusions.value).length,
-)
-
-// Below this width the connections sidebar drops to its compact form.
-const NARROW_THRESHOLD = 560
-const sidebarCollapsed = ref(getCachedPref('sidebarCollapsed'))
-const sidebarManual = ref(getCachedPref('sidebarManual'))
-
-// Auto-collapse sidebar on narrow panels unless user manually overrode
-onMounted(() => {
-  if (!sidebarManual.value && window.innerWidth < NARROW_THRESHOLD) {
-    sidebarCollapsed.value = true
-  }
-})
-
-let resizeObserver: ResizeObserver | null = null
-const inspectorEl = ref<HTMLElement | null>(null)
-
-onMounted(() => {
-  const el = inspectorEl.value
-  if (!el) return
-  resizeObserver = new ResizeObserver((entries) => {
-    if (sidebarManual.value) return
-    const width = entries[0]?.contentRect.width ?? 0
-    if (width > 0) {
-      sidebarCollapsed.value = width < NARROW_THRESHOLD
-    }
-  })
-  resizeObserver.observe(el)
-})
-
-onBeforeUnmount(() => {
-  resizeObserver?.disconnect()
-})
-
-function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-  sidebarManual.value = true
-  savePref('sidebarCollapsed', sidebarCollapsed.value)
-  savePref('sidebarManual', true)
+function reloadPage() {
+  browser.devtools.inspectedWindow.reload({})
 }
 
 function handleImportClick() {
@@ -131,311 +109,770 @@ function handleImportClick() {
   input.click()
 }
 
-const sessionList = computed(() => Array.from(sessions.value.values()))
-/** The session dialog's connection is still open; it is not after a close, a clear, or a reload. */
-const sessionImpairmentLive = computed(() => {
-  const id = sessionImpairment.value
-  return id !== null && sessionList.value.some((s) => s.cliSession === id && !s.closed && !s.imported)
+// ── Views ─────────────────────────────────────────────────────────
+const remembered = getCachedPref('sessionTab')
+const activeTab = ref<SessionTab>(isSessionTab(remembered) ? remembered : FIRST_TAB)
+watch(activeTab, (t) => void savePref('sessionTab', t))
+const hasTracks = computed(() => selectedSession.value?.protocol === 'moqt')
+const viewTab = computed({
+  get: () => shownTab(activeTab.value, hasTracks.value),
+  set: (t: SessionTab) => (activeTab.value = t),
 })
-watch(sessionImpairmentLive, (live) => {
-  if (!live) sessionImpairment.value = null
+const settingsOpen = ref(false)
+const filter = ref('')
+const problemCounts = ref<Record<ProblemSeverity, number>>({ error: 0, warning: 0, info: 0 })
+const problemTotal = computed(() => problemCounts.value.error + problemCounts.value.warning + problemCounts.value.info)
+const tabs = computed(() => {
+  const s = selectedSession.value
+  if (!s) return []
+  return tabList({
+    messages: s.messages.length,
+    streams: s.streams.size + s.datagramGroups.size,
+    tracks: s.protocol === 'moqt' ? s.tracks.size : null,
+    problems: problemTotal.value,
+  })
+})
+/** The problem count button's name: "2 errors, 1 warning", leaving out a zero. */
+const countsLabel = computed(() => {
+  const { error, warning } = problemCounts.value
+  const part = (n: number, one: string) => (n === 0 ? null : `${formatCount(n)} ${n === 1 ? one : `${one}s`}`)
+  return [part(error, 'error'), part(warning, 'warning')].filter((p) => p !== null).join(', ')
+})
+const filterOn = computed(() => selectedSession.value !== null && filters(viewTab.value) && !settingsOpen.value)
+/** The filter keeps its place, unseen, wherever it does not apply, so no row changes height. */
+const filterSlot = computed(() => selectedSession.value !== null)
+const FILTER_LABELS: Record<SessionTab, string> = {
+  messages: 'Filter messages',
+  streams: 'Filter streams by track',
+  tracks: 'Filter tracks',
+  problems: 'Filter problems',
+  details: 'Filter',
+}
+
+function selectTab(t: SessionTab) {
+  settingsOpen.value = false
+  viewTab.value = t
+}
+function selectConnection(id: string) {
+  settingsOpen.value = false
+  selectSession(id)
+}
+
+// ── Impairment ────────────────────────────────────────────────────
+const impairmentOn = computed(() => cli.tab.value !== null && !isOff(cli.tab.value.profile))
+const impairmentIssue = computed(() => impairmentProblem(cli.tab.value, cliView.value))
+const impairmentUpgrade = computed(() => refusalUpgrade(cli.tab.value, cliView.value))
+/** What the refusal notice offers; null when the problem is not a refusal. */
+const refusal = computed(() => refusalAction(cli.tab.value, cliView.value))
+const refusalKey = computed(() => {
+  const t = cli.tab.value
+  return refusal.value && t ? JSON.stringify([t.refusedName, t.refusal]) : null
+})
+/** A dismissed refusal stays hidden until another one comes; the button keeps its warning. */
+const dismissedRefusal = ref<string | null>(null)
+const impairmentNotice = computed(
+  () => impairmentIssue.value !== null && (refusalKey.value === null || refusalKey.value !== dismissedRefusal.value),
+)
+function dismissRefusal() {
+  dismissedRefusal.value = refusalKey.value
+}
+/** Open connections that bypass the CLI while the tab has a profile. */
+const directSessions = computed(() =>
+  impairmentOn.value ? sessionList.value.some((s) => !s.closed && !s.imported && !s.cli) : false,
+)
+const impairBtn = ref<HTMLButtonElement | null>(null)
+const impairOpen = ref(false)
+/** The selected connection, when its profile can be picked at the CLI. */
+const selectedCli = computed(() => {
+  const s = selectedSession.value
+  return s && s.cliSession !== undefined && !s.closed && !s.imported ? s : null
+})
+/** A connection row's own impairment menu. */
+const sessionMenu = ref<{ id: string; anchor: HTMLElement } | null>(null)
+const sessionMenuLive = computed(() => {
+  const id = sessionMenu.value?.id
+  return id !== undefined && sessionList.value.some((s) => s.cliSession === id && !s.closed && !s.imported)
+})
+watch(sessionMenuLive, (alive) => {
+  if (!alive) sessionMenu.value = null
 })
 
-function reloadPage() {
-  browser.devtools.inspectedWindow.reload({})
-}
-const selectedSession = computed(() =>
-  selectedSessionId.value
-    ? (sessions.value.get(selectedSessionId.value) ?? null)
-    : null,
+// ── Notices ───────────────────────────────────────────────────────
+const missedDismissed = ref(false)
+watch(missedConnections, (n, old) => {
+  if (n > old) missedDismissed.value = false
+})
+
+// ── More menu and sharing ─────────────────────────────────────────
+const moreBtn = ref<HTMLButtonElement | null>(null)
+const moreOpen = ref(false)
+/** The session the share dialog is open for. */
+const sharingSessionId = ref<string | null>(null)
+const sharingSession = computed(() =>
+  sharingSessionId.value ? (sessions.value.get(sharingSessionId.value) ?? null) : null,
 )
+function share() {
+  if (selectedSession.value) sharingSessionId.value = selectedSession.value.sessionId
+}
+function exportSelected() {
+  if (selectedSession.value) exportTrace(selectedSession.value.sessionId)
+}
+function clearSelectedStreams() {
+  if (live.value) clearStreams(selectedSession.value!.sessionId)
+}
+function openSettings() {
+  settingsOpen.value = true
+}
 </script>
 
 <template>
-  <div ref="inspectorEl" class="inspector">
-    <aside
-      class="sidebar"
-      :class="{ collapsed: sidebarCollapsed }"
-      aria-label="Connections"
-    >
-      <div class="tool-bar sidebar-header">
-        <button
-          class="mq-btn mq-btn--quiet mq-btn--icon collapse-btn"
-          :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
-          :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
-          :aria-expanded="!sidebarCollapsed"
-          @click="toggleSidebar"
-        >
-          <Icon :name="sidebarCollapsed ? 'panelLeftOpen' : 'panelLeftClose'" />
-        </button>
-        <template v-if="!sidebarCollapsed">
-          <h2 class="tool-bar__title sidebar-title">Connections</h2>
-          <button
-            class="mq-btn mq-btn--quiet mq-btn--icon"
-            aria-label="Import .moqtrace"
-            title="Import .moqtrace"
-            @click="handleImportClick"
-          >
-            <Icon name="import" />
-          </button>
-          <button
-            v-if="sessionList.length > 0"
-            class="mq-btn mq-btn--quiet mq-btn--icon"
-            aria-label="Clear connections"
-            title="Clear connections"
-            @click="clearSessions"
-          >
-            <Icon name="ban" />
-          </button>
-        </template>
+  <div
+    ref="rootEl"
+    class="panel"
+    :class="{ 'is-narrow': layout.narrow, 'has-side': sideHead, 'has-filter-row': layout.narrow && filterSlot }"
+    :style="sideStyle"
+  >
+    <div class="tool-bar toolbar" role="toolbar" aria-label="WebTransport">
+      <div class="side-head">
+      <button
+        class="mq-btn mq-btn--quiet mq-btn--icon record-btn"
+        :class="{ recording: live && recording }"
+        :disabled="!live"
+        :aria-pressed="live && recording"
+        :aria-label="recording ? 'Stop recording stream data' : 'Record stream data'"
+        :title="recording ? 'Stop recording stream data' : 'Record stream data'"
+        @click="toggleRecording"
+      >
+        <span class="record-dot" aria-hidden="true" />
+      </button>
+      <button
+        class="mq-btn mq-btn--quiet mq-btn--icon"
+        :disabled="sessionList.length === 0"
+        aria-label="Clear connections"
+        title="Clear connections"
+        @click="clearSessions"
+      >
+        <Icon name="ban" />
+      </button>
+      <BrandLink v-if="logoAt === 'head'" class="head-brand" />
+      <button
+        v-if="sideHead"
+        class="mq-btn mq-btn--quiet mq-btn--icon side-toggle"
+        :aria-label="collapsed ? 'Expand connections' : 'Compact connections'"
+        :title="collapsed ? 'Expand connections' : 'Compact connections'"
+        :aria-expanded="!collapsed"
+        @click="collapsed = !collapsed"
+      >
+        <Icon :name="collapsed ? 'chevronsRight' : 'chevronsLeft'" />
+      </button>
+      <span v-else class="bar-sep" aria-hidden="true" />
       </div>
-      <ConnectionList
+      <div class="bar-main">
+      <ConnectionPicker
+        v-if="layout.narrow && sessionList.length > 0"
         :sessions="sessionList"
-        :impaired="impairmentOn"
-        :tab="cli.tab.value"
-        :selected-id="selectedSessionId"
-        :compact="sidebarCollapsed"
-        @select="selectSession"
-        @impair="(s) => (sessionImpairment = s)"
+        :selected="selectedSession"
+        @select="selectConnection"
       />
-      <AccountChip
-        :view="accountView"
-        :compact="sidebarCollapsed"
-        @sign-in="account.signIn"
-        @disconnect="account.disconnect"
+      <TabStrip
+        v-if="layout.tabsInline && selectedSession && !settingsOpen"
+        class="toolbar-tabs"
+        :tabs="tabs"
+        :active="viewTab"
+        panel-id="session-panel"
+        @select="selectTab"
       />
-      <a
-        v-if="!sidebarCollapsed"
-        href="https://moqtap.com"
-        target="_blank"
-        rel="noopener"
-        class="sidebar-footer"
-      >
-        <span class="mq-logo" v-html="logo" />
-        <span class="sidebar-footer__more">More tools</span>
-      </a>
-    </aside>
-    <main class="main">
-      <div class="tool-bar main-bar">
+      <!-- Kept in place, unseen, on views without a filter, so the controls after it stay put. -->
+      <div v-if="filterOn || filterSlot" class="filter-field" :class="{ 'is-idle': !filterOn }">
+        <Icon name="filter" class="filter-icon" />
+        <input
+          v-model="filter"
+          class="mq-input filter-input"
+          type="search"
+          :aria-label="FILTER_LABELS[viewTab]"
+          placeholder="Filter"
+          spellcheck="false"
+          @keydown.esc="filter = ''"
+        />
         <button
-          class="mq-btn mq-btn--quiet impair-btn"
-          :aria-pressed="impairmentOn"
-          aria-haspopup="dialog"
-          @click="impairmentOpen = true"
+          v-if="filter"
+          class="mq-btn mq-btn--quiet mq-btn--icon filter-clear"
+          aria-label="Clear filter"
+          title="Clear filter"
+          @click="filter = ''"
         >
-          <Icon name="gauge" />
-          {{ impairmentLabel }}
-          <span v-if="impairmentIssue" class="impair-flag" aria-hidden="true">▲</span>
+          <Icon name="x" />
         </button>
       </div>
-      <div
-        v-if="impairmentIssue && !impairmentOpen"
-        class="mq-notice mq-notice--warning main-notice"
-        role="status"
+      <button
+        ref="impairBtn"
+        class="mq-btn mq-btn--quiet impair-btn"
+        :class="{ 'is-on': impairmentOn }"
+        aria-haspopup="menu"
+        :aria-expanded="impairOpen"
+        :aria-label="`Impairment: ${impairmentButtonLabel(cli.tab.value)}`"
+        @click="impairOpen = !impairOpen"
       >
-        <span class="mq-notice__icon" aria-hidden="true">▲</span>
-        <p>{{ impairmentIssue }}</p>
-      </div>
-      <div
-        v-if="directSessions && !impairmentOpen"
-        class="mq-notice mq-notice--info main-notice"
-        role="status"
+        <Icon name="gauge" />
+        <span class="impair-name">{{ impairmentButtonLabel(cli.tab.value) }}</span>
+        <Icon v-if="impairmentIssue" name="warning" class="impair-flag" />
+        <Icon name="chevronDown" class="caret" />
+      </button>
+      <template
+        v-if="selectedSession && (problemCounts.error > 0 || problemCounts.warning > 0)"
       >
-        <span class="mq-notice__icon" aria-hidden="true">i</span>
-        <p>
-          {{ DIRECT_NOTICE }}
-          <a href="#" class="mq-link" @click.prevent="reloadPage">Reload the page</a> to impair them.
-        </p>
-      </div>
-      <div
-        v-if="cliConfirm"
-        class="mq-notice mq-notice--info main-notice cli-confirm"
-        role="status"
+        <span class="bar-sep" aria-hidden="true" />
+        <button
+          class="mq-btn mq-btn--quiet counts-btn"
+          :aria-label="countsLabel"
+          title="Show problems"
+          @click="selectTab('problems')"
+        >
+          <span v-if="problemCounts.error > 0" class="count count--error"
+            ><Icon name="error" />{{ formatCount(problemCounts.error) }}</span
+          >
+          <span v-if="problemCounts.warning > 0" class="count count--warning"
+            ><Icon name="warning" />{{ formatCount(problemCounts.warning) }}</span
+          >
+        </button>
+      </template>
+      <div id="tab-tools" class="tab-tools" :class="{ 'is-idle': settingsOpen }" />
+      <span v-if="layout.narrow && filterSlot" class="row-break" aria-hidden="true" />
+      <span class="toolbar-spacer" />
+      <button
+        class="mq-btn mq-btn--quiet mq-btn--icon io-btn"
+        aria-label="Import .moqtrace"
+        title="Import .moqtrace"
+        @click="handleImportClick"
       >
-        <span class="mq-notice__icon" aria-hidden="true">i</span>
-        <p>
-          Let moqtap send this tab's connections through this moqtap CLI? Identity
-          <span class="mq-mono cli-fp">{{ cliConfirm.fingerprint }}</span>, shown by
-          <code>moqtap cert</code>.
-        </p>
-        <div class="mq-row">
-          <button class="mq-btn mq-btn--primary" @click="cli.allow(cliConfirm.identity)">
-            Allow
-          </button>
-          <button class="mq-btn mq-btn--secondary" @click="cli.decline(cliConfirm.identity)">
-            Not now
-          </button>
-        </div>
-      </div>
-      <div v-if="missedConnections > 0" class="mq-notice mq-notice--info main-notice" role="status">
-        <span class="mq-notice__icon" aria-hidden="true">i</span>
-        <p>
-          {{ missedConnections === 1 ? 'A connection' : `${missedConnections} connections` }}
-          opened before DevTools weren't captured.
-          <a href="#" class="mq-link" @click.prevent="reloadPage">Reload the page</a>
-          to capture them.
-        </p>
-      </div>
-      <div
-        v-if="cspBlockedWorkers.length > 0"
-        class="mq-notice mq-notice--warning main-notice"
-        role="status"
+        <Icon name="import" />
+      </button>
+      <button
+        v-if="exportable"
+        class="mq-btn mq-btn--quiet mq-btn--icon io-btn"
+        aria-label="Export .moqtrace"
+        title="Export .moqtrace"
+        @click="exportSelected"
       >
-        <span class="mq-notice__icon" aria-hidden="true">▲</span>
-        <p>
-          This site's security policy blocks worker capture. Its workers run
-          normally, but connections opened inside them aren't captured.
+        <Icon name="download" />
+      </button>
+      <button
+        v-if="exportable"
+        class="mq-btn mq-btn--quiet mq-btn--icon io-btn"
+        aria-label="Upload to moqtap and share"
+        title="Upload to moqtap and share"
+        @click="share"
+      >
+        <Icon name="share" />
+      </button>
+      <span class="bar-sep io-sep" aria-hidden="true" />
+      </div>
+      <div class="bar-end">
+      <AccountMenu :view="accountView" @sign-in="account.signIn" @disconnect="account.disconnect" />
+      <button
+        ref="moreBtn"
+        class="mq-btn mq-btn--quiet mq-btn--icon more-btn"
+        aria-label="More options"
+        title="More options"
+        aria-haspopup="menu"
+        :aria-expanded="moreOpen"
+        @click="moreOpen = !moreOpen"
+      >
+        <Icon name="settings" />
+      </button>
+      </div>
+    </div>
+
+    <div class="infobars">
+      <Infobar v-if="impairmentNotice" kind="warning" :dismissible="refusal !== null" @dismiss="dismissRefusal">
+        {{ impairmentIssue }}
+        <template v-if="refusal" #actions>
           <a
-            v-if="exclusionCount > 0"
-            href="#"
-            class="mq-link"
-            @click.prevent="showExclusions = !showExclusions"
+            v-if="refusal === 'upgrade' && impairmentUpgrade"
+            class="mq-btn mq-btn--secondary"
+            :href="impairmentUpgrade.url"
+            target="_blank"
+            rel="noopener"
+            >Upgrade</a
           >
-            {{ exclusionCount }} excluded origin{{
-              exclusionCount !== 1 ? 's' : ''
-            }}
-          </a>
-        </p>
-      </div>
-      <div
-        v-if="exclusionCount > 0 && !cspBlockedWorkers.length"
-        class="exclusion-toggle"
+          <button v-else class="mq-btn mq-btn--secondary" @click="impairOpen = true">Choose another profile</button>
+        </template>
+      </Infobar>
+      <Infobar v-if="directSessions" kind="info">
+        {{ DIRECT_NOTICE }}
+        <button class="mq-btn--link inline-btn" @click="reloadPage">Reload the page</button> to impair them.
+      </Infobar>
+      <Infobar v-if="cliConfirm" kind="info">
+        Let moqtap send this tab's connections through this moqtap CLI? Identity
+        <span class="mq-mono">{{ cliConfirm.fingerprint }}</span>, shown by <code>moqtap cert</code>.
+        <template #actions>
+          <button class="mq-btn mq-btn--primary" @click="cli.allow(cliConfirm.identity)">Allow</button>
+          <button class="mq-btn mq-btn--secondary" @click="cli.decline(cliConfirm.identity)">Not now</button>
+        </template>
+      </Infobar>
+      <Infobar
+        v-if="missedConnections > 0 && !missedDismissed"
+        kind="info"
+        dismissible
+        @dismiss="missedDismissed = true"
       >
-        <a href="#" class="mq-link" @click.prevent="showExclusions = !showExclusions">
-          {{ exclusionCount }} worker exclusion{{
-            exclusionCount !== 1 ? 's' : ''
-          }}
-        </a>
-      </div>
-      <section v-if="showExclusions" class="exclusion-panel" aria-labelledby="exclusions-title">
-        <h2 id="exclusions-title" class="exclusion-header">Worker origin exclusions</h2>
-        <ul class="exclusion-list">
-          <li
-            v-for="(entry, origin) in workerExclusions"
-            :key="origin"
-            class="exclusion-entry"
-          >
-            <span class="exclusion-origin mq-mono">{{ origin }}</span>
-            <span class="mq-badge">{{ entry.source }}</span>
-            <button
-              class="mq-btn mq-btn--quiet mq-btn--icon"
-              :aria-label="`Remove ${origin}`"
-              :title="`Remove ${origin}`"
-              @click="removeWorkerExclusion(String(origin))"
-            >
-              <Icon name="x" />
-            </button>
-          </li>
-          <li v-if="exclusionCount === 0" class="mq-muted">No excluded origins.</li>
-        </ul>
-        <form class="exclusion-add" @submit.prevent="handleAddExclusion">
-          <label class="mq-sr" for="exclusion-origin">Origin to exclude</label>
-          <input
-            id="exclusion-origin"
-            v-model="newExclusionOrigin"
-            placeholder="https://example.com"
-            class="mq-input mq-input--mono"
-            :aria-invalid="exclusionError ? 'true' : undefined"
-            aria-describedby="exclusion-error"
-          />
-          <button type="submit" class="mq-btn mq-btn--secondary">Add origin</button>
-        </form>
-        <p v-if="exclusionError" id="exclusion-error" class="mq-error-text">
-          {{ exclusionError }}
-        </p>
-      </section>
-      <h1 v-if="selectedSession" class="mq-sr">{{ selectedSession.url }}</h1>
-      <SessionView
-        v-if="selectedSession"
-        :key="selectedSession.sessionId"
-        :session="selectedSession"
-        :get-stream-data="getStreamData"
-        :get-datagram-group-data="getDatagramGroupData"
-        :set-stream-recording="setStreamRecording"
-        :clear-streams="clearStreams"
-        @export-trace="exportTrace"
-        @share-trace="sharingSessionId = $event"
+        {{ missedConnections === 1 ? 'A connection' : `${missedConnections} connections` }} opened before
+        DevTools weren't captured.
+        <button class="mq-btn--link inline-btn" @click="reloadPage">Reload the page</button>
+        to capture them.
+      </Infobar>
+      <Infobar v-if="cspBlockedWorkers.length > 0" kind="warning">
+        This site's security policy blocks worker capture. Its workers run normally, but connections
+        opened inside them aren't captured.
+      </Infobar>
+    </div>
+
+    <div v-if="!layout.tabsInline && (sideHead || (selectedSession && !settingsOpen))" class="tab-row">
+      <div v-if="sideHead" class="side-cell" />
+      <TabStrip
+        v-if="selectedSession && !settingsOpen"
+        :tabs="tabs"
+        :active="viewTab"
+        panel-id="session-panel"
+        @select="selectTab"
       />
-      <div v-else class="mq-empty empty-state">
-        <span class="mq-empty__mark">0 connections</span>
-        <h1 class="mq-empty__title">No WebTransport connections yet</h1>
-        <p>
-          Open a page that uses WebTransport. Its connections appear here as
-          they open.
-        </p>
-        <div class="mq-row">
-          <button class="mq-btn mq-btn--secondary" @click="handleImportClick">
-            Import .moqtrace
-          </button>
-        </div>
-      </div>
-      <ImpairmentDialog
-        v-if="impairmentOpen"
+    </div>
+
+    <PopupMenu v-if="impairOpen" :anchor="impairBtn" label="Impairment" @close="impairOpen = false">
+      <ImpairmentMenu
         :view="cliView"
         :tab="cli.tab.value"
         :profiles="cli.profiles.value"
-        :direct="directSessions"
-        @close="impairmentOpen = false"
+        :for-tab="true"
+        :session="tabMenuHasConnection(layout, sidebarShown && collapsed) ? (selectedCli?.cliSession ?? null) : null"
+        :session-label="selectedCli ? connectionName(selectedCli) : undefined"
         @read-profiles="cli.readProfiles"
         @set-profile="(c) => cli.setProfile(c.profile, c.name)"
-        @allow="cli.allow"
+        @set-session-profile="(c) => cli.setSessionProfile(selectedCli!.cliSession!, c)"
       />
-      <SessionImpairmentDialog
-        v-if="sessionImpairment && sessionImpairmentLive"
+    </PopupMenu>
+    <PopupMenu
+      v-if="sessionMenu && sessionMenuLive"
+      :anchor="sessionMenu.anchor"
+      label="Impairment for this connection"
+      @close="sessionMenu = null"
+    >
+      <ImpairmentMenu
         :view="cliView"
         :tab="cli.tab.value"
         :profiles="cli.profiles.value"
-        :session="sessionImpairment"
-        @close="sessionImpairment = null"
+        :for-tab="false"
+        :session="sessionMenu.id"
         @read-profiles="cli.readProfiles"
-        @set-profile="(c) => cli.setSessionProfile(sessionImpairment!, c)"
+        @set-session-profile="(c) => cli.setSessionProfile(sessionMenu!.id, c)"
       />
-      <ShareDialog
-        v-if="sharingSession"
-        :key="sharingSession.sessionId"
-        :session="sharingSession"
-        :view="accountView"
-        :library="account.library"
-        :build-trace="buildSessionTrace"
-        @close="sharingSessionId = null"
-        @sign-in="account.signIn"
-        @refresh-orgs="account.refreshOrgs"
-      />
-    </main>
+    </PopupMenu>
+    <PopupMenu v-if="moreOpen" :anchor="moreBtn" label="More options" @close="moreOpen = false">
+      <button class="mq-menu__item" role="menuitem" @click="openSettings">Settings</button>
+      <hr role="separator" />
+      <a class="mq-menu__item brand-item" role="menuitem" href="https://moqtap.com" target="_blank" rel="noopener">
+        <span class="mq-logo" v-html="logo" />
+        <span class="menu-hint">More tools</span>
+      </a>
+    </PopupMenu>
+
+    <SettingsView
+      v-if="settingsOpen"
+      class="workspace"
+      :view="cliView"
+      :trusted="cli.trusted.value"
+      :exclusions="workerExclusions"
+      @close="settingsOpen = false"
+      @allow="cli.allow"
+      @forget="cli.forget"
+      @add-exclusion="addWorkerExclusion"
+      @remove-exclusion="removeWorkerExclusion"
+    />
+    <SplitView
+      v-show="!settingsOpen"
+      class="workspace"
+      split-id="sidebar"
+      label="Resize connections"
+      :first="sidebarShown"
+      :initial="240"
+      unit="px"
+      :min-first="160"
+      :min-second="320"
+      :stack-below="0"
+      :fixed="collapsed ? SIDEBAR_COLLAPSED_WIDTH : undefined"
+      @size="sideWidth = $event"
+    >
+      <template #first>
+        <aside class="sidebar" aria-label="Connections">
+          <ConnectionList
+            :sessions="sessionList"
+            :impaired="impairmentOn"
+            :tab="cli.tab.value"
+            :short-labels="cli.shortLabels.value"
+            :selected-id="selectedSessionId"
+            :collapsed="collapsed"
+            @select="selectConnection"
+            @impair="(id, anchor) => (sessionMenu = { id, anchor })"
+          />
+          <div v-if="logoAt === 'side'" class="side-foot"><BrandLink mark /></div>
+        </aside>
+      </template>
+      <template #second>
+      <main class="main">
+        <template v-if="selectedSession">
+          <h1 class="mq-sr">{{ selectedSession.url }}</h1>
+          <SessionView
+            :key="selectedSession.sessionId"
+            v-model:tab="viewTab"
+            v-model:filter="filter"
+            :session="selectedSession"
+            :brand="logoAt === 'footer'"
+            :get-stream-data="getStreamData"
+            :get-datagram-group-data="getDatagramGroupData"
+            @problems="problemCounts = $event"
+            @clear-streams="clearSelectedStreams"
+          />
+        </template>
+        <div v-else-if="sessionList.length > 0" class="empty-state">
+          <p class="empty-title">Select a connection</p>
+        </div>
+        <div v-else class="empty-state">
+          <p class="empty-title">No WebTransport connections yet</p>
+          <p class="empty-body">Connections appear here as the page opens them. Reload to capture them from the start.</p>
+          <div class="empty-actions">
+            <button class="mq-btn mq-btn--secondary" @click="reloadPage">Reload page</button>
+            <button class="mq-btn mq-btn--secondary" @click="handleImportClick">Import .moqtrace</button>
+          </div>
+        </div>
+      </main>
+      </template>
+    </SplitView>
+
+    <ShareDialog
+      v-if="sharingSession"
+      :key="sharingSession.sessionId"
+      :session="sharingSession"
+      :view="accountView"
+      :library="account.library"
+      :build-trace="buildSessionTrace"
+      @close="sharingSessionId = null"
+      @sign-in="account.signIn"
+      @refresh-orgs="account.refreshOrgs"
+    />
   </div>
 </template>
 
 <style scoped>
-.inspector {
+.panel {
   display: flex;
+  flex-direction: column;
   height: 100%;
+  background: var(--bg);
 }
 
-.sidebar {
-  width: 260px;
-  min-width: 200px;
+/* ── Toolbar ───────────────────────────────────────────────────── */
+
+.toolbar {
+  flex-wrap: wrap;
+  row-gap: 0;
+  gap: 2px;
+}
+/* Without a sidebar the groups are one wrapping row. */
+.side-head,
+.bar-main,
+.bar-end {
+  display: contents;
+}
+:is(.side-head, .bar-main, .bar-end) > * {
+  flex-shrink: 0;
+}
+/* With one, the sidebar's buttons sit over it, as wide as it is; the rest
+   wraps beside them and the account and gear keep the first row's end. */
+.has-side .toolbar {
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+.has-side .side-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  flex: 0 0 calc(var(--side-w) + 1px);
+  min-width: 0;
+  padding: 0 4px;
   border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+.side-foot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex: none;
+  height: var(--header-tool);
+}
+.side-toggle {
+  margin-left: auto;
+}
+.has-side .side-head > * {
+  margin-top: calc((var(--header-tool) - var(--control-tool)) / 2);
+}
+.has-side .bar-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  row-gap: 0;
+  gap: 2px;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--header-tool);
+  padding: 0 0 0 2px;
+}
+.has-side .bar-end {
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 2px;
+  height: var(--header-tool);
+  padding-right: 4px;
+}
+.toolbar-spacer {
+  flex: 1 1 0;
+}
+.toolbar-tabs {
+  flex: 1 1 0;
+  align-self: stretch;
+}
+.record-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--ink-muted);
+}
+.record-btn.recording .record-dot {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.record-btn:disabled .record-dot {
+  border-color: var(--ink-disabled);
+}
+.toolbar .mq-btn[disabled] {
+  background: transparent;
+  border-color: transparent;
+}
+.toolbar .mq-btn--quiet {
+  padding: 0 var(--space-1);
+}
+.toolbar .mq-btn--icon {
+  padding: 0;
+}
+.toolbar .record-btn[aria-pressed='true'] {
+  background: transparent;
+}
+
+/* Wraps at its least width, grows to 200 px when the row has room. */
+.filter-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 120px;
+  min-width: 120px;
+  max-width: 200px;
+}
+.filter-icon {
+  position: absolute;
+  left: 6px;
+  color: var(--ink-muted);
+  pointer-events: none;
+}
+.filter-icon :deep(svg) {
+  width: 12px;
+  height: 12px;
+}
+.filter-field.is-idle {
+  visibility: hidden;
+}
+/* As Network's filter: no border until focused. Chrome: a 20 px pill, 3 px
+   clear of the bar, ringed when focused. Firefox: the bar's full height, a
+   1 px focus border. */
+.panel .filter-input {
+  height: var(--filter-h);
+  padding: 0 22px;
+  border-color: transparent;
+  background: transparent;
+}
+.panel .filter-input:focus-visible {
+  outline: none;
+}
+:global(html.host--chrome) {
+  --filter-h: 20px;
+}
+:global(html.host--chrome .panel .filter-input) {
+  border-radius: var(--radius-full);
+}
+:global(html.host--chrome .panel .filter-input:hover) {
+  background: var(--surface-hover);
+}
+:global(html.host--chrome .panel .filter-input:focus) {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+:global(html.host--firefox) {
+  --filter-h: var(--header-tool);
+}
+:global(html.host--firefox .panel .filter-input) {
+  border-radius: 0;
+}
+:global(html.host--firefox .panel .filter-input:focus) {
+  border-color: var(--focus-ring);
+}
+.filter-input::-webkit-search-cancel-button {
+  display: none;
+}
+.filter-clear {
+  position: absolute;
+  right: 0;
+  height: var(--filter-h);
+  width: 22px;
+}
+/* Narrow: the first row keeps its controls (the picker gives way); the
+   filter, the view's own tools and import/export take the second, which is
+   there whenever a connection is selected so no view changes the height. */
+.row-break {
+  order: 9;
+  flex: 0 0 100%;
+  height: 0;
+}
+.is-narrow .filter-field {
+  order: 10;
+  flex: 1 1 60px;
+  min-width: 60px;
+  max-width: none;
+  margin-bottom: 2px;
+}
+/* The view's tools before the filter's spare room, but never so wide that
+   they wrap the row: the filter's least width and import/export stay. */
+.is-narrow .tab-tools {
+  order: 11;
+  flex: 0 1 auto;
+  max-width: calc(100% - 140px);
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+.has-filter-row .io-btn {
+  order: 12;
+  margin-bottom: 2px;
+}
+.is-narrow .io-sep {
+  display: none;
+}
+/* The picker takes the free room ahead of the spacer, up to what its name
+   needs; a small basis keeps the row from wrapping. The host gives way, never the #id. */
+.bar-main > :deep(.picker-btn) {
+  flex: 100 1 72px;
+  max-width: max-content;
+}
+
+.impair-btn {
+  gap: var(--space-1);
+  max-width: 200px;
+}
+/* The button's line height is 1; a clipped name needs room for descenders. */
+.impair-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: normal;
+}
+.impair-btn.is-on {
+  color: var(--tap);
+}
+.impair-flag {
+  color: var(--warning);
+}
+.impair-flag :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+.caret :deep(svg) {
+  width: 12px;
+  height: 12px;
+}
+
+.tab-tools {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.tab-tools:empty {
+  display: none;
+}
+.tab-tools.is-idle {
+  visibility: hidden;
+}
+
+/* Network's gear: full toolbar height, 28 px wide, its centre 18 px from the edge. */
+.toolbar .more-btn {
+  width: 28px;
+  height: var(--header-tool);
+  margin-right: 0;
+}
+
+.counts-btn {
+  gap: var(--space-2);
+}
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.count :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+.count--error :deep(.ext-icon) {
+  color: var(--danger);
+}
+.count--warning :deep(.ext-icon) {
+  color: var(--warning);
+}
+
+.infobars {
+  flex-shrink: 0;
+}
+
+.tab-row {
+  display: flex;
+  height: var(--header-tool);
+  background: var(--host-bar, var(--surface));
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.side-cell {
+  display: flex;
+  align-items: center;
+  flex: 0 0 calc(var(--side-w) + 1px);
+  min-width: 0;
+  padding: 0 var(--space-2);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+/* ── Workspace ─────────────────────────────────────────────────── */
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+}
+.sidebar {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  transition:
-    width 180ms ease,
-    min-width 180ms ease;
 }
-.sidebar.collapsed {
-  width: 56px;
-  min-width: 56px;
-}
-
-.sidebar-title {
-  flex: 1;
-  margin: 0;
-  font-size: inherit;
-}
-.sidebar.collapsed .sidebar-header {
-  justify-content: center;
-}
-
 .main {
   flex: 1;
   min-width: 0;
@@ -445,75 +882,45 @@ const selectedSession = computed(() =>
   background: var(--bg);
 }
 
-.impair-btn {
-  gap: var(--space-1);
-}
-.impair-flag {
-  color: var(--warning);
-}
-
-.main-notice {
-  margin: var(--space-2) var(--space-2) 0;
-  grid-template-columns: 20px 1fr;
-}
-.cli-confirm {
-  grid-template-columns: 20px 1fr auto;
-  align-items: center;
-}
-.cli-fp {
-  white-space: nowrap;
-}
-
-.exclusion-toggle {
-  padding: var(--space-1) var(--space-3);
-  border-bottom: 1px solid var(--line);
-}
-
-.exclusion-panel {
+/* As Network's empty state: centred both ways, a title over a line of text and the actions. */
+.empty-state {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-}
-.exclusion-header {
-  font-size: inherit;
-  font-weight: 600;
-}
-.exclusion-list {
-  list-style: none;
-  padding: 0;
-  max-height: 140px;
-  overflow-y: auto;
-}
-.exclusion-entry {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.exclusion-origin {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.exclusion-add {
-  display: flex;
-  gap: var(--space-1);
-}
-
-.sidebar-footer {
-  display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  padding: var(--space-2);
-  border-top: 1px solid var(--line);
+  padding: var(--space-4);
+  text-align: center;
+  overflow: auto;
+}
+.empty-title {
+  font-size: calc(var(--host-text) + 4px);
+  line-height: 1.3;
+  font-weight: 500;
+  color: var(--ink);
+}
+.empty-body {
+  max-width: 44ch;
   color: var(--ink-muted);
+}
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.inline-btn {
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+}
+
+.brand-item {
+  align-items: center;
+  gap: var(--space-2);
   text-decoration: none;
-  flex-shrink: 0;
 }
 .mq-logo {
   display: inline-flex;
@@ -525,14 +932,5 @@ const selectedSession = computed(() =>
   display: block;
   height: 13.47px;
   width: auto;
-}
-.sidebar-footer:hover .sidebar-footer__more {
-  color: var(--ink);
-  text-decoration: underline;
-}
-
-.empty-state {
-  flex: 1;
-  justify-content: center;
 }
 </style>

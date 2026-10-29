@@ -1,5 +1,5 @@
 import type { CliView, TabImpairment } from '@/src/cli/messages'
-import { isOff } from '@/src/cli/protocol'
+import { isOff, type Refusal } from '@/src/cli/protocol'
 
 export const START_COMMAND = 'moqtap intercept --bridge'
 
@@ -23,9 +23,38 @@ function cliProblem(view: CliView | null): string | null {
   }
 }
 
+function refusalText(refusal: Refusal | null, name: string | null): string {
+  if (refusal?.plan) return `${refusal.plan} plan is required to run this scenario.`
+  const what = name === null ? 'this profile' : `"${name}"`
+  switch (refusal?.reason) {
+    case 'unknown_scenario':
+      return `Couldn't apply ${what}: there's no scenario with that name.`
+    case 'invalid_scenario':
+      return `Couldn't apply ${what}: its scenario file can't run in the browser.`
+    case 'account':
+      return `Couldn't apply ${what}. ${refusal.error}`
+  }
+  return `Couldn't apply ${what}. Update moqtap, then pick the profile again.`
+}
+
+/** The tab's last pick was refused and nothing else is in the way. */
+function tabRefused(tab: TabImpairment | null, view: CliView | null): tab is TabImpairment {
+  return (
+    tab !== null &&
+    tab.error === 'refused' &&
+    (tab.failure === null || tab.failure === 'no-cli') &&
+    cliProblem(view) === null
+  )
+}
+
 /** Why the tab's connections are not going through the CLI, with what to do; null when nothing is wrong. */
 export function impairmentProblem(tab: TabImpairment | null, view: CliView | null): string | null {
-  if (tab === null || isOff(tab.profile)) return null
+  if (tab === null) return null
+  // A refused pick leaves the tab on what was in force before, Off included.
+  if (tab.error === 'refused' && (tab.failure === null || tab.failure === 'no-cli')) {
+    return cliProblem(view) ?? refusalText(tab.refusal, tab.refusedName)
+  }
+  if (isOff(tab.profile)) return null
   switch (tab.failure) {
     case 'local-network':
       return 'Allow this site to access local network devices, then reload.'
@@ -48,7 +77,7 @@ export function impairmentProblem(tab: TabImpairment | null, view: CliView | nul
     case 'limit':
       return 'The moqtap CLI has as many tabs impaired as it allows. Set other tabs to Off or close them.'
     case 'refused':
-      return 'The moqtap CLI refused this profile. Update moqtap, then pick the profile again.'
+      return refusalText(tab.refusal, null)
     case 'unreachable':
       return NOT_RUNNING
   }
@@ -61,11 +90,41 @@ export function sessionImpairmentProblem(
   session: string,
   view: CliView | null,
 ): string | null {
-  const error = tab?.sessionErrors.find((e) => e.session === session)?.error
-  if (error === undefined) return null
+  const failed = tab?.sessionErrors.find((e) => e.session === session)
+  if (failed === undefined) return null
   const cli = cliProblem(view)
   if (cli !== null) return cli
-  return error === 'refused'
-    ? 'The moqtap CLI refused this profile for this connection. Update moqtap, then pick the profile again.'
+  return failed.error === 'refused'
+    ? refusalText(failed.refusal, null)
     : `The moqtap CLI didn't answer. Check the terminal running ${START_COMMAND}, then pick the profile again.`
+}
+
+export interface Upgrade {
+  readonly plan: string
+  readonly url: string
+}
+
+function upgradeFor(refusal: Refusal | null | undefined): Upgrade | null {
+  if (!refusal?.plan) return null
+  return { plan: refusal.plan, url: refusal.upgrade?.url ?? PRO_URL }
+}
+
+/** Where to upgrade to run the profile the CLI refused for the tab, or with `session` for that session. */
+export function refusalUpgrade(
+  tab: TabImpairment | null,
+  view: CliView | null,
+  session: string | null = null,
+): Upgrade | null {
+  if (tab === null || cliProblem(view) !== null) return null
+  if (session !== null) return upgradeFor(tab.sessionErrors.find((e) => e.session === session)?.refusal)
+  return tabRefused(tab, view) ? upgradeFor(tab.refusal) : null
+}
+
+/**
+ * What the tab's notice offers: the upgrade for a plan refusal, another pick
+ * for any other refusal; null when the problem is not a refusal.
+ */
+export function refusalAction(tab: TabImpairment | null, view: CliView | null): 'upgrade' | 'choose' | null {
+  if (!tabRefused(tab, view)) return null
+  return upgradeFor(tab.refusal) ? 'upgrade' : 'choose'
 }

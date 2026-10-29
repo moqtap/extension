@@ -1,32 +1,33 @@
 /**
  * How the panel writes sizes, durations, times and IDs. One place, so every
- * view says `1.4 KiB` and `+00:01.284` the same way.
+ * view says `1.4 kB` and `+00:01.284` the same way.
  */
 
 const THIN = '\u2009'
 
-/** Binary units, one decimal: `812 B`, `1.4 KiB`, `12.0 MiB`. */
+/** Decimal units as DevTools writes them: `812 B`, `1.4 kB`, `376 kB`, `12.0 MB`. */
 export function formatBytes(n: number): string {
-  if (n < 1024) return `${n}${THIN}B`
-  const units = ['KiB', 'MiB', 'GiB', 'TiB']
-  let v = n / 1024
+  if (n < 1000) return `${n}${THIN}B`
+  const units = ['kB', 'MB', 'GB', 'TB']
+  let v = n / 1000
   let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
+  while (v >= 999.95 && i < units.length - 1) {
+    v /= 1000
     i++
   }
-  return `${v.toFixed(1)}${THIN}${units[i]}`
+  return `${v < 99.95 ? v.toFixed(1) : v.toFixed(0)}${THIN}${units[i]}`
 }
 
-/** `0.42 ms`, `18 ms`, `1.25 s`, `3 m 12 s`. */
+/** As DevTools' Network writes them: `0.42 ms`, `18 ms`, `1.25 s`, `3.2 min`, `1.5 h`. */
 export function formatDuration(ms: number): string {
   if (ms < 0) ms = 0
   if (ms < 10) return `${Number(ms.toFixed(2))}${THIN}ms`
-  if (ms < 1000) return `${Math.round(ms)}${THIN}ms`
+  if (ms < 999.5) return `${Math.round(ms)}${THIN}ms`
   const s = ms / 1000
-  if (s < 60) return `${s.toFixed(2)}${THIN}s`
-  const m = Math.floor(s / 60)
-  return `${m}${THIN}m ${Math.floor(s % 60)}${THIN}s`
+  if (s < 59.995) return `${s.toFixed(2)}${THIN}s`
+  const m = s / 60
+  if (m < 59.95) return `${m.toFixed(1)}${THIN}min`
+  return `${(m / 60).toFixed(1)}${THIN}h`
 }
 
 /** Time since the session started, for data panes: `+00:01.284`. */

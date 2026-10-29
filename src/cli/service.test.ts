@@ -26,6 +26,8 @@ interface FakeCli {
   createStatus?: number
   /** Answers GET profiles with this body. */
   profiles?: unknown
+  /** Answers every profile request for a known tab or session with this. */
+  refuse?: { status: number; body: unknown }
 }
 
 async function makeCli(port: number, extra: Partial<FakeCli> = {}): Promise<FakeCli> {
@@ -102,6 +104,7 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
     }
     if (endpoint === 'tab' && init?.method === 'POST') {
       if (cli.createStatus !== undefined) return json({ error: 'no' }, cli.createStatus)
+      if (cli.refuse !== undefined) return json(cli.refuse.body, cli.refuse.status)
       const id = toBase64Url(webcrypto.getRandomValues(new Uint8Array(16)))
       const port = 50000 + cli.tabs.size
       cli.tabs.set(id, { port, owner: body.owner, profile: body.profile })
@@ -114,6 +117,7 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
       const id = m[1]!
       if (!cli.tabs.has(id)) return json({ error: 'no such tab' }, 404)
       if (m[2] && init?.method === 'POST') {
+        if (cli.refuse !== undefined) return json(cli.refuse.body, cli.refuse.status)
         cli.tabs.get(id)!.profile = body.profile
         for (const s of cli.sessions.values()) if (s.tab === id) s.own = null
         return json(entry(id))
@@ -129,6 +133,7 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
     if (s !== null && init?.method === 'POST') {
       const session = cli.sessions.get(s[1]!)
       if (session === undefined) return json({ error: 'no such session' }, 404)
+      if (cli.refuse !== undefined) return json(cli.refuse.body, cli.refuse.status)
       session.own = body.profile
       return json(sessionEntry(s[1]!))
     }
@@ -322,7 +327,56 @@ describe('CliBridge', () => {
     await bridge.allow(cli.identity)
     expect(await bridge.createTab('tab-1', { preset: '3g' })).toEqual({ error: 'limit' })
     cli.createStatus = 400
-    expect(await bridge.createTab('tab-1', { preset: '3g' })).toEqual({ error: 'refused' })
+    expect(await bridge.createTab('tab-1', { preset: '3g' })).toEqual({
+      error: 'refused',
+      refused: { error: 'no', reason: null, plan: null, upgrade: null },
+    })
+  })
+
+  it("passes on what the CLI says when it refuses a profile, with a plan refusal's upgrade", async () => {
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    const created = await bridge.createTab('tab-1', { preset: '3g' })
+    if ('error' in created) throw new Error(created.error)
+    const session = toBase64Url(new Uint8Array(16).fill(2))
+    cli.sessions.set(session, { tab: created.id, own: null })
+    const lte = { scenario: 'lte' }
+    const error = 'Pro plan is required to run this scenario. acme is on Free: upgrade at https://moqtap.com/up.'
+    const upgrade = { plan: 'Pro', url: 'https://moqtap.com/up' }
+    cli.refuse = { status: 403, body: { error, reason: 'plan_required', plan: 'Pro', upgrade } }
+    const said = { refused: { error, reason: 'plan_required', plan: 'Pro', upgrade } }
+    expect(await bridge.createTab('tab-2', lte)).toEqual({ error: 'refused', ...said })
+    expect(await bridge.setTabProfile(created.id, lte)).toEqual(said)
+    expect(await bridge.setSessionProfile(session, lte)).toEqual(said)
+    cli.refuse = { status: 403, body: { error, upgrade: { plan: 'Pro', url: 'javascript:alert(1)' } } }
+    expect(await bridge.setTabProfile(created.id, lte)).toEqual({ refused: { error, reason: null, plan: null, upgrade: null } })
+    cli.refuse = { status: 422, body: { error: 'lte.json: transport cannot apply', reason: 'invalid_scenario' } }
+    expect(await bridge.setTabProfile(created.id, lte)).toEqual({
+      refused: { error: 'lte.json: transport cannot apply', reason: 'invalid_scenario', plan: null, upgrade: null },
+    })
+    cli.refuse = { status: 403, body: null }
+    expect(await bridge.setTabProfile(created.id, lte)).toEqual({ refused: null })
+  })
+
+  it('tells a scenario with no file from a tab or session that is gone, as both are 404', async () => {
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    const created = await bridge.createTab('tab-1', { preset: '3g' })
+    if ('error' in created) throw new Error(created.error)
+    const session = toBase64Url(new Uint8Array(16).fill(3))
+    cli.sessions.set(session, { tab: created.id, own: null })
+    const missing = { error: 'There is no scenario named "x".', reason: 'unknown_scenario' }
+    cli.refuse = { status: 404, body: missing }
+    const said = { refused: { ...missing, plan: null, upgrade: null } }
+    expect(await bridge.setTabProfile(created.id, { scenario: 'x' })).toEqual(said)
+    expect(await bridge.setSessionProfile(session, { scenario: 'x' })).toEqual(said)
+    cli.refuse = undefined
+    cli.sessions.delete(session)
+    expect(await bridge.setSessionProfile(session, { scenario: 'x' })).toBe('gone')
+    cli.tabs.delete(created.id)
+    expect(await bridge.setTabProfile(created.id, { scenario: 'x' })).toBe('gone')
   })
 
   it('reads the profiles the CLI offers, or null when it fails', async () => {
@@ -416,7 +470,7 @@ describe('serveCliPort', () => {
     expect(impair.view(7).profile).toEqual({ preset: '3g' })
     expect(p.sent.filter((m) => m.type === 'cli:tab').at(-1)).toEqual({
       type: 'cli:tab',
-      tab: { tabId: 7, profile: { preset: '3g' }, name: '3G', sessions: [], unknown: [], sessionErrors: [], failure: null, error: null },
+      tab: { tabId: 7, profile: { preset: '3g' }, name: '3G', sessions: [], unknown: [], sessionErrors: [], failure: null, error: null, refusal: null, refusedName: null },
     })
     p.close()
   })

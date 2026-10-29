@@ -14,18 +14,25 @@ import {
 const t = (s: string) => s.replaceAll('\u2009', ' ')
 
 describe('format', () => {
-  it('writes sizes in binary units with one decimal', () => {
+  it('writes sizes in decimal units, one decimal below 100', () => {
     expect(t(formatBytes(812))).toBe('812 B')
-    expect(t(formatBytes(1434))).toBe('1.4 KiB')
-    expect(t(formatBytes(12 * 1024 * 1024))).toBe('12.0 MiB')
-    expect(t(formatBytes(3 * 1024 ** 3))).toBe('3.0 GiB')
+    expect(t(formatBytes(999))).toBe('999 B')
+    expect(t(formatBytes(1434))).toBe('1.4 kB')
+    expect(t(formatBytes(376_600))).toBe('377 kB')
+    expect(t(formatBytes(999_960))).toBe('1.0 MB')
+    expect(t(formatBytes(12_000_000))).toBe('12.0 MB')
+    expect(t(formatBytes(3e9))).toBe('3.0 GB')
   })
 
   it('writes durations at the scale that reads', () => {
     expect(t(formatDuration(0.42))).toBe('0.42 ms')
     expect(t(formatDuration(18))).toBe('18 ms')
     expect(t(formatDuration(1250))).toBe('1.25 s')
-    expect(t(formatDuration(192_000))).toBe('3 m 12 s')
+    expect(t(formatDuration(999.7))).toBe('1.00 s')
+    expect(t(formatDuration(192_000))).toBe('3.2 min')
+    expect(t(formatDuration(450_000))).toBe('7.5 min')
+    expect(t(formatDuration(59.99 * 60_000))).toBe('1.0 h')
+    expect(t(formatDuration(5_400_000))).toBe('1.5 h')
   })
 
   it('writes times relative to the session start', () => {

@@ -236,7 +236,7 @@ const busyText = computed(
 
       <form v-else class="share-form" @submit.prevent="submit">
         <div v-if="orgs.length === 0" class="mq-notice mq-notice--warning" role="status">
-          <span class="mq-notice__icon" aria-hidden="true">▲</span>
+          <Icon name="warning" class="mq-notice__icon" />
           <p>
             None of the libraries this browser can use lets you upload. Ask
             for a member role, or share from your personal library.
@@ -317,21 +317,21 @@ const busyText = computed(
           </label>
         </fieldset>
         <div v-if="includePayloads" class="mq-notice mq-notice--warning" role="status">
-          <span class="mq-notice__icon" aria-hidden="true">▲</span>
+          <Icon name="warning" class="mq-notice__icon" />
           <p>
             Payloads can hold media and data the far end sent. Everyone you
             share the trace with can read them.
           </p>
         </div>
         <div v-if="includeAuth" class="mq-notice mq-notice--warning" role="status">
-          <span class="mq-notice__icon" aria-hidden="true">▲</span>
+          <Icon name="warning" class="mq-notice__icon" />
           <p>
             Everyone you share the trace with can read these tokens, including
             the one in the page's WebTransport URL.
           </p>
         </div>
         <div v-if="error" class="mq-notice mq-notice--error share-error" role="alert">
-          <span class="mq-notice__icon" aria-hidden="true">✕</span>
+          <Icon name="error" class="mq-notice__icon" />
           <p>{{ error }}</p>
         </div>
         <div class="mq-dialog__actions">

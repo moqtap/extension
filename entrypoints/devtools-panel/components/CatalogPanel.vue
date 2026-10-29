@@ -8,6 +8,7 @@ import {
 } from '../catalogs'
 import { formatBitrate, formatBytes, plural } from '../format'
 import JsonTree from './JsonTree.vue'
+import Icon from './Icon.vue'
 
 /**
  * What one catalog track says, as of the objects recorded so far: the tracks
@@ -153,7 +154,7 @@ function trackTitle(track: CatalogTrack): string {
       class="mq-notice mq-notice--warning catalog-notice"
       role="status"
     >
-      <span class="mq-notice__icon" aria-hidden="true">▲</span>
+      <Icon name="warning" class="mq-notice__icon" />
       <div>
         <p class="mq-notice__title">Not every catalog object was recorded</p>
         <p v-for="(reason, i) in catalog.incomplete" :key="i">{{ reason }}</p>
@@ -242,8 +243,7 @@ function trackTitle(track: CatalogTrack): string {
               :class="`problem--${p.severity}`"
             >
               <span class="problem__glyph"
-                ><span aria-hidden="true">✕</span
-                ><span class="mq-sr">Error</span></span
+                ><Icon name="error" /><span class="mq-sr">Error</span></span
               >
               <span class="problem__text">
                 <span class="problem__title">{{ p.message }}</span>
@@ -355,7 +355,11 @@ summary.catalog-heading {
   align-items: baseline;
 }
 .problem__glyph {
-  text-align: center;
+  display: inline-flex;
+}
+.problem__glyph :deep(svg) {
+  width: 14px;
+  height: 14px;
 }
 .problem--error .problem__glyph {
   color: var(--danger);

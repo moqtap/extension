@@ -35,6 +35,8 @@ describe('the panel says why, with a remedy', () => {
     sessionErrors: [],
     failure: null,
     error: null,
+    refusal: null,
+    refusedName: null,
     ...t,
   })
 
@@ -69,11 +71,11 @@ describe('the panel says why, with a remedy', () => {
 
   it("says why one connection did not take its profile, and leaves the tab's problem alone", () => {
     const S = 'A'.repeat(21) + 'Q'
-    const t = tab({ sessionErrors: [{ session: S, error: 'refused' }] })
-    expect(sessionImpairmentProblem(t, S, connected)).toContain('refused this profile for this connection')
+    const t = tab({ sessionErrors: [{ session: S, error: 'refused', refusal: null }] })
+    expect(sessionImpairmentProblem(t, S, connected)).toContain("Couldn't apply this profile")
     expect(sessionImpairmentProblem(t, 'B'.repeat(21) + 'Q', connected)).toBeNull()
     expect(impairmentProblem(t, connected)).toBeNull()
-    const lost = tab({ sessionErrors: [{ session: S, error: 'unreachable' }] })
+    const lost = tab({ sessionErrors: [{ session: S, error: 'unreachable', refusal: null }] })
     expect(sessionImpairmentProblem(lost, S, connected)).toContain('moqtap intercept --bridge')
     expect(sessionImpairmentProblem(lost, S, { state: 'absent' })).toContain("isn't running")
   })

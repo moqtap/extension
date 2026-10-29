@@ -6,7 +6,7 @@
 
 import { parseCmafObject } from '@moqtap/media/cmaf'
 import { describe, expect, it } from 'vitest'
-import { annexBUnits, initTracksText, payloadInit } from './byte-media'
+import { annexBUnits, initTracksText, payloadBoxes, payloadInit } from './byte-media'
 
 function hex(text: string): Uint8Array {
   return new Uint8Array(text.replace(/\s/g, '').match(/../g)!.map((b) => Number.parseInt(b, 16)))
@@ -31,6 +31,20 @@ describe('init segments', () => {
     expect(init?.tracks.map((t) => [t.trackId, t.timescale])).toEqual([[1, 90000]])
     expect(initTracksText(init!)).toBe('track_ID 1 vide')
     expect(payloadInit(SYNC)).toBeNull()
+  })
+})
+
+describe('top-level boxes', () => {
+  it('lists the boxes read, and nothing for bytes that are not boxes', () => {
+    expect(payloadBoxes(HEADER)).toEqual(['ftyp', 'moov'])
+    expect(payloadBoxes(SYNC)).toEqual(['moof', 'mdat'])
+    expect(payloadBoxes(new Uint8Array([0, 0, 0, 1, 0x67, 0x64]))).toEqual([])
+  })
+
+  it('stops at the first box that is not one', () => {
+    const tail = new Uint8Array([0, 0, 0, 9, 0x78, 0x78, 0x78, 0x78, 0])
+    const joined = new Uint8Array([...SYNC, ...tail])
+    expect(payloadBoxes(joined)).toEqual(['moof', 'mdat'])
   })
 })
 

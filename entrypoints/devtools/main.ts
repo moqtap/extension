@@ -5,5 +5,8 @@
  * that loads the devtools-panel Vue app.
  */
 
+// Firefox shows the icon on the toolbox tab, beside its monochrome tool icons.
+const icon = import.meta.env.FIREFOX ? '/icon/panel.svg' : ''
+
 // WXT generates the correct path for the panel HTML
-browser.devtools.panels.create('WebTransport', '', 'devtools-panel.html')
+browser.devtools.panels.create('WebTransport', icon, 'devtools-panel.html')

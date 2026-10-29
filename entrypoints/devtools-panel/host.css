@@ -1,0 +1,366 @@
+/* The panel's DevTools look, over the shared design-system copy (which stays
+   as generated). Everything here is scoped to html.host, set by host.ts.
+   host--chrome / host--firefox carry each DevTools' own values. */
+
+/* ── Type ─────────────────────────────────────────────────────────── */
+
+html.host {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --font-mono: ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+html.host .mq-compact,
+html.host .mq-app {
+  --mq-fs: var(--host-text);
+  --mq-lh: 16px;
+  --mq-ctl: var(--control-tool);
+}
+html.host body {
+  font-size: var(--host-text);
+}
+html.host :is(.mq-btn, .mq-tab, .mq-label, .mq-badge, .mq-log__type, .mq-table th,
+  .mq-menu__label, .mq-fieldset > legend, .mq-identity__name, .mq-tree .k) {
+  font-weight: 400;
+}
+html.host :is(.mq-input, .mq-select, .mq-btn, .mq-tab) {
+  font-size: var(--host-text);
+}
+html.host .mq-log {
+  font-family: var(--font-sans);
+  font-size: var(--host-text);
+}
+html.host :is(.mq-log__time, .mq-log__meta) {
+  font-family: var(--font-mono);
+}
+/* Labels line up with the items' text, as much space above as below. */
+html.host .mq-menu__label {
+  padding: 4px var(--space-3);
+  font-size: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+/* ── Colour: Chrome ───────────────────────────────────────────────── */
+
+html.host--chrome {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-sunken: #f7f9fd;
+  --surface-raised: #ffffff;
+  --surface-hover: #e9eef6;
+  --surface-selected: #d3e3fd;
+  --line: #d3e3fd;
+  --line-strong: #747775;
+  --ink: #1f1f1f;
+  --ink-muted: #474747;
+  --ink-disabled: #9e9e9e;
+  --ink-inverse: #ffffff;
+  --tap: #0b57d0;
+  --tap-hover: #0842a0;
+  --on-tap: #ffffff;
+  --tap-soft: #d3e3fd;
+  --link: #0b57d0;
+  --focus-ring: #0b57d0;
+  --chart-1: #5b5fc7;
+  --host-bar: #ffffff;
+  --host-zebra: #f7f9fd;
+  --row-selected: #d3e3fd;
+  --on-row-selected: #1f1f1f;
+  --host-pressed: #d3e3fd;
+  --hex-framing: #e3e3e3;
+}
+html.host--chrome[data-theme="dark"] {
+  --bg: #282828;
+  --surface: #282828;
+  --surface-sunken: #1f1f1f;
+  --surface-raised: #3c3c3c;
+  --surface-hover: #383838;
+  --surface-selected: #004a77;
+  --line: #5e5e5e;
+  --line-strong: #8e918f;
+  --ink: #e3e3e3;
+  --ink-muted: #c4c7c5;
+  --ink-disabled: #757575;
+  --ink-inverse: #1f1f1f;
+  --tap: #a8c7fa;
+  --tap-hover: #c2d7fb;
+  --on-tap: #062e6f;
+  --tap-soft: #004a77;
+  --link: #a8c7fa;
+  --focus-ring: #a8c7fa;
+  --chart-1: #a5a8ff;
+  --host-bar: #282828;
+  --host-zebra: #1f1f1f;
+  --row-selected: #004a77;
+  --on-row-selected: #e3e3e3;
+  --host-pressed: #004a77;
+  --hex-framing: #474747;
+}
+@media (prefers-color-scheme: dark) {
+  html.host--chrome:not([data-theme]) {
+    --bg: #282828;
+    --surface: #282828;
+    --surface-sunken: #1f1f1f;
+    --surface-raised: #3c3c3c;
+    --surface-hover: #383838;
+    --surface-selected: #004a77;
+    --line: #5e5e5e;
+    --line-strong: #8e918f;
+    --ink: #e3e3e3;
+    --ink-muted: #c4c7c5;
+    --ink-disabled: #757575;
+    --ink-inverse: #1f1f1f;
+    --tap: #a8c7fa;
+    --tap-hover: #c2d7fb;
+    --on-tap: #062e6f;
+    --tap-soft: #004a77;
+    --link: #a8c7fa;
+    --focus-ring: #a8c7fa;
+    --chart-1: #a5a8ff;
+    --host-bar: #282828;
+    --host-zebra: #1f1f1f;
+    --row-selected: #004a77;
+    --on-row-selected: #e3e3e3;
+    --host-pressed: #004a77;
+    --hex-framing: #474747;
+  }
+}
+
+/* ── Colour: Firefox ──────────────────────────────────────────────── */
+
+html.host--firefox {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-sunken: #f9f9fb;
+  --surface-raised: #ffffff;
+  --surface-hover: #f0f9fe;
+  --surface-selected: #deeafc;
+  --line: #e0e0e2;
+  --line-strong: #8f8f9d;
+  --ink: #15141a;
+  --ink-muted: #5b5b66;
+  --ink-disabled: #a0a0a8;
+  --ink-inverse: #ffffff;
+  --tap: #0060df;
+  --tap-hover: #0250bb;
+  --on-tap: #ffffff;
+  --tap-soft: #deeafc;
+  --link: #0060df;
+  --focus-ring: #0a84ff;
+  --chart-1: #5b5fc7;
+  --host-bar: #f9f9fb;
+  --host-zebra: #f9f9fb;
+  --row-selected: #0074e8;
+  --on-row-selected: #ffffff;
+  --host-pressed: #e0e0e6;
+  --hex-framing: #e0e0e6;
+}
+html.host--firefox[data-theme="dark"] {
+  --bg: #232327;
+  --surface: #232327;
+  --surface-sunken: #18181a;
+  --surface-raised: #2b2a33;
+  --surface-hover: #353b48;
+  --surface-selected: #204e8a;
+  --line: #38383d;
+  --line-strong: #8f8f9d;
+  --ink: #fbfbfe;
+  --ink-muted: #bfbfc9;
+  --ink-disabled: #6b6b75;
+  --ink-inverse: #15141a;
+  --tap: #75bfff;
+  --tap-hover: #a6d6ff;
+  --on-tap: #0c0c0d;
+  --tap-soft: #204e8a;
+  --link: #75bfff;
+  --focus-ring: #0a84ff;
+  --chart-1: #a5a8ff;
+  --host-bar: #18181a;
+  --host-zebra: #2e2e32;
+  --row-selected: #204e8a;
+  --on-row-selected: #ffffff;
+  --host-pressed: #3a3944;
+  --hex-framing: #4a4a55;
+}
+@media (prefers-color-scheme: dark) {
+  html.host--firefox:not([data-theme]) {
+    --bg: #232327;
+    --surface: #232327;
+    --surface-sunken: #18181a;
+    --surface-raised: #2b2a33;
+    --surface-hover: #353b48;
+    --surface-selected: #204e8a;
+    --line: #38383d;
+    --line-strong: #8f8f9d;
+    --ink: #fbfbfe;
+    --ink-muted: #bfbfc9;
+    --ink-disabled: #6b6b75;
+    --ink-inverse: #15141a;
+    --tap: #75bfff;
+    --tap-hover: #a6d6ff;
+    --on-tap: #0c0c0d;
+    --tap-soft: #204e8a;
+    --link: #75bfff;
+    --focus-ring: #0a84ff;
+    --chart-1: #a5a8ff;
+    --host-bar: #18181a;
+    --host-zebra: #2e2e32;
+    --row-selected: #204e8a;
+    --on-row-selected: #ffffff;
+    --host-pressed: #3a3944;
+    --hex-framing: #4a4a55;
+  }
+}
+
+/* ── State layers: DevTools' hover and press tints ───────────────── */
+
+html.host--chrome {
+  --menu-hover: rgb(31 31 31 / 6%);
+  --bar-hover: rgb(31 31 31 / 6%);
+  --bar-active: rgb(31 31 31 / 8%);
+}
+html.host--chrome[data-theme="dark"] {
+  --menu-hover: rgb(253 252 251 / 10%);
+  --bar-hover: rgb(253 252 251 / 10%);
+  --bar-active: rgb(253 252 251 / 16%);
+}
+html.host--firefox {
+  --menu-hover: hsl(0 0% 80% / 30%);
+  --bar-hover: color-mix(in srgb, currentColor 14%, transparent);
+  --bar-active: color-mix(in srgb, #0060df 20%, transparent);
+}
+html.host--firefox[data-theme="dark"] {
+  --menu-hover: rgb(249 249 250 / 10%);
+  --bar-active: color-mix(in srgb, #75baff 20%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  html.host--chrome:not([data-theme]) {
+    --menu-hover: rgb(253 252 251 / 10%);
+    --bar-hover: rgb(253 252 251 / 10%);
+    --bar-active: rgb(253 252 251 / 16%);
+  }
+  html.host--firefox:not([data-theme]) {
+    --menu-hover: rgb(249 249 250 / 10%);
+    --bar-active: color-mix(in srgb, #75baff 20%, transparent);
+  }
+}
+
+/* ── Focus: inset ring in the host blue ───────────────────────────── */
+
+html.host :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible,
+html.host .mq-table th button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+html.host .mq-choice:has(input:focus-visible),
+html.host .mq-picker__box:focus-within {
+  outline-offset: -2px;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────── */
+
+html.host .mq-btn {
+  border-radius: var(--radius-sm);
+}
+html.host .mq-btn--secondary {
+  border-color: var(--line-strong);
+}
+html.host .mq-btn[aria-pressed="true"] {
+  background: var(--host-pressed);
+  border-color: transparent;
+}
+html.host .mq-input,
+html.host .mq-select {
+  border-color: var(--line-strong);
+}
+html.host .mq-input::placeholder {
+  color: var(--ink-muted);
+}
+
+/* Tabs and view modes: one style, the host blue under the selected one. */
+html.host .mq-tabs {
+  overflow: hidden;
+}
+html.host .mq-tab[aria-selected="true"] {
+  color: var(--tap);
+}
+html.host .mq-tab[aria-selected="true"]::after {
+  bottom: 0;
+  background: var(--tap);
+}
+/* The label sits clear of the underline, descenders included. */
+html.host .mq-tabs .mq-tab {
+  padding-bottom: 4px;
+}
+
+html.host .mq-menu {
+  margin: 0;
+  padding: var(--space-1) 0;
+  border-radius: var(--radius-sm);
+}
+html.host .mq-menu__item {
+  border-radius: 0;
+  padding: 3px var(--space-3);
+}
+html.host .mq-menu :is([role="menuitemradio"], [role="menuitemcheckbox"]) {
+  padding-right: 28px;
+}
+html.host .mq-menu [aria-checked="true"]::after {
+  color: var(--ink);
+}
+
+html.host .mq-notice .mq-notice__icon {
+  border: 0;
+}
+
+/* Selected grid rows: tonal in Chrome, where state colours stay; solid in
+   Firefox, where everything in the row takes the selection's ink. */
+html.host .row-selected {
+  color: var(--on-row-selected);
+  background: var(--row-selected);
+}
+html.host--firefox .row-selected * {
+  color: var(--on-row-selected);
+}
+html.host--firefox .row-selected .mq-badge {
+  background: transparent;
+  border-color: currentColor;
+}
+
+/* ── No phone layouts inside DevTools ─────────────────────────────── */
+
+@media (max-width: 640px) {
+  html.host .mq-dialog {
+    width: min(480px, 100%);
+    border-radius: var(--radius-lg);
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-5);
+  }
+  html.host dialog.mq-dialog {
+    margin: auto;
+  }
+  html.host .mq-scrim {
+    place-items: center;
+    padding: var(--space-4);
+  }
+  html.host .mq-dialog__actions {
+    flex-direction: row;
+  }
+  html.host .mq-dialog__actions .mq-btn {
+    width: auto;
+  }
+  html.host .mq-header__nav {
+    display: flex;
+  }
+  html.host .mq-menu__phone-nav {
+    display: none;
+  }
+}
+@media (max-width: 480px) {
+  html.host .mq-kv {
+    grid-template-columns: minmax(120px, max-content) 1fr;
+    gap: 2px var(--space-3);
+  }
+  html.host .mq-kv dd {
+    margin-bottom: 0;
+  }
+}
