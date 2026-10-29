@@ -15,7 +15,7 @@
  * then auto-excluded so future page loads skip wrapping entirely.
  */
 
-import { opensUniControlStream } from '@/src/detect/uni-control-prefix'
+import { CaptureBuffer } from '@/src/intercept/capture-buffer'
 import { classifyConnection } from '@/src/intercept/collector-presence'
 import { installWebTransportHook } from '@/src/intercept/webtransport-hook'
 import { deferWebTransport } from '@/src/intercept/deferred-webtransport'
@@ -26,40 +26,6 @@ import { PageRoute, type WorkerLink } from '@/src/impair/page-route'
 import { checkUrl, decide, routeThroughCli, snapshotOptions } from '@/src/impair/route'
 import { sessionOpened } from '@/src/messaging/session-opened'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
-
-/**
- * Max buffered events before oldest are dropped (prevents memory leaks on
- * pages that never open DevTools).
- *
- * Split three ways rather than one shared FIFO, because a high-bitrate session
- * produces hundreds of stream:data events per second and would otherwise evict
- * everything that makes the session interpretable within seconds:
- *
- *   1. Lifecycle — session:opened and friends. Losing session:opened makes the
- *      background drop every later event for that session, so the panel shows
- *      nothing at all.
- *   2. Control plane — what lets the panel name a draft and reconstruct track
- *      state. Every MoQT draft from 07 to 19 states "Objects are sent on
- *      unidirectional streams", so bidirectional streams are always control:
- *      the control stream through draft-16, and per-request streams from
- *      draft-17 on. Draft-17 also moved the control stream itself to a pair
- *      of *unidirectional* streams (§3.4, stream type 0x2F00), so those are
- *      admitted by their opening bytes rather than their direction.
- *      Keeping only the first few events would recover the SETUP exchange but
- *      not the track mapping, so this is budgeted by bytes instead. A whole
- *      session's control plane is a few kilobytes (~150 B of SETUP, ~100 B per
- *      track), so the budget below is generous by orders of magnitude while
- *      still holding less memory than the bulk buffer.
- *   3. Bulk — media on unidirectional streams and datagrams. Genuinely
- *      unbounded, and the least valuable per byte, so it stays a small FIFO.
- *
- * Tier 2 is also capped by entry count: a page writing tiny chunks to a bidi
- * stream would otherwise build a huge array well under the byte budget.
- */
-const MAX_LIFECYCLE_BUFFER = 500
-const MAX_CONTROL_BUFFER = 2000
-const MAX_CONTROL_BYTES = 256 * 1024
-const MAX_DATA_BUFFER = 500
 
 /**
  * Origins where worker wrapping is known to fail (CSP, etc.).
@@ -103,20 +69,6 @@ const pageRoute = new PageRoute(
   () => (globalThis as Record<symbol, unknown>)[ANY_KEY] === true,
   (msg) => forward(msg),
 )
-
-/** A buffered event plus its arrival order, so the buffers can be
- *  re-merged into the original sequence when they are flushed. */
-interface BufferedMsg {
-  seq: number
-  msg: ContentToBackgroundMsg
-  /** Payload size, for the byte-budgeted control buffer */
-  bytes: number
-}
-let bufferSeq = 0
-let lifecycleBuffer: BufferedMsg[] = []
-let controlBuffer: BufferedMsg[] = []
-let controlBytes = 0
-let dataBuffer: BufferedMsg[] = []
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -1091,70 +1043,17 @@ if (OrigWT) {
 
 // ─── Send helpers ─────────────────────────────────────────────────────
 
-/** Byte size of a message's payload, or 0 for messages that carry none */
-function payloadBytes(msg: ContentToBackgroundMsg): number {
-  if (msg.type !== 'stream:data' && msg.type !== 'datagram:data') return 0
-  return msg.data instanceof ArrayBuffer ? msg.data.byteLength : msg.data.length
-}
-
-/*
- * `opensUniControlStream` and its prefix live in `@/src/detect/uni-control-prefix`
- * so that this file and the detection layer cannot disagree about them again —
- * this file held `6f 00`, the RFC 9000 encoding, where draft-17+ writes `af 00`.
- *
- * Matched per chunk rather than per stream to keep the content script free of
- * per-stream bookkeeping on a hot path. A media chunk that happens to open
- * with these two bytes is admitted too; the byte budget absorbs it, and real
- * control data is orders of magnitude smaller than the budget.
- */
-/** Whether a buffered event belongs to the control plane rather than bulk media */
-function isControlPlane(msg: ContentToBackgroundMsg): boolean {
-  if (msg.type !== 'stream:data') return false
-  return msg.bidi === true || opensUniControlStream(msg.data)
-}
+const held = new CaptureBuffer()
 
 /** Queue or forward a message depending on activation state */
 function send(msg: ContentToBackgroundMsg) {
-  if (activated) {
-    forward(msg)
-    return
-  }
-  const entry: BufferedMsg = { seq: bufferSeq++, msg, bytes: payloadBytes(msg) }
-  // Cap each buffer to prevent memory leaks on pages that never open DevTools
-  if (isControlPlane(msg)) {
-    controlBuffer.push(entry)
-    controlBytes += entry.bytes
-    while (
-      controlBuffer.length > MAX_CONTROL_BUFFER ||
-      controlBytes > MAX_CONTROL_BYTES
-    ) {
-      const dropped = controlBuffer.shift()
-      if (!dropped) break
-      controlBytes -= dropped.bytes
-    }
-  } else if (msg.type === 'stream:data' || msg.type === 'datagram:data') {
-    // Includes bidi === undefined: a hook predating the flag reports no stream
-    // class, so treat it as bulk and keep the pre-existing behaviour.
-    // Datagrams are always bulk — no draft carries control messages on them.
-    dataBuffer.push(entry)
-    if (dataBuffer.length > MAX_DATA_BUFFER) dataBuffer.shift()
-  } else {
-    lifecycleBuffer.push(entry)
-    if (lifecycleBuffer.length > MAX_LIFECYCLE_BUFFER) lifecycleBuffer.shift()
-  }
+  if (activated) forward(msg)
+  else held.push(msg)
 }
 
-/** Flush every buffer in the original arrival order */
+/** Flush everything held, in the original arrival order */
 function flushBuffers() {
-  const pending = [...lifecycleBuffer, ...controlBuffer, ...dataBuffer]
-  lifecycleBuffer = []
-  controlBuffer = []
-  dataBuffer = []
-  controlBytes = 0
-  // Each buffer is already ordered; sorting the union is simpler than an
-  // n-way merge and the combined length is capped in the low thousands.
-  pending.sort((a, b) => a.seq - b.seq)
-  for (const entry of pending) forward(entry.msg)
+  for (const msg of held.drain()) forward(msg)
 }
 
 /**

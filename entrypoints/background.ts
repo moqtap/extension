@@ -87,6 +87,8 @@ import type { TraceRecorder } from '@moqtap/trace'
 
 interface TabState {
   sessions: Map<string, SessionRecord>
+  /** Connections the page opened before DevTools that were never captured */
+  missedConnections: number
 }
 
 interface SessionRecord {
@@ -236,7 +238,7 @@ const activatedTabs = new Set<number>()
 function getTabState(tabId: number): TabState {
   let state = tabStates.get(tabId)
   if (!state) {
-    state = { sessions: new Map() }
+    state = { sessions: new Map(), missedConnections: 0 }
     tabStates.set(tabId, state)
   }
   return state
@@ -857,6 +859,10 @@ function handleBridgeReady(tabId: number, frameId: number) {
           })
         }
       }
+      if (existing.missedConnections > 0) {
+        existing.missedConnections = 0
+        sendToPanel(tabId, { type: 'panel:instrumented', missedConnections: 0 })
+      }
     }
 
     activatedTabs.delete(tabId)
@@ -1437,6 +1443,18 @@ function handleContentMessage(
       break
     }
 
+    case 'capture:missed': {
+      // The page can post this itself; it only ever shows a reload hint.
+      const n = message.connections
+      if (!Number.isSafeInteger(n) || n <= 0) break
+      state.missedConnections = Math.min(state.missedConnections + n, 1_000_000)
+      sendToPanel(tabId, {
+        type: 'panel:instrumented',
+        missedConnections: state.missedConnections,
+      })
+      break
+    }
+
     case 'worker:csp-blocked': {
       sendToPanel(tabId, {
         type: 'panel:worker-csp-warning',
@@ -1665,22 +1683,15 @@ export default defineBackground(() => {
           connectedTabId = msg.tabId
           panelPorts.set(msg.tabId, port)
 
-          // Check if there were pre-existing sessions (mid-session open)
-          const existingState = tabStates.get(msg.tabId)
-          const hadPreExisting = existingState
-            ? existingState.sessions.size > 0
-            : false
-
           // Activate the tab's content script (start forwarding intercepted events)
           activateTab(msg.tabId)
 
           // Replay any state we already have
           replayState(msg.tabId)
 
-          // Tell panel about instrumentation status
           sendToPanel(msg.tabId, {
             type: 'panel:instrumented',
-            hadPreExistingSessions: hadPreExisting,
+            missedConnections: tabStates.get(msg.tabId)?.missedConnections ?? 0,
           })
           break
         }

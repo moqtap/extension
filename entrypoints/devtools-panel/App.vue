@@ -18,7 +18,7 @@ import logo from './moqtap-logo.svg?raw'
 const {
   sessions,
   selectedSessionId,
-  midSessionOpen,
+  missedConnections,
   cspBlockedWorkers,
   workerExclusions,
   selectSession,
@@ -267,12 +267,13 @@ const selectedSession = computed(() =>
           </button>
         </div>
       </div>
-      <div v-if="midSessionOpen" class="mq-notice mq-notice--info main-notice" role="status">
+      <div v-if="missedConnections > 0" class="mq-notice mq-notice--info main-notice" role="status">
         <span class="mq-notice__icon" aria-hidden="true">i</span>
         <p>
-          New connections appear as they open. To capture ones made before
-          DevTools opened,
-          <a href="#" class="mq-link" @click.prevent="reloadPage">reload the page</a>.
+          {{ missedConnections === 1 ? 'A connection' : `${missedConnections} connections` }}
+          opened before DevTools weren't captured.
+          <a href="#" class="mq-link" @click.prevent="reloadPage">Reload the page</a>
+          to capture them.
         </p>
       </div>
       <div

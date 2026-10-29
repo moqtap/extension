@@ -266,8 +266,8 @@ export function useInspector() {
   const sessions = ref<Map<string, SessionEntry>>(new Map())
   const selectedSessionId = ref<string | null>(null)
   const connected = ref(false)
-  /** True when DevTools was opened mid-session (some connections may have been missed) */
-  const midSessionOpen = ref(false)
+  /** Connections the page opened before DevTools that were never captured */
+  const missedConnections = ref(0)
   /** Worker URLs where instrumentation was blocked by CSP */
   const cspBlockedWorkers = ref<string[]>([])
   /** Worker origin exclusion list (auto-detected + manual) */
@@ -548,7 +548,7 @@ export function useInspector() {
       }
 
       case 'panel:instrumented': {
-        midSessionOpen.value = msg.hadPreExistingSessions
+        missedConnections.value = msg.missedConnections
         return false
       }
 
@@ -1013,7 +1013,7 @@ export function useInspector() {
     sessions,
     selectedSessionId,
     connected,
-    midSessionOpen,
+    missedConnections,
     cspBlockedWorkers,
     workerExclusions,
     streamCreationStacks,

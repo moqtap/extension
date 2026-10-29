@@ -154,6 +154,12 @@ export interface BridgeReadyMsg {
   type: 'bridge:ready'
 }
 
+/** Connections the content script dropped before DevTools activated the tab. */
+export interface CaptureMissedMsg {
+  type: 'capture:missed'
+  connections: number
+}
+
 export interface WorkerCspBlockedMsg {
   type: 'worker:csp-blocked'
   tabId?: number
@@ -201,6 +207,7 @@ export type ContentToBackgroundMsg =
   | WorkerCspRecoveredMsg
   | DatagramDataMsg
   | ImpairPageMsg
+  | CaptureMissedMsg
 
 // ─── Background -> Panel messages ────────────────────────────────────
 
@@ -357,8 +364,8 @@ export interface PanelSessionClosedMsg {
 
 export interface PanelInstrumentedMsg {
   type: 'panel:instrumented'
-  /** Whether there were pre-existing sessions before activation (mid-session open) */
-  hadPreExistingSessions: boolean
+  /** Connections opened before DevTools that the tab's content scripts dropped */
+  missedConnections: number
 }
 
 export interface PanelTrackUpdateMsg {
