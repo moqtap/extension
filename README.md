@@ -50,9 +50,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for adding a draft and releasing.
 MoQT is recognised from the message type that opens a stream. The draft comes
 from the negotiated `moqt-NN` WebTransport protocol for drafts 15 and later
 (draft-21 Section 6.2), and from the SETUP version number for drafts 07–14.
-When neither is available, the newest supported draft is assumed, and every
-surface that shows it says so: `MoQT draft-22 (assumed)` in the details pane, a
-trailing `?` on the connection badge, and a "Draft From" row giving the reason.
+When neither is available, the session is decoded as the newest supported draft.
 
 ## Account and sharing
 
