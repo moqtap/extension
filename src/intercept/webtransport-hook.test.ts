@@ -18,7 +18,7 @@ import {
   readNegotiatedProtocol,
   uninstallWebTransportHook,
 } from './webtransport-hook'
-import type { InterceptedSession, StreamInterceptor } from './webtransport-hook'
+import type { InterceptedSession, StreamInterceptor, WebTransportRouter } from './webtransport-hook'
 
 // ─── Mock WebTransport ──────────────────────────────────────────────────
 
@@ -599,5 +599,121 @@ describe('WebTransport hook — main-thread only (D10)', () => {
     })
     // Should not crash; cleanup should be safe to call
     expect(() => cleanup()).not.toThrow()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Impairment routing
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('WebTransport hook — routing through the moqtap CLI', () => {
+  const noStreams: StreamInterceptor = { onData: vi.fn(), onClose: vi.fn(), onError: vi.fn() }
+
+  function install(router: WebTransportRouter) {
+    const g = createMockGlobal()
+    const built: { url: string; options?: Record<string, unknown> }[] = []
+    class Recording extends MockWebTransport {
+      constructor(url: string, options?: Record<string, unknown>) {
+        super(url, options)
+        built.push({ url, options })
+      }
+    }
+    g.WebTransport = Recording
+    const sessions: InterceptedSession[] = []
+    const closed: [string, string][] = []
+    installWebTransportHook(g, (s) => sessions.push(s), noStreams, (id, r) => closed.push([id, r]), undefined, router)
+    const WT = g.WebTransport as unknown as new (url: string | URL, o?: unknown) => MockWebTransport
+    return { WT, built, sessions, closed }
+  }
+
+  it('connects as the page asked when the router has no route', () => {
+    const { WT, built } = install({ route: () => null, failed: vi.fn(), opened: vi.fn(), threw: vi.fn() })
+    new WT('https://relay.example/moq', { protocols: ['moqt-16'] })
+    expect(built).toEqual([{ url: 'https://relay.example/moq', options: { protocols: ['moqt-16'] } }])
+  })
+
+  it('opens the CLI route and captures the page URL as the session name', () => {
+    const options = { serverCertificateHashes: [] }
+    const { WT, built, sessions } = install({
+      route: () => ({ url: 'https://127.0.0.1:50001/moqtap/u/x', options, id: 'id-1' }),
+      failed: vi.fn(),
+      opened: vi.fn(),
+      threw: vi.fn(),
+    })
+    new WT(new URL('https://relay.example/moq'))
+    expect(built).toEqual([{ url: 'https://127.0.0.1:50001/moqtap/u/x', options }])
+    expect(sessions[0]?.url).toBe('https://relay.example/moq')
+  })
+
+  it('throws a refused session at the page and shows it closed with the reason', () => {
+    const { WT, built, sessions, closed } = install({
+      route: () => ({ refused: 'no session' }),
+      failed: vi.fn(),
+      opened: vi.fn(),
+      threw: vi.fn(),
+    })
+    expect(() => new WT('https://relay.example/moq')).toThrow('no session')
+    expect(built).toEqual([])
+    expect(sessions.map((s) => s.url)).toEqual(['https://relay.example/moq'])
+    expect(closed).toEqual([[sessions[0]!.id, 'no session']])
+  })
+
+  it('reports a routed session that fails to establish', async () => {
+    const failed = vi.fn()
+    const g = createMockGlobal()
+    class Refused extends MockWebTransport {
+      constructor(url: string) {
+        super(url)
+        this.ready = Promise.reject(new Error('blocked'))
+        this.ready.catch(() => {})
+      }
+    }
+    g.WebTransport = Refused
+    installWebTransportHook(g, vi.fn(), noStreams, vi.fn(), undefined, {
+      route: () => ({ url: 'https://127.0.0.1:50001/moqtap/u/x', options: {}, id: 'id-1' }),
+      failed,
+      opened: vi.fn(),
+      threw: vi.fn(),
+    })
+    new (g.WebTransport as unknown as new (u: string) => unknown)('https://relay.example/moq')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(failed).toHaveBeenCalledWith('https://relay.example/moq')
+  })
+
+  it('settles the route when the constructor returns', () => {
+    const route = { url: 'https://127.0.0.1:50001/moqtap/u/x', options: {}, id: 'id-1' }
+    const opened = vi.fn()
+    const threw = vi.fn()
+    const { WT } = install({ route: () => route, failed: vi.fn(), opened, threw })
+    new WT('https://relay.example/moq')
+    expect(opened).toHaveBeenCalledWith(route)
+    expect(threw).not.toHaveBeenCalled()
+  })
+
+  it('reports a routed constructor that throws, shows the session closed and rethrows', () => {
+    const route = { url: 'https://127.0.0.1:50001/moqtap/u/x', options: {}, id: 'id-1' }
+    const opened = vi.fn()
+    const threw = vi.fn()
+    const g = createMockGlobal()
+    const blocked = new DOMException('Refused to connect', 'SecurityError')
+    g.WebTransport = class {
+      constructor() {
+        throw blocked
+      }
+    } as unknown as typeof g.WebTransport
+    const sessions: InterceptedSession[] = []
+    const closed: [string, string][] = []
+    installWebTransportHook(g, (s) => sessions.push(s), noStreams, (id, r) => closed.push([id, r]), undefined, {
+      route: () => route,
+      failed: vi.fn(),
+      opened,
+      threw,
+    })
+    const WT = g.WebTransport as unknown as new (u: string) => unknown
+    expect(() => new WT('https://relay.example/moq')).toThrow(blocked)
+    expect(threw).toHaveBeenCalledWith(route, 'https://relay.example/moq', blocked)
+    expect(opened).not.toHaveBeenCalled()
+    expect(sessions.map((s) => s.url)).toEqual(['https://relay.example/moq'])
+    expect(closed).toEqual([[sessions[0]!.id, 'Refused to connect']])
   })
 })

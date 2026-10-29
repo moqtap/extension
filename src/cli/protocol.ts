@@ -6,7 +6,7 @@
  * `/moqtap/bridge/v1/`, JSON bodies. Binary fields are base64url without
  * padding.
  *
- * `GET hello?nonce=N` answers `{v, cli_version, identity_pub, cert_hash, port, sig}`,
+ * `GET hello?nonce=N` answers `{v: 2, cli_version, identity_pub, cert_hash, port, sig}`,
  * where `sig` is Ed25519 by `identity_pub` over
  *
  * | bytes | content |
@@ -24,12 +24,29 @@
 export const BRIDGE_PORTS: readonly number[] = Array.from({ length: 10 }, (_, i) => 47310 + i)
 export const BRIDGE_PATH = '/moqtap/bridge/v1/'
 
-/** The link presets the bridge accepts. Nothing else is ever sent. */
-export const LINKS = ['none', 'offline', '3g', '4g'] as const
-export type Link = (typeof LINKS)[number]
+export const PROTOCOL_VERSION = 2
 
-export const isLink = (v: unknown): v is Link =>
-  typeof v === 'string' && (LINKS as readonly string[]).includes(v)
+/** The impairment presets the bridge accepts. Nothing else is ever sent. */
+export const PRESETS = ['none', 'offline', '3g', '4g'] as const
+export type Preset = (typeof PRESETS)[number]
+
+export const isPreset = (v: unknown): v is Preset =>
+  typeof v === 'string' && (PRESETS as readonly string[]).includes(v)
+
+/** `owner` in `POST session` and `POST lease`. */
+export const isOwner = (v: unknown): v is string =>
+  typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v)
+
+/** A session id: 128 random bits, base64url. */
+export const isSessionId = (v: unknown): v is string =>
+  typeof v === 'string' && /^[A-Za-z0-9_-]{22}$/.test(v)
+
+/** A session's secret: 16 bytes, base64url. */
+export const isSecret = (v: unknown): v is string =>
+  typeof v === 'string' && /^[A-Za-z0-9_-]{22}$/.test(v) && fromBase64Url(v)?.length === 16
+
+const isPort = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= 0xffff
 
 const DOMAIN = new TextEncoder().encode('moqtap-bridge-v1')
 export const NONCE_BYTES = 32
@@ -91,9 +108,9 @@ export interface Hello {
 export function parseHello(raw: unknown): Hello | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
-  if (o.v !== 1 || typeof o.cli_version !== 'string') return null
+  if (o.v !== PROTOCOL_VERSION || typeof o.cli_version !== 'string') return null
   if (typeof o.identity_pub !== 'string' || typeof o.cert_hash !== 'string') return null
-  if (typeof o.sig !== 'string' || typeof o.port !== 'number') return null
+  if (typeof o.sig !== 'string' || !isPort(o.port)) return null
   const identityPub = fromBase64Url(o.identity_pub)
   const certHash = fromBase64Url(o.cert_hash)
   const sig = fromBase64Url(o.sig)
@@ -149,21 +166,56 @@ export async function verifyHello(
   }
 }
 
-export interface CliStatus {
-  /** Null exactly when `scenario` is set. */
-  readonly link: Link | null
-  /** The run plays a scenario (`-s`), so the link cannot be set. */
-  readonly scenario: boolean
-  readonly clientConnected: boolean
-  readonly listen: string
+/** A session the CLI holds, as `GET status` lists it. */
+export interface CliSession {
+  readonly id: string
+  readonly port: number
+  readonly owner: string
+  /** The page's relay URL once a client connected. */
+  readonly upstream: string | null
+  readonly preset: Preset
+  readonly connected: boolean
 }
 
-/** `GET status`: `{v, link, scenario, client_connected, listen}`. */
-export function parseStatus(raw: unknown): CliStatus | null {
+function parseSession(raw: unknown): CliSession | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
-  if (o.v !== 1 || typeof o.scenario !== 'boolean') return null
-  if (o.scenario ? o.link !== null : !isLink(o.link)) return null
-  if (typeof o.client_connected !== 'boolean' || typeof o.listen !== 'string') return null
-  return { link: o.link as Link | null, scenario: o.scenario, clientConnected: o.client_connected, listen: o.listen }
+  const profile = o.profile as Record<string, unknown> | null | undefined
+  if (!isSessionId(o.id) || !isPort(o.port) || !isOwner(o.owner)) return null
+  if (o.upstream !== null && typeof o.upstream !== 'string') return null
+  if (typeof profile !== 'object' || profile === null || !isPreset(profile.preset)) return null
+  if (typeof o.connected !== 'boolean') return null
+  return {
+    id: o.id,
+    port: o.port,
+    owner: o.owner,
+    upstream: o.upstream,
+    preset: profile.preset,
+    connected: o.connected,
+  }
+}
+
+/** `GET status`: `{v, listen, cert_hash, sessions}`. */
+export function parseStatus(raw: unknown): CliSession[] | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  if (o.v !== PROTOCOL_VERSION || !Array.isArray(o.sessions)) return null
+  const sessions = o.sessions.map(parseSession)
+  return sessions.every((s) => s !== null) ? (sessions as CliSession[]) : null
+}
+
+/** A session `POST session` opened: where it listens and the secret its CONNECT path starts with. */
+export interface CreatedSession {
+  readonly id: string
+  readonly port: number
+  readonly secret: string
+}
+
+/** `POST session`: `{id, port, secret}`. */
+export function parseCreated(raw: unknown): CreatedSession | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  return isSessionId(o.id) && isPort(o.port) && isSecret(o.secret)
+    ? { id: o.id, port: o.port, secret: o.secret }
+    : null
 }

@@ -4,8 +4,9 @@
  */
 
 import { isExtensionPage, type PortLike } from '@/src/account/background'
+import type { ImpairManager } from '@/src/impair/manager'
 import type { CliStateMsg, PageCliMsg } from './messages'
-import { isLink } from './protocol'
+import { isPreset } from './protocol'
 import type { CliBridge } from './service'
 
 export interface CliPortLike extends Omit<PortLike, 'postMessage'> {
@@ -14,11 +15,19 @@ export interface CliPortLike extends Omit<PortLike, 'postMessage'> {
 
 const REFRESH_MS = 2000
 
-export function serveCliPort(bridge: CliBridge, port: CliPortLike, extensionBase: string): boolean {
+const isTabId = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
+
+export function serveCliPort(
+  bridge: CliBridge,
+  impair: ImpairManager,
+  port: CliPortLike,
+  extensionBase: string,
+): boolean {
   if (!isExtensionPage(port.sender, extensionBase)) {
     port.disconnect()
     return false
   }
+
   const send = (msg: CliStateMsg) => {
     try {
       port.postMessage(msg)
@@ -27,12 +36,16 @@ export function serveCliPort(bridge: CliBridge, port: CliPortLike, extensionBase
     }
   }
   let unsubscribe: (() => void) | null = null
+  let unwatch: (() => void) | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   port.onDisconnect.addListener(() => {
     unsubscribe?.()
+    unwatch?.()
     if (timer !== null) clearInterval(timer)
   })
+
   const fail = (err: unknown) => console.warn('[moqtap cli]', err)
+
   port.onMessage.addListener((raw) => {
     const msg = raw as PageCliMsg
     switch (msg?.type) {
@@ -52,11 +65,20 @@ export function serveCliPort(bridge: CliBridge, port: CliPortLike, extensionBase
       case 'cli:reconsider':
         bridge.reconsider()
         break
-      case 'cli:set-link':
-        if (isLink(msg.link)) void bridge.setLink(msg.link).catch(fail)
-        break
       case 'cli:forget':
         if (typeof msg.identity === 'string') void bridge.forget(msg.identity).catch(fail)
+        break
+      case 'cli:watch-tab': {
+        if (!isTabId(msg.tabId) || unwatch !== null) break
+        const tabId = msg.tabId
+        unwatch = impair.onTab((tab) => {
+          if (tab.tabId === tabId) send({ type: 'cli:tab', tab })
+        })
+        void impair.ready.then(() => send({ type: 'cli:tab', tab: impair.view(tabId) }))
+        break
+      }
+      case 'cli:set-preset':
+        if (isTabId(msg.tabId) && isPreset(msg.preset)) void impair.setPreset(msg.tabId, msg.preset).catch(fail)
         break
     }
   })

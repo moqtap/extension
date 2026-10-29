@@ -2,8 +2,8 @@
  * WebTransport monkey-patching for main-thread interception.
  *
  * This module patches the global WebTransport constructor to intercept
- * all WebTransport sessions created in the main thread context.
- * Worker-based WebTransport is NOT intercepted (by design — see spec D10).
+ * all WebTransport sessions created in the main thread context. Workers get
+ * their own copy from the worker patch in `entrypoints/content.ts`.
  *
  * The hook captures:
  * - Connection setup (URL, options)
@@ -12,6 +12,9 @@
  * - Unidirectional streams (data streams: subgroup, fetch)
  * - Datagrams
  * - Close/error events
+ *
+ * While the tab has an impairment profile, the router sends each session
+ * through the moqtap CLI instead (src/impair).
  */
 
 import type { WebTransportOptionsInfo } from '../messaging/types'
@@ -124,6 +127,19 @@ export interface StreamInterceptor {
 }
 
 import { joinChain } from './patch-chain'
+import type { Refused, Routed } from '../impair/route'
+
+/** Sends sessions through the moqtap CLI while the tab has an impairment profile. */
+export interface WebTransportRouter {
+  /** Null to connect as the page asked. */
+  route(url: string | URL, options: unknown): Routed | Refused | null
+  /** The constructor accepted the route, so its CLI session is in use. */
+  opened(route: Routed): void
+  /** The constructor threw `err` for the route, so its CLI session is unused. */
+  threw(route: Routed, url: string, err: unknown): void
+  /** A routed session failed to establish. */
+  failed(url: string): void
+}
 
 // The teardown closure per global, so `uninstallWebTransportHook` can run it
 // without the return value from `installWebTransportHook`. It holds the closure
@@ -149,6 +165,7 @@ export function installWebTransportHook(
    * construction time — see readNegotiatedProtocol.
    */
   onSessionProtocol?: (sessionId: string, protocol: string) => void,
+  router?: WebTransportRouter,
 ): () => void {
   const glob = target as Record<string, unknown>
   /**
@@ -180,17 +197,44 @@ export function installWebTransportHook(
     url: string | URL,
     options?: Record<string, unknown>,
   ) {
-    // Delegate to the real constructor with the caller's original argument
-    const instance = new (
-      OriginalWebTransport as new (
-        url: string | URL,
-        options?: Record<string, unknown>,
-      ) => Record<string, unknown>
-    )(url, options)
+    const route = live && router ? router.route(url, options) : null
+    if (route !== null && 'refused' in route) {
+      const at = Date.now()
+      const id = generateSessionId()
+      onSession({ id, url: String(url), createdAt: at, options: extractSessionOptions(options) })
+      onSessionClosed?.(id, route.refused)
+      throw new DOMException(route.refused, 'NetworkError')
+    }
+
+    let instance: Record<string, unknown>
+    try {
+      instance = new (
+        OriginalWebTransport as new (
+          url: string | URL,
+          options?: Record<string, unknown>,
+        ) => Record<string, unknown>
+      )(route?.url ?? url, route?.options ?? options)
+    } catch (err) {
+      if (route !== null) {
+        router?.threw(route, String(url), err)
+        const id = generateSessionId()
+        onSession({ id, url: String(url), createdAt: Date.now(), options: extractSessionOptions(options) })
+        onSessionClosed?.(id, err instanceof Error ? err.message : String(err))
+      }
+      throw err
+    }
+    if (route !== null) router?.opened(route)
 
     // Torn down but still in the constructor chain, because something patched
     // over us and we could not safely unwind. Delegate and observe nothing.
     if (!live) return instance
+
+    if (route !== null) {
+      const ready = instance.ready as Promise<unknown> | undefined
+      if (ready && typeof ready.then === 'function') {
+        ready.then(undefined, () => router?.failed(String(url)))
+      }
+    }
 
     // Notify the session callback.
     // The spec allows a URL object here, and several MoQ libraries pass one.

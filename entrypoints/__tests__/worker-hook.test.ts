@@ -165,3 +165,127 @@ describe('a shared worker posts through its connected port', () => {
     expect(second.postMessage).not.toHaveBeenCalled()
   })
 })
+
+describe('the worker hook routes through the moqtap CLI while the tab has a profile', () => {
+  const CERT = 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk'
+
+  function routedWorker(init: unknown, permissions?: unknown) {
+    const scope = fakeDedicated()
+    const listeners: ((e: unknown) => void)[] = []
+    scope.addEventListener = (type: string, fn: (e: unknown) => void) => {
+      if (type === 'message') listeners.push(fn)
+    }
+    scope.location = { href: 'https://player.example/worker.js' }
+    scope.navigator = { permissions }
+    scope.__moqtapImpairInit = init
+    const built: { url: string; options: AnyScope }[] = []
+    let ready: Promise<void> = Promise.resolve()
+    let throwing: unknown = null
+    scope.WebTransport = class {
+      ready = ready
+      constructor(url: string, options: AnyScope) {
+        if (throwing !== null) {
+          const err = throwing
+          throwing = null
+          throw err
+        }
+        built.push({ url, options })
+      }
+    }
+    evaluateHook(scope, undefined)
+    const sent = () => scope.postMessage.mock.calls.map((c: AnyScope) => c[0]?.payload).filter(Boolean)
+    const deliver = (data: unknown) => {
+      const ev = { data, stopImmediatePropagation: vi.fn() }
+      for (const fn of listeners) fn(ev)
+      return ev
+    }
+    const failNext = () => {
+      ready = Promise.reject(new Error('refused'))
+      ready.catch(() => {})
+    }
+    const throwNext = (err: unknown) => {
+      throwing = err
+    }
+    return { scope, built, sent, deliver, failNext, throwNext }
+  }
+
+  const SECRET = 'BwcHBwcHBwcHBwcHBwcHBw'
+  const entry = { id: 'id-1', port: 50001, secret: SECRET }
+  const on = (e: unknown) => ({ source: 'moqtap-impair-worker', on: true, known: true, certHash: CERT, entry: e })
+  const off = { source: 'moqtap-impair-worker', on: false, known: true, certHash: null, entry: null }
+
+  it('connects directly with no profile', () => {
+    const w = routedWorker(off)
+    new w.scope.WebTransport('https://relay.example/moq')
+    expect(w.built[0]?.url).toBe('https://relay.example/moq')
+    expect(w.sent().some((m: AnyScope) => m.type === 'impair:failed')).toBe(false)
+  })
+
+  it('connects directly before the page knows, and says so', () => {
+    const w = routedWorker({ ...off, known: false })
+    new w.scope.WebTransport('https://relay.example/moq')
+    expect(w.built[0]?.url).toBe('https://relay.example/moq')
+    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'opened-early', url: 'https://relay.example/moq' })
+  })
+
+  it('opens its session at the CLI and reports it taken', () => {
+    const w = routedWorker(on(entry))
+    new w.scope.WebTransport('https://relay.example/moq?x=1')
+    expect(w.built[0]?.url).toMatch(/^https:\/\/127\.0\.0\.1:50001\/moqtap\/u\/BwcHBwcHBwcHBwcHBwcHBw\/[A-Za-z0-9_-]+$/)
+    expect(w.built[0]?.options.serverCertificateHashes[0].algorithm).toBe('sha-256')
+    expect(w.sent()).toContainEqual({ type: 'impair:took', id: 'id-1' })
+    const opened = w.sent().find((m: AnyScope) => m.type === 'session:opened')
+    expect(opened.url).toBe('https://relay.example/moq?x=1')
+  })
+
+  it('fails visibly once its session is used, until the page sends another', () => {
+    const w = routedWorker(on(entry))
+    new w.scope.WebTransport('https://relay.example/a')
+    expect(() => new w.scope.WebTransport('https://relay.example/b')).toThrow('moqtap impairment')
+    expect(w.built).toHaveLength(1)
+    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'no-session', url: 'https://relay.example/b' })
+    const ev = w.deliver(on({ id: 'id-2', port: 50002, secret: SECRET }))
+    expect(ev.stopImmediatePropagation).toHaveBeenCalled()
+    new w.scope.WebTransport('https://relay.example/c')
+    expect(w.built[1]?.url).toMatch(/^https:\/\/127\.0\.0\.1:50002\//)
+  })
+
+  it('refuses a session that offers protocols, keeping its CLI session', () => {
+    const w = routedWorker(on(entry))
+    expect(() => new w.scope.WebTransport('https://relay.example/a', { protocols: ['moqt-16'] })).toThrow(
+      'WebTransport protocols',
+    )
+    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'protocols', url: 'https://relay.example/a' })
+    new w.scope.WebTransport('https://relay.example/b')
+    expect(w.built[0]?.url).toMatch(/^https:..127.0.0.1:50001./)
+  })
+
+  it('keeps its session and names a CSP block when the constructor throws', () => {
+    const w = routedWorker(on(entry))
+    w.throwNext(new DOMException('Refused to connect', 'SecurityError'))
+    expect(() => new w.scope.WebTransport('https://relay.example/a')).toThrow('Refused to connect')
+    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'blocked-by-page', url: 'https://relay.example/a' })
+    expect(w.sent().some((m: AnyScope) => m.type === 'impair:took')).toBe(false)
+    const closed = w.sent().find((m: AnyScope) => m.type === 'session:closed')
+    expect(closed.reason).toBe('Refused to connect')
+    new w.scope.WebTransport('https://relay.example/b')
+    expect(w.built[0]?.url).toMatch(/^https:..127.0.0.1:50001./)
+    expect(w.sent()).toContainEqual({ type: 'impair:took', id: 'id-1' })
+  })
+
+  it('leaves the page its own messages', () => {
+    const w = routedWorker(undefined)
+    expect(w.deliver({ hello: 1 }).stopImmediatePropagation).not.toHaveBeenCalled()
+  })
+
+  it('says when the local network permission refused the connection', async () => {
+    const permissions = {
+      query: async ({ name }: { name: string }) => ({ state: name === 'loopback-network' ? 'denied' : 'granted' }),
+    }
+    const w = routedWorker(on(entry), permissions)
+    w.failNext()
+    new w.scope.WebTransport('https://relay.example/moq')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'local-network', url: 'https://relay.example/moq' })
+  })
+})

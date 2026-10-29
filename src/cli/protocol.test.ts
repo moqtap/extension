@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   fingerprint,
   fromBase64Url,
+  parseCreated,
   parseHello,
   parseStatus,
   signedMessage,
@@ -44,14 +45,14 @@ describe('bridge protocol', () => {
   })
 
   it('verifies the fixed vector and derives its fingerprint', async () => {
-    const hello = parseHello({ v: 1, cli_version: '0.0.0', ...VECTOR })!
+    const hello = parseHello({ v: 2, cli_version: '0.0.0', ...VECTOR })!
     expect(hello).not.toBeNull()
     expect(await verifyHello(subtle, hello, fromBase64Url(VECTOR.nonce)!, VECTOR.port)).toBe(true)
     expect(await fingerprint(subtle, hello.identityPub)).toBe(VECTOR.fingerprint)
   })
 
   it('rejects the vector on another port or nonce', async () => {
-    const hello = parseHello({ v: 1, cli_version: '0.0.0', ...VECTOR })!
+    const hello = parseHello({ v: 2, cli_version: '0.0.0', ...VECTOR })!
     const nonce = fromBase64Url(VECTOR.nonce)!
     expect(await verifyHello(subtle, hello, nonce, 47311)).toBe(false)
     const other = nonce.slice()
@@ -68,27 +69,46 @@ describe('bridge protocol', () => {
   })
 
   it('refuses malformed hellos', () => {
-    const base = { v: 1, cli_version: '0.0.0', ...VECTOR }
-    expect(parseHello({ ...base, v: 2 })).toBeNull()
+    const base = { v: 2, cli_version: '0.0.0', ...VECTOR }
+    expect(parseHello({ ...base, v: 1 })).toBeNull()
     expect(parseHello({ ...base, sig: VECTOR.sig.slice(4) })).toBeNull()
     expect(parseHello({ ...base, identity_pub: VECTOR.cert_hash.slice(2) })).toBeNull()
     expect(parseHello({ ...base, port: '47310' })).toBeNull()
   })
 
   it('reads status as the CLI sends it', () => {
-    const base = { v: 1, link: '3g', scenario: false, client_connected: true, listen: '127.0.0.1:4443' }
-    expect(parseStatus(base)).toEqual({
-      link: '3g',
-      scenario: false,
-      clientConnected: true,
-      listen: '127.0.0.1:4443',
+    const session = {
+      id: 'AAAAAAAAAAAAAAAAAAAAAA',
+      port: 50123,
+      owner: 'tab-owner_1',
+      upstream: null,
+      profile: { preset: '3g' },
+      connected: false,
+    }
+    const base = { v: 2, listen: null, cert_hash: VECTOR.cert_hash, sessions: [session] }
+    expect(parseStatus(base)).toEqual([
+      { id: session.id, port: 50123, owner: 'tab-owner_1', upstream: null, preset: '3g', connected: false },
+    ])
+    expect(parseStatus({ ...base, sessions: [{ ...session, upstream: 'https://relay.example/moq', connected: true }] }))
+      .toEqual([expect.objectContaining({ upstream: 'https://relay.example/moq', connected: true })])
+    expect(parseStatus({ ...base, sessions: [] })).toEqual([])
+    expect(parseStatus({ ...base, v: 1 })).toBeNull()
+    expect(parseStatus({ ...base, sessions: [{ ...session, profile: { preset: 'slow-4g' } }] })).toBeNull()
+    expect(parseStatus({ ...base, sessions: [{ ...session, id: 'short' }] })).toBeNull()
+    expect(parseStatus({ ...base, sessions: [{ ...session, connected: 'yes' }] })).toBeNull()
+  })
+
+  it('reads a created session', () => {
+    const secret = 'BwcHBwcHBwcHBwcHBwcHBw'
+    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123, secret })).toEqual({
+      id: 'AAAAAAAAAAAAAAAAAAAAAA',
+      port: 50123,
+      secret,
     })
-    expect(parseStatus({ ...base, link: null, scenario: true })?.scenario).toBe(true)
-    expect(parseStatus({ ...base, link: 'none', scenario: true })).toBeNull()
-    expect(parseStatus({ ...base, link: 'slow-4g' })).toBeNull()
-    expect(parseStatus({ ...base, link: null })).toBeNull()
-    expect(parseStatus({ ...base, scenario: 'yes' })).toBeNull()
-    expect(parseStatus({ ...base, scenario: undefined })).toBeNull()
-    expect(parseStatus({ ...base, v: 2 })).toBeNull()
+    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 0, secret })).toBeNull()
+    expect(parseCreated({ id: 'AAAA', port: 50123, secret })).toBeNull()
+    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123 })).toBeNull()
+    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123, secret: 'BwcHBwcHBwcHBwcHBwcH' })).toBeNull()
+    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123, secret: 'BwcHBwcHBwcHBwcHBwcHB/' })).toBeNull()
   })
 })

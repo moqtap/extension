@@ -1,9 +1,10 @@
 import { webcrypto } from 'node:crypto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { KeyValueArea } from '@/src/account/stores'
+import { ImpairManager } from '@/src/impair/manager'
 import { serveCliPort, type CliPortLike } from './background'
 import type { CliStateMsg, PageCliMsg } from './messages'
-import { fromBase64Url, signedMessage, toBase64Url, type Link } from './protocol'
+import { fromBase64Url, signedMessage, toBase64Url, type Preset } from './protocol'
 import { CliBridge, CONSENT_KEY } from './service'
 
 const subtle = webcrypto.subtle as unknown as SubtleCrypto
@@ -15,16 +16,27 @@ interface FakeCli {
   identity: string
   /** Signs with this key instead, as a squatter without the identity would. */
   signer?: CryptoKey
-  scenario?: boolean
-  link: Link
-  posts: unknown[]
+  sessions: Map<string, { port: number; owner: string; preset: Preset; connected: boolean }>
+  posts: { endpoint: string; body: unknown }[]
+  deletes: string[]
   nonces: Uint8Array[]
+  /** Answers POST session with this status instead. */
+  createStatus?: number
 }
 
 async function makeCli(port: number, extra: Partial<FakeCli> = {}): Promise<FakeCli> {
   const keys = (await subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair
   const pub = new Uint8Array(await subtle.exportKey('raw', keys.publicKey))
-  return { port, keys, identity: toBase64Url(pub), link: 'none', posts: [], nonces: [], ...extra }
+  return {
+    port,
+    keys,
+    identity: toBase64Url(pub),
+    sessions: new Map(),
+    posts: [],
+    deletes: [],
+    nonces: [],
+    ...extra,
+  }
 }
 
 function memoryArea(): KeyValueArea & { data: Map<string, unknown> } {
@@ -57,7 +69,7 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
         signedMessage(nonce, certHash, cli.port) as BufferSource,
       )
       return json({
-        v: 1,
+        v: 2,
         cli_version: '1.2.3',
         identity_pub: cli.identity,
         cert_hash: toBase64Url(certHash),
@@ -65,21 +77,38 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
         sig: toBase64Url(new Uint8Array(sig)),
       })
     }
-    // The CLI's status shape, from cli src/bridge.rs.
-    const status = () => ({
-      v: 1,
-      link: cli.scenario ? null : cli.link,
-      scenario: cli.scenario ?? false,
-      client_connected: true,
-      listen: '127.0.0.1:4443',
-    })
-    if (endpoint === 'status') return json(status())
-    if (endpoint === 'link' && init?.method === 'POST') {
-      const body = JSON.parse(String(init.body)) as { link: Link }
-      cli.posts.push(body)
-      if (cli.scenario) return json({ error: 'restart it without -s to set the link' }, 409)
-      cli.link = body.link
-      return json(status())
+    const entry = (id: string) => {
+      const e = cli.sessions.get(id)!
+      return { id, port: e.port, owner: e.owner, upstream: null, profile: { preset: e.preset }, connected: e.connected }
+    }
+    const body = init?.body === undefined ? undefined : JSON.parse(String(init.body))
+    if (init?.method === 'POST') cli.posts.push({ endpoint, body })
+    if (endpoint === 'status') {
+      return json({ v: 2, listen: null, cert_hash: toBase64Url(certHash), sessions: [...cli.sessions.keys()].map(entry) })
+    }
+    if (endpoint === 'session' && init?.method === 'POST') {
+      if (cli.createStatus !== undefined) return json({ error: 'no' }, cli.createStatus)
+      const id = toBase64Url(webcrypto.getRandomValues(new Uint8Array(16)))
+      const port = 50000 + cli.sessions.size
+      cli.sessions.set(id, { port, owner: body.owner, preset: body.profile.preset, connected: false })
+      const secret = toBase64Url(webcrypto.getRandomValues(new Uint8Array(16)))
+      return json({ id, port, secret })
+    }
+    if (endpoint === 'lease' && init?.method === 'POST') return new Response(null, { status: 204 })
+    const m = /^session\/([A-Za-z0-9_-]{22})(\/profile)?$/.exec(endpoint)
+    if (m !== null) {
+      const id = m[1]!
+      if (!cli.sessions.has(id)) return json({ error: 'unknown session' }, 404)
+      if (m[2] && init?.method === 'POST') {
+        cli.sessions.get(id)!.preset = body.profile.preset
+        return json(entry(id))
+      }
+      if (!m[2] && init?.method === 'DELETE') {
+        cli.sessions.delete(id)
+        cli.deletes.push(id)
+        return new Response(null, { status: 204 })
+      }
+      return json({ error: 'method' }, 405)
     }
     return new Response(null, { status: 404 })
   }) as typeof fetch
@@ -170,7 +199,7 @@ describe('CliBridge', () => {
     if (v.state !== 'confirm') return
     expect(v.identity).toBe(cli.identity)
     expect(v.fingerprint).toMatch(/^[0-9A-F]{4}(-[0-9A-F]{4}){4}$/)
-    await bridge.setLink('3g')
+    expect(await bridge.createSession('owner', '3g')).toEqual({ error: 'unreachable' })
     expect(cli.posts).toEqual([])
   })
 
@@ -183,14 +212,8 @@ describe('CliBridge', () => {
 
     const { bridge: again } = bridgeFor([cli], local)
     await again.probe()
-    const v = again.view()
-    expect(v.state).toBe('connected')
-    if (v.state === 'connected') expect(v.status).toEqual({
-        link: 'none',
-        scenario: false,
-        clientConnected: true,
-        listen: '127.0.0.1:4443',
-      })
+    expect(again.view().state).toBe('connected')
+    expect(again.target()).toEqual({ identity: cli.identity, port: 47311, certHash: toBase64Url(certHash) })
   })
 
   it('prompts again for a new identity on the same port', async () => {
@@ -221,33 +244,40 @@ describe('CliBridge', () => {
     expect(v.state === 'connected' && v.port).toBe(47311)
   })
 
-  it('sends only the four link values', async () => {
+  it('opens, switches and deletes sessions, and renews leases', async () => {
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
     await bridge.allow(cli.identity)
-    for (const l of ['none', 'offline', '3g', '4g'] as const) await bridge.setLink(l)
-    await bridge.setLink('slow-4g' as Link)
-    await bridge.setLink({ profile: 'x' } as unknown as Link)
-    expect(cli.posts).toEqual([{ link: 'none' }, { link: 'offline' }, { link: '3g' }, { link: '4g' }])
-    const v = bridge.view()
-    expect(v.state === 'connected' && v.status?.link).toBe('4g')
+    const created = await bridge.createSession('tab-1', '3g')
+    if ('error' in created) throw new Error(created.error)
+    expect(created.secret).toMatch(/^[A-Za-z0-9_-]{22}$/)
+    expect(cli.posts[0]).toEqual({ endpoint: 'session', body: { profile: { preset: '3g' }, owner: 'tab-1' } })
+    expect(await bridge.setSessionPreset(created.id, '4g')).toBe(true)
+    expect(cli.sessions.get(created.id)?.preset).toBe('4g')
+    expect((await bridge.sessions())?.map((s) => s.id)).toEqual([created.id])
+    expect(await bridge.renewLease('tab-1')).toBe(true)
+    await bridge.deleteSession(created.id)
+    expect(cli.deletes).toEqual([created.id])
+    expect(await bridge.setSessionPreset(created.id, 'none')).toBe(false)
   })
 
-  it('reports a scenario run on 409', async () => {
-    cli.scenario = true
+  it('sends only the four presets and valid owners', async () => {
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
     await bridge.allow(cli.identity)
-    const before = bridge.view()
-    expect(before.state === 'connected' && before.status).toEqual({
-      link: null,
-      scenario: true,
-      clientConnected: true,
-      listen: '127.0.0.1:4443',
-    })
-    await bridge.setLink('3g')
-    const v = bridge.view()
-    expect(v.state === 'connected' && v.error).toBe('scenario')
+    expect(await bridge.createSession('tab-1', 'slow-4g' as Preset)).toEqual({ error: 'unreachable' })
+    expect(await bridge.createSession('tab 1', '3g')).toEqual({ error: 'unreachable' })
+    expect(cli.posts).toEqual([])
+  })
+
+  it('reports the CLI session limit', async () => {
+    cli.createStatus = 429
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    expect(await bridge.createSession('tab-1', '3g')).toEqual({ error: 'limit' })
+    cli.createStatus = 400
+    expect(await bridge.createSession('tab-1', '3g')).toEqual({ error: 'refused' })
   })
 
   it('forgets consent and asks again', async () => {
@@ -270,6 +300,17 @@ describe('CliBridge', () => {
   })
 })
 
+function managerFor(bridge: CliBridge) {
+  return new ImpairManager({
+    cli: bridge,
+    store: memoryArea(),
+    sendToFrame: () => {},
+    tabExists: async () => true,
+    newOwner: () => 'owner-1',
+    every: () => () => {},
+  })
+}
+
 describe('serveCliPort', () => {
   function fakePort(url: string) {
     const sent: CliStateMsg[] = []
@@ -291,21 +332,28 @@ describe('serveCliPort', () => {
     const cli = await makeCli(47310)
     const { bridge } = bridgeFor([cli])
     const p = fakePort('https://evil.example/')
-    expect(serveCliPort(bridge, p.port, 'chrome-extension://abc/')).toBe(false)
+    expect(serveCliPort(bridge, managerFor(bridge), p.port, 'chrome-extension://abc/')).toBe(false)
     expect(p.isDisconnected()).toBe(true)
   })
 
-  it('passes on only the four link values', async () => {
+  it('sets a tab preset only to the four values', async () => {
     const cli = await makeCli(47310)
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
     await bridge.allow(cli.identity)
+    const impair = managerFor(bridge)
     const p = fakePort('chrome-extension://abc/devtools-panel.html')
-    serveCliPort(bridge, p.port, 'chrome-extension://abc/')
-    p.post({ type: 'cli:set-link', link: 'custom' })
-    p.post({ type: 'cli:set-link', link: '3g' })
+    serveCliPort(bridge, impair, p.port, 'chrome-extension://abc/')
+    p.post({ type: 'cli:watch-tab', tabId: 7 })
+    p.post({ type: 'cli:set-preset', tabId: 7, preset: 'custom' })
+    p.post({ type: 'cli:set-preset', tabId: '7', preset: '3g' })
+    p.post({ type: 'cli:set-preset', tabId: 7, preset: '3g' })
     await new Promise((r) => setTimeout(r, 50))
-    expect(cli.posts).toEqual([{ link: '3g' }])
+    expect(impair.view(7).preset).toBe('3g')
+    expect(p.sent.filter((m) => m.type === 'cli:tab').at(-1)).toEqual({
+      type: 'cli:tab',
+      tab: { tabId: 7, preset: '3g', failure: null, poolError: null },
+    })
     p.close()
   })
 })

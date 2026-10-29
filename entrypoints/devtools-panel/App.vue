@@ -1,10 +1,11 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AccountChip from './components/AccountChip.vue'
-import CliLink from './components/CliLink.vue'
 import ConnectionList from './components/ConnectionList.vue'
+import ImpairmentDialog from './components/ImpairmentDialog.vue'
 import SessionView from './components/SessionView.vue'
 import ShareDialog from './components/ShareDialog.vue'
+import { impairmentProblem, PRESET_LABELS } from './cli-copy'
 import { getCachedPref, savePref } from './prefs'
 import { useAccount } from './use-account'
 import { useCli } from './use-cli'
@@ -32,11 +33,16 @@ const {
 } = useInspector()
 
 const account = useAccount()
-const cli = useCli()
+const cli = useCli(browser.devtools.inspectedWindow.tabId)
 const cliView = cli.view
 const cliConfirm = computed(() =>
   cliView.value?.state === 'confirm' ? cliView.value : null,
 )
+const impairmentOpen = ref(false)
+const impairmentLabel = computed(
+  () => `Impairment: ${PRESET_LABELS[cli.tab.value?.preset ?? 'none']}`,
+)
+const impairmentIssue = computed(() => impairmentProblem(cli.tab.value, cliView.value))
 const accountView = account.view
 /** The session the share dialog is open for. */
 const sharingSessionId = ref<string | null>(null)
@@ -174,12 +180,6 @@ const selectedSession = computed(() =>
         :compact="sidebarCollapsed"
         @select="selectSession"
       />
-      <CliLink
-        :view="cliView"
-        :compact="sidebarCollapsed"
-        @set-link="cli.setLink"
-        @reconsider="cli.reconsider"
-      />
       <AccountChip
         :view="accountView"
         :compact="sidebarCollapsed"
@@ -198,6 +198,26 @@ const selectedSession = computed(() =>
       </a>
     </aside>
     <main class="main">
+      <div class="tool-bar main-bar">
+        <button
+          class="mq-btn mq-btn--quiet impair-btn"
+          :aria-pressed="(cli.tab.value?.preset ?? 'none') !== 'none'"
+          aria-haspopup="dialog"
+          @click="impairmentOpen = true"
+        >
+          <Icon name="gauge" />
+          {{ impairmentLabel }}
+          <span v-if="impairmentIssue" class="impair-flag" aria-hidden="true">▲</span>
+        </button>
+      </div>
+      <div
+        v-if="impairmentIssue && !impairmentOpen"
+        class="mq-notice mq-notice--warning main-notice"
+        role="status"
+      >
+        <span class="mq-notice__icon" aria-hidden="true">▲</span>
+        <p>{{ impairmentIssue }}</p>
+      </div>
       <div
         v-if="cliConfirm"
         class="mq-notice mq-notice--info main-notice cli-confirm"
@@ -205,7 +225,7 @@ const selectedSession = computed(() =>
       >
         <span class="mq-notice__icon" aria-hidden="true">i</span>
         <p>
-          Let moqtap set this CLI's network link? Identity
+          Let moqtap send this tab's connections through this moqtap CLI? Identity
           <span class="mq-mono cli-fp">{{ cliConfirm.fingerprint }}</span>, shown by
           <code>moqtap cert</code>.
         </p>
@@ -319,6 +339,14 @@ const selectedSession = computed(() =>
           </button>
         </div>
       </div>
+      <ImpairmentDialog
+        v-if="impairmentOpen"
+        :view="cliView"
+        :tab="cli.tab.value"
+        @close="impairmentOpen = false"
+        @set-preset="cli.setPreset"
+        @allow="cli.allow"
+      />
       <ShareDialog
         v-if="sharingSession"
         :key="sharingSession.sessionId"
@@ -372,6 +400,13 @@ const selectedSession = computed(() =>
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+
+.impair-btn {
+  gap: var(--space-1);
+}
+.impair-flag {
+  color: var(--warning);
 }
 
 .main-notice {

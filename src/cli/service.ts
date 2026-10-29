@@ -1,5 +1,5 @@
 /**
- * Finds the moqtap CLI's bridge on loopback and drives its link preset.
+ * Finds the moqtap CLI's bridge on loopback and opens impaired sessions on it.
  *
  * A CLI is believed only when its `hello` is signed over a nonce made here,
  * and controlled only once the user has allowed its identity. Consent is kept
@@ -7,20 +7,25 @@
  */
 
 import type { KeyValueArea } from '@/src/account/stores'
-import type { CliError, CliView, TrustedCli } from './messages'
+import type { CliView, TrustedCli } from './messages'
 import {
   BRIDGE_PORTS,
   bridgeUrl,
   Ed25519UnsupportedError,
   fingerprint,
-  isLink,
+  isOwner,
+  isPreset,
+  isSessionId,
   NONCE_BYTES,
+  parseCreated,
   parseHello,
   parseStatus,
   toBase64Url,
   verifyHello,
+  type CliSession,
+  type CreatedSession,
   type Hello,
-  type Link,
+  type Preset,
 } from './protocol'
 
 export const CONSENT_KEY = 'moqtap-cli-consent'
@@ -42,6 +47,21 @@ interface Found {
 
 type Consents = Record<string, { fingerprint: string; at: number }>
 
+/** The CLI the bridge is allowed to use: where it is and the certificate its sessions serve. */
+export interface CliTarget {
+  readonly identity: string
+  readonly port: number
+  /** base64url SHA-256 of the session listeners' certificate. */
+  readonly certHash: string
+}
+
+/**
+ * - `limit`: the CLI holds as many sessions as it allows
+ * - `refused`: the CLI answered with another error
+ * - `unreachable`: no allowed CLI answered
+ */
+export type CreateError = 'limit' | 'refused' | 'unreachable'
+
 export class CliBridge {
   private current: CliView = { state: 'searching' }
   private found: Found | null = null
@@ -53,6 +73,13 @@ export class CliBridge {
 
   view(): CliView {
     return this.current
+  }
+
+  /** The CLI in use, once its identity is allowed. */
+  target(): CliTarget | null {
+    const f = this.found
+    if (f === null || this.current.state !== 'connected') return null
+    return { identity: f.hello.identity, port: f.hello.port, certHash: toBase64Url(f.hello.certHash) }
   }
 
   onChange(fn: (view: CliView, trusted: TrustedCli[]) => void): () => void {
@@ -78,7 +105,10 @@ export class CliBridge {
     if (this.current.state !== 'connected' || this.found === null) return this.probe()
     const again = await this.hello(this.found.hello.port).catch(() => null)
     if (again === null || again.identity !== this.found.hello.identity) return this.probe()
-    await this.pullStatus(null)
+    if (toBase64Url(again.certHash) !== toBase64Url(this.found.hello.certHash)) {
+      this.found = { ...this.found, hello: again }
+      this.set({ state: 'connected', ...this.summary(this.found) })
+    }
   }
 
   async allow(identity: string): Promise<void> {
@@ -89,7 +119,7 @@ export class CliBridge {
     c[identity] = { fingerprint: f.fingerprint, at: this.deps.now() }
     await this.deps.local.set(CONSENT_KEY, c)
     this.declined.delete(identity)
-    await this.pullStatus(null)
+    this.set({ state: 'connected', ...this.summary(f) })
   }
 
   decline(identity: string): void {
@@ -119,24 +149,68 @@ export class CliBridge {
     }
   }
 
-  async setLink(link: Link): Promise<void> {
-    if (!isLink(link)) return
-    const f = this.found
-    if (f === null || this.current.state !== 'connected') return
-    let res: Response
+  /** Opens an idle session listener for `owner`, armed with `preset`. */
+  async createSession(
+    owner: string,
+    preset: Preset,
+  ): Promise<CreatedSession | { error: CreateError }> {
+    const t = this.target()
+    if (t === null || !isOwner(owner) || !isPreset(preset)) return { error: 'unreachable' }
+    const res = await this.post(t, 'session', { profile: { preset }, owner })
+    if (res === null) return { error: 'unreachable' }
+    if (res.status === 429) return { error: 'limit' }
+    if (!res.ok) return { error: 'refused' }
+    const created = parseCreated(await res.json().catch(() => null))
+    return created ?? { error: 'refused' }
+  }
+
+  /** Switches a session's impairment live. False when the CLI does not know it. */
+  async setSessionPreset(id: string, preset: Preset): Promise<boolean> {
+    const t = this.target()
+    if (t === null || !isSessionId(id) || !isPreset(preset)) return false
+    const res = await this.post(t, `session/${id}/profile`, { profile: { preset } })
+    return res?.ok === true
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    const t = this.target()
+    if (t === null || !isSessionId(id)) return
+    await this.send(t, `session/${id}`, { method: 'DELETE' })
+  }
+
+  /** Renews `owner`'s lease. False when the CLI did not answer. */
+  async renewLease(owner: string): Promise<boolean> {
+    const t = this.target()
+    if (t === null || !isOwner(owner)) return false
+    const res = await this.post(t, 'lease', { owner })
+    return res?.ok === true
+  }
+
+  /** The CLI's sessions, or null when it does not answer. */
+  async sessions(): Promise<CliSession[] | null> {
+    const t = this.target()
+    if (t === null) return null
+    const res = await this.send(t, 'status', {})
+    if (res === null || !res.ok) return null
+    return parseStatus(await res.json().catch(() => null))
+  }
+
+  private post(t: CliTarget, endpoint: string, body: unknown): Promise<Response | null> {
+    return this.send(t, endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  /** A reply from the CLI in use, or null when it stopped answering, which starts a new scan. */
+  private async send(t: CliTarget, endpoint: string, init: RequestInit): Promise<Response | null> {
     try {
-      res = await this.request(bridgeUrl(f.hello.port, 'link'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ link }),
-      })
+      return await this.request(bridgeUrl(t.port, endpoint), init)
     } catch {
-      await this.probe()
-      if (this.current.state === 'connected') this.setError('unreachable')
-      return
+      void this.probe().catch(() => {})
+      return null
     }
-    if (res.ok) await this.pullStatus(null)
-    else await this.pullStatus(res.status === 409 ? 'scenario' : 'refused')
   }
 
   private async scan(): Promise<void> {
@@ -161,7 +235,7 @@ export class CliBridge {
       return
     }
     this.found = { hello: pick, fingerprint: await fingerprint(this.deps.subtle, pick.identityPub) }
-    if (pick.identity in consents) await this.pullStatus(null)
+    if (pick.identity in consents) this.set({ state: 'connected', ...this.summary(this.found) })
     else if (this.declined.has(pick.identity)) this.set({ state: 'declined', ...this.summary(this.found) })
     else this.set({ state: 'confirm', ...this.summary(this.found) })
   }
@@ -183,23 +257,6 @@ export class CliBridge {
     const hello = parseHello(raw)
     if (hello === null) return null
     return (await verifyHello(this.deps.subtle, hello, nonce, port)) ? hello : null
-  }
-
-  private async pullStatus(error: CliError | null): Promise<void> {
-    const f = this.found
-    if (f === null) return
-    let status = null
-    try {
-      const res = await this.request(bridgeUrl(f.hello.port, 'status'))
-      if (res.ok) status = parseStatus(await res.json())
-    } catch {
-      error ??= 'unreachable'
-    }
-    this.set({ state: 'connected', ...this.summary(f), status, error })
-  }
-
-  private setError(error: CliError): void {
-    if (this.current.state === 'connected') this.set({ ...this.current, error })
   }
 
   private request(url: string, init: RequestInit = {}): Promise<Response> {

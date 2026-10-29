@@ -163,14 +163,35 @@ in through a background tab, and signing out there signs it out.
 A development build signs in to production unless `MOQTAP_APP_ORIGIN` and
 `MOQTAP_API_ORIGIN` name another deployment.
 
-## moqtap CLI link
+## Impairment with the moqtap CLI
 
-With `moqtap intercept --bridge` running, the panel finds the CLI on
-`127.0.0.1` ports 47310-47319 and offers its link presets: none, offline, 3G
-and 4G. Point the player at the CLI's listen address to use it. The panel
-controls a CLI only after you allow its identity, which `moqtap cert` prints;
-a CLI with a different identity asks again. Allowed identities are listed,
-and can be removed, in the extension's options.
+With `moqtap intercept --bridge` running, **Impairment** at the top of the
+panel sets a network profile for the inspected tab: Off, Offline, 3G or 4G.
+While a profile is set, the WebTransport sessions the tab opens, in workers
+too, go through the CLI and are each impaired on their own; changing the
+profile switches the tab's open sessions live. Off sends new sessions directly again
+and closes the ones going through the CLI, as does closing the tab. The
+inspector shows each session under the URL the page opened.
+
+While a profile is set, a session that cannot go through the CLI fails, and
+the panel says what to do. A public site needs permission to access local
+network devices to reach the CLI on `127.0.0.1`, and a page whose
+Content Security Policy sets `connect-src` needs `https://127.0.0.1:*` in it.
+A page that passes `serverCertificateHashes` needs the CLI started with `-k`.
+A session that offers WebTransport `protocols` cannot go through the CLI; set
+the profile to Off to connect it. A session opened as the page loads, before a
+CLI session is ready for it, fails too; connect again once the page has
+loaded.
+
+Two kinds of session connect directly while a profile is set, and the panel
+says so: one the page opens just after navigating to another site, before the
+profile reaches it, which a reload fixes, and one in a worker moqtap cannot
+instrument, for example because the page's `worker-src` does not allow
+`blob:`.
+
+The panel uses a CLI only after you allow its identity, which `moqtap cert`
+prints; a CLI with a different identity asks again. Allowed identities are
+listed, and can be removed, in the extension's options.
 
 ## Architecture
 
@@ -191,7 +212,8 @@ Key modules:
   IndexedDB as overflow
 - `src/intercept/` — WebTransport constructor monkey-patching
 - `src/account/` — Sign-in, tokens and the trace library client used for sharing
-- `src/cli/` — The moqtap CLI's loopback bridge: discovery, identity check, consent and the link control
+- `src/cli/` — The moqtap CLI's loopback bridge: discovery, identity check and consent
+- `src/impair/` — Tab impairment: the CLI sessions each frame holds and the WebTransport route through them
 
 ## Releasing
 

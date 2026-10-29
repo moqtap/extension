@@ -1,12 +1,15 @@
-/** The background's CLI bridge, on the real browser APIs. */
+/** The background's CLI bridge and tab impairment, on the real browser APIs. */
 
 import { browser } from 'wxt/browser'
 import { storageArea } from '@/src/account/stores'
+import { ImpairManager } from '@/src/impair/manager'
+import type { PoolMsg } from '@/src/impair/messages'
 import { serveCliPort, type CliPortLike } from './background'
 import { CLI_PORT } from './messages'
+import { toBase64Url } from './protocol'
 import { CliBridge } from './service'
 
-export function startCli(): CliBridge {
+export function startCli(sendToFrame: (tabId: number, frameId: number, msg: PoolMsg) => void): ImpairManager {
   const bridge = new CliBridge({
     fetch: (input, init) => fetch(input, init),
     local: storageArea(browser.storage.local),
@@ -14,9 +17,21 @@ export function startCli(): CliBridge {
     randomBytes: (n) => crypto.getRandomValues(new Uint8Array(n)),
     now: () => Date.now(),
   })
+  const impair = new ImpairManager({
+    cli: bridge,
+    store: storageArea(browser.storage.session),
+    sendToFrame,
+    // An extension API call also keeps the service worker alive between lease renewals.
+    tabExists: (tabId) => browser.tabs.get(tabId).then(() => true, () => false),
+    newOwner: () => toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+    every: (ms, fn) => {
+      const t = setInterval(fn, ms)
+      return () => clearInterval(t)
+    },
+  })
   const extensionBase = browser.runtime.getURL('/')
   browser.runtime.onConnect.addListener((port) => {
-    if (port.name === CLI_PORT) serveCliPort(bridge, port as unknown as CliPortLike, extensionBase)
+    if (port.name === CLI_PORT) serveCliPort(bridge, impair, port as unknown as CliPortLike, extensionBase)
   })
-  return bridge
+  return impair
 }

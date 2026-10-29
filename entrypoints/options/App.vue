@@ -11,7 +11,7 @@ const trusted = cli.trusted
     <section aria-labelledby="cli-title">
       <h1 id="cli-title" class="mq-label">Allowed moqtap CLIs</h1>
       <p class="mq-muted">
-        These CLI identities can be controlled from the DevTools panel. Remove one to be asked again.
+        The DevTools panel can send a tab's connections through these CLI identities. Remove one to be asked again.
       </p>
       <ul v-if="trusted.length > 0" class="trusted">
         <li v-for="t in trusted" :key="t.identity" class="trusted-entry">

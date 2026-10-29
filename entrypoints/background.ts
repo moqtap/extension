@@ -67,6 +67,7 @@ import {
 } from '@/src/storage/datagram-store'
 import { startAccount } from '@/src/account/browser-account'
 import { startCli } from '@/src/cli/browser-cli'
+import { isImpairPageMsg } from '@/src/impair/messages'
 import {
   acceptAutoExclusion,
   bareOrigin,
@@ -1561,8 +1562,14 @@ export default defineBackground(() => {
   // synchronously with the other listeners, so the bridge's sign-in callback
   // can wake a stopped worker.
   startAccount()
-  // The moqtap CLI's loopback bridge, for the panel's link control (src/cli).
-  startCli()
+  // The moqtap CLI's loopback bridge and tab impairment (src/cli, src/impair).
+  const impair = startCli((tabId, frameId, msg) => {
+    try {
+      bridgePorts.get(tabId)?.get(frameId)?.postMessage(msg)
+    } catch {
+      // The frame is gone; its disconnect cleans up.
+    }
+  })
 
   // Handle long-lived connections from bridge content scripts and DevTools panels
   browser.runtime.onConnect.addListener((port) => {
@@ -1588,8 +1595,13 @@ export default defineBackground(() => {
 
       // Port connection itself signals bridge:ready (page loaded/reloaded)
       handleBridgeReady(tabId, frameId)
+      impair.frameConnected(tabId, frameId)
 
       port.onMessage.addListener((message: ContentToBackgroundMsg) => {
+        if (isImpairPageMsg(message)) {
+          impair.fromPage(tabId, frameId, message)
+          return
+        }
         handleContentMessage(message, tabId, frameId, sender)
       })
 
@@ -1598,6 +1610,7 @@ export default defineBackground(() => {
         if (fp?.get(frameId) === port) {
           fp.delete(frameId)
           if (fp.size === 0) bridgePorts.delete(tabId)
+          impair.frameGone(tabId, frameId)
         }
 
         // If this is an iframe (not main frame) and the tab is still alive,
@@ -1863,5 +1876,6 @@ export default defineBackground(() => {
     panelPorts.delete(tabId)
     bridgePorts.delete(tabId)
     activatedTabs.delete(tabId)
+    void impair.tabRemoved(tabId)
   })
 })

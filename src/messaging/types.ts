@@ -1,4 +1,5 @@
 import type { CollectorStatus } from '../intercept/collector-presence'
+import type { ImpairPageMsg } from '../impair/messages'
 
 /**
  * Message types for content script <-> background <-> DevTools panel communication.
@@ -197,6 +198,7 @@ export type ContentToBackgroundMsg =
   | WorkerCspBlockedMsg
   | WorkerCspRecoveredMsg
   | DatagramDataMsg
+  | ImpairPageMsg
 
 // ─── Background -> Panel messages ────────────────────────────────────
 
