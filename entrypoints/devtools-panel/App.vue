@@ -1,11 +1,13 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AccountChip from './components/AccountChip.vue'
+import CliLink from './components/CliLink.vue'
 import ConnectionList from './components/ConnectionList.vue'
 import SessionView from './components/SessionView.vue'
 import ShareDialog from './components/ShareDialog.vue'
 import { getCachedPref, savePref } from './prefs'
 import { useAccount } from './use-account'
+import { useCli } from './use-cli'
 import { useInspector } from './use-inspector'
 import Icon from './components/Icon.vue'
 import logo from './moqtap-logo.svg?raw'
@@ -30,6 +32,11 @@ const {
 } = useInspector()
 
 const account = useAccount()
+const cli = useCli()
+const cliView = cli.view
+const cliConfirm = computed(() =>
+  cliView.value?.state === 'confirm' ? cliView.value : null,
+)
 const accountView = account.view
 /** The session the share dialog is open for. */
 const sharingSessionId = ref<string | null>(null)
@@ -167,6 +174,12 @@ const selectedSession = computed(() =>
         :compact="sidebarCollapsed"
         @select="selectSession"
       />
+      <CliLink
+        :view="cliView"
+        :compact="sidebarCollapsed"
+        @set-link="cli.setLink"
+        @reconsider="cli.reconsider"
+      />
       <AccountChip
         :view="accountView"
         :compact="sidebarCollapsed"
@@ -185,6 +198,26 @@ const selectedSession = computed(() =>
       </a>
     </aside>
     <main class="main">
+      <div
+        v-if="cliConfirm"
+        class="mq-notice mq-notice--info main-notice cli-confirm"
+        role="status"
+      >
+        <span class="mq-notice__icon" aria-hidden="true">i</span>
+        <p>
+          Let moqtap set this CLI's network link? Identity
+          <span class="mq-mono cli-fp">{{ cliConfirm.fingerprint }}</span>, shown by
+          <code>moqtap cert</code>.
+        </p>
+        <div class="mq-row">
+          <button class="mq-btn mq-btn--primary" @click="cli.allow(cliConfirm.identity)">
+            Allow
+          </button>
+          <button class="mq-btn mq-btn--secondary" @click="cli.decline(cliConfirm.identity)">
+            Not now
+          </button>
+        </div>
+      </div>
       <div v-if="midSessionOpen" class="mq-notice mq-notice--info main-notice" role="status">
         <span class="mq-notice__icon" aria-hidden="true">i</span>
         <p>
@@ -344,6 +377,13 @@ const selectedSession = computed(() =>
 .main-notice {
   margin: var(--space-2) var(--space-2) 0;
   grid-template-columns: 20px 1fr;
+}
+.cli-confirm {
+  grid-template-columns: 20px 1fr auto;
+  align-items: center;
+}
+.cli-fp {
+  white-space: nowrap;
 }
 
 .exclusion-toggle {

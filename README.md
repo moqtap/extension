@@ -19,6 +19,7 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 - Stack traces for control messages and stream creation
 - Export/import `.moqtrace` trace files
 - Optional moqtap account: upload a session to your library and share it by link or with a team
+- Sets the network link (none, offline, 3G, 4G) of a running `moqtap intercept --bridge` from the panel
 - Graceful handling of non-MoQT WebTransport connections
 
 ## Development
@@ -162,6 +163,15 @@ in through a background tab, and signing out there signs it out.
 A development build signs in to production unless `MOQTAP_APP_ORIGIN` and
 `MOQTAP_API_ORIGIN` name another deployment.
 
+## moqtap CLI link
+
+With `moqtap intercept --bridge` running, the panel finds the CLI on
+`127.0.0.1` ports 47310-47319 and offers its link presets: none, offline, 3G
+and 4G. Point the player at the CLI's listen address to use it. The panel
+controls a CLI only after you allow its identity, which `moqtap cert` prints;
+a CLI with a different identity asks again. Allowed identities are listed,
+and can be removed, in the extension's options.
+
 ## Architecture
 
 ```
@@ -181,6 +191,7 @@ Key modules:
   IndexedDB as overflow
 - `src/intercept/` — WebTransport constructor monkey-patching
 - `src/account/` — Sign-in, tokens and the trace library client used for sharing
+- `src/cli/` — The moqtap CLI's loopback bridge: discovery, identity check, consent and the link control
 
 ## Releasing
 

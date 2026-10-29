@@ -66,6 +66,7 @@ import {
   loadDatagramGroupData,
 } from '@/src/storage/datagram-store'
 import { startAccount } from '@/src/account/browser-account'
+import { startCli } from '@/src/cli/browser-cli'
 import {
   acceptAutoExclusion,
   bareOrigin,
@@ -1560,6 +1561,8 @@ export default defineBackground(() => {
   // synchronously with the other listeners, so the bridge's sign-in callback
   // can wake a stopped worker.
   startAccount()
+  // The moqtap CLI's loopback bridge, for the panel's link control (src/cli).
+  startCli()
 
   // Handle long-lived connections from bridge content scripts and DevTools panels
   browser.runtime.onConnect.addListener((port) => {

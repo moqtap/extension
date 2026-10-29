@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Share,
+  Terminal,
   X,
 } from 'lucide-static'
 
@@ -33,6 +34,7 @@ export const icons = {
   panelLeftClose: sized(PanelLeftClose),
   panelLeftOpen: sized(PanelLeftOpen),
   share: sized(Share),
+  terminal: sized(Terminal),
   x: sized(X),
 } as const
 
