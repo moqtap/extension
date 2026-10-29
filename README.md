@@ -86,6 +86,10 @@ switches them live, and the profile stays with the tab across reloads until
 the tab closes. Off leaves those sessions running unimpaired and sends new
 ones directly. The inspector shows each session under the URL the page opened.
 
+Each session through the CLI shows its profile in the connection list; click
+it to give that session its own profile, or set it back to the tab's. Changing
+the tab's profile sets every session back to it.
+
 Sessions opened before the profile was set stay direct; the panel marks them
 not impaired, and a reload impairs them. While any tab has a profile, a
 session a page opens as it loads connects once the page knows its tab's

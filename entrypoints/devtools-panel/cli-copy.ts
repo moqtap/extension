@@ -54,3 +54,18 @@ export function impairmentProblem(tab: TabImpairment | null, view: CliView | nul
   }
   return `A connection couldn't open because the moqtap CLI wasn't reachable. Check the terminal running ${START_COMMAND}, then reload.`
 }
+
+/** Why the CLI did not take the profile picked for one session, with what to do; null when it did. */
+export function sessionImpairmentProblem(
+  tab: TabImpairment | null,
+  session: string,
+  view: CliView | null,
+): string | null {
+  const error = tab?.sessionErrors.find((e) => e.session === session)?.error
+  if (error === undefined) return null
+  const cli = cliProblem(view)
+  if (cli !== null) return cli
+  return error === 'refused'
+    ? 'The moqtap CLI refused this profile for this connection. Update moqtap, then pick the profile again.'
+    : `The moqtap CLI didn't answer. Check the terminal running ${START_COMMAND}, then pick the profile again.`
+}

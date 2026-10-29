@@ -3,14 +3,15 @@
  *
  * Picking a profile opens one tab port at the CLI, kept for the tab's
  * lifetime: profile changes switch it and every session in it live, and Off
- * leaves its sessions running unimpaired while new ones connect directly. The
+ * leaves its sessions running unimpaired while new ones connect directly. A
+ * session can have its own profile until the tab's changes. The
  * port and token reach every frame of the tab; a registered MAIN-world script
  * tells documents that start while any tab has a profile to wait for them.
  */
 
 import type { KeyValueArea } from '@/src/account/stores'
-import type { ImpairFailure, TabError, TabImpairment } from '@/src/cli/messages'
-import { isOff, isProfile, OFF, type CliTab, type CreatedTab, type Profile } from '@/src/cli/protocol'
+import type { ImpairFailure, SessionError, SessionImpairment, TabError, TabImpairment } from '@/src/cli/messages'
+import { isId16, isOff, isProfile, OFF, sameProfile, type CliTab, type CreatedTab, type Profile } from '@/src/cli/protocol'
 import type { CliTarget, CreateError, SwitchResult } from '@/src/cli/service'
 import type { TabAnswer, TabAnswerMsg } from './messages'
 
@@ -24,6 +25,7 @@ export interface ImpairCli {
   onChange(fn: () => void): () => void
   createTab(owner: string, profile: Profile): Promise<CreatedTab | { error: CreateError }>
   setTabProfile(id: string, profile: Profile): Promise<SwitchResult>
+  setSessionProfile(id: string, profile: Profile | null): Promise<SwitchResult>
   deleteTab(id: string): Promise<void>
   renewLease(owner: string): Promise<boolean>
   tabs(): Promise<CliTab[] | null>
@@ -51,11 +53,20 @@ interface Held {
   readonly cli: string
 }
 
+/** A session's own profile and its name. */
+type Own = Omit<SessionImpairment, 'session'>
+
 interface TabProfile {
   readonly owner: string
   profile: Profile
   name: string
   held: Held | null
+  /** Sessions with their own profile at the CLI, by CLI session id. */
+  own: Map<string, Own>
+  /** Sessions whose last profile change the CLI did not take. */
+  failed: Map<string, SessionError>
+  /** Sessions the CLI last listed with a profile that is neither the tab's nor their own. */
+  unknown: Set<string>
   /** No tab port yet and none has failed to open; frames wait instead of hearing route null. */
   pending: boolean
 }
@@ -104,6 +115,9 @@ export class ImpairManager {
       tabId,
       profile: p?.profile ?? OFF,
       name: p?.name ?? OFF_NAME,
+      sessions: [...(p?.own ?? [])].map(([session, o]) => ({ session, ...o })),
+      unknown: [...(p?.unknown ?? [])],
+      sessionErrors: [...(p?.failed ?? [])].map(([session, error]) => ({ session, error })),
       failure: s?.failure ?? null,
       error: s?.error ?? (this.flagFailed && p !== undefined && !isOff(p.profile) ? 'flag' : null),
     }
@@ -116,6 +130,11 @@ export class ImpairManager {
 
   setProfile(tabId: number, profile: Profile, name: string): Promise<void> {
     return this.serial(() => this.switchTo(tabId, profile, name))
+  }
+
+  /** Gives one session in the tab its own profile, or with null the tab's again. */
+  setSessionProfile(tabId: number, session: string, own: Own | null): Promise<void> {
+    return this.serial(() => this.switchSession(tabId, session, own))
   }
 
   /** A frame's bridge connected: a new document, or a reconnect. */
@@ -165,7 +184,7 @@ export class ImpairManager {
         this.emit(tabId)
         return
       }
-      p = { owner: this.deps.newOwner(), profile, name, held: null, pending: true }
+      p = { owner: this.deps.newOwner(), profile, name, held: null, own: new Map(), failed: new Map(), unknown: new Set(), pending: true }
       this.profiles.set(tabId, p)
       this.ensureLease()
     } else {
@@ -175,6 +194,12 @@ export class ImpairManager {
         const r = await this.deps.cli.setTabProfile(p.held.id, profile)
         if (r === 'gone') drop(p)
         else this.setError(tabId, r === 'ok' ? null : r)
+        // The CLI drops sessions' own profiles on a tab switch.
+        if (r === 'ok') {
+          p.own.clear()
+          p.failed.clear()
+          p.unknown.clear()
+        }
       }
     }
     if (p.held === null) {
@@ -187,6 +212,22 @@ export class ImpairManager {
     await this.persist()
     await this.syncFlag()
     this.pushAll(tabId)
+    this.emit(tabId)
+  }
+
+  private async switchSession(tabId: number, session: string, own: Own | null): Promise<void> {
+    const p = this.profiles.get(tabId)
+    if (p === undefined || p.held === null) {
+      this.emit(tabId)
+      return
+    }
+    const r = await this.deps.cli.setSessionProfile(session, own?.profile ?? null)
+    p.failed.delete(session)
+    if (r === 'ok') p.unknown.delete(session)
+    if (r === 'ok' && own !== null) p.own.set(session, own)
+    else if (r === 'ok' || r === 'gone') p.own.delete(session)
+    else p.failed.set(session, r)
+    await this.persist()
     this.emit(tabId)
   }
 
@@ -235,7 +276,17 @@ export class ImpairManager {
         if (typeof v.owner !== 'string' || !isProfile(v.profile) || typeof v.name !== 'string') continue
         const held = isHeld(v.held) ? v.held : null
         if (held === null && isOff(v.profile)) continue
-        this.profiles.set(tabId, { owner: v.owner, profile: v.profile, name: v.name, held, pending: held === null })
+        const own = new Map(held === null ? [] : restoreOwn(v.own))
+        this.profiles.set(tabId, {
+          owner: v.owner,
+          profile: v.profile,
+          name: v.name,
+          held,
+          own,
+          failed: new Map(),
+          unknown: new Set(),
+          pending: held === null,
+        })
       }
     }
     await this.syncFlag()
@@ -281,9 +332,12 @@ export class ImpairManager {
       this.setError(tabId, ok ? null : 'unreachable')
     }
     const listed = t === null ? null : await this.deps.cli.tabs()
+    const changed = new Set<number>()
     for (const [tabId, p] of [...this.profiles]) {
       const held = p.held
-      if (held !== null && listed !== null && !listed.some((x) => x.id === held.id)) drop(p)
+      const at = held === null ? undefined : listed?.find((x) => x.id === held.id)
+      if (held !== null && listed !== null && at === undefined) drop(p)
+      if (at !== undefined && this.reconcile(p, at)) changed.add(tabId)
       if (p.held !== null) continue
       if (isOff(p.profile)) this.profiles.delete(tabId)
       else await this.open(tabId, p)
@@ -298,8 +352,34 @@ export class ImpairManager {
       if (this.profiles.get(tabId)?.held !== held || this.deferred.has(tabId)) {
         this.pushAll(tabId)
         this.emit(tabId)
+      } else if (changed.has(tabId)) {
+        this.emit(tabId)
       }
     }
+  }
+
+  /** Matches the sessions to what the CLI lists; true when anything changed. */
+  private reconcile(p: TabProfile, at: CliTab): boolean {
+    let changed = false
+    for (const session of new Set([...p.own.keys(), ...p.failed.keys()])) {
+      if (!at.sessions.some((s) => s.id === session)) {
+        p.own.delete(session)
+        p.failed.delete(session)
+        changed = true
+      }
+    }
+    const unknown = new Set<string>()
+    for (const s of at.sessions) {
+      const own = p.own.get(s.id)
+      if (own !== undefined && !sameProfile(s.profile, own.profile)) {
+        p.own.delete(s.id)
+        changed = true
+      }
+      if (!p.own.has(s.id) && !sameProfile(s.profile, p.profile)) unknown.add(s.id)
+    }
+    if (unknown.size !== p.unknown.size || [...unknown].some((s) => !p.unknown.has(s))) changed = true
+    p.unknown = unknown
+    return changed
   }
 
   private answer(tabId: number): TabAnswer {
@@ -363,8 +443,10 @@ export class ImpairManager {
   }
 
   private persist(): Promise<void> {
-    const out: Record<string, Omit<TabProfile, 'pending'>> = {}
-    for (const [tabId, p] of this.profiles) out[tabId] = { owner: p.owner, profile: p.profile, name: p.name, held: p.held }
+    const out: Record<string, unknown> = {}
+    for (const [tabId, p] of this.profiles) {
+      out[tabId] = { owner: p.owner, profile: p.profile, name: p.name, held: p.held, own: Object.fromEntries(p.own) }
+    }
     return this.deps.store.set(PROFILES_KEY, out).catch(() => {})
   }
 
@@ -377,7 +459,19 @@ export class ImpairManager {
 /** Forgets a tab port the CLI no longer has; frames wait while it reopens. */
 function drop(p: TabProfile): void {
   p.held = null
+  p.own.clear()
+  p.failed.clear()
+  p.unknown.clear()
   p.pending = true
+}
+
+function restoreOwn(raw: unknown): [string, Own][] {
+  if (typeof raw !== 'object' || raw === null) return []
+  return Object.entries(raw as Record<string, Record<string, unknown> | null>).flatMap(([session, o]) =>
+    isId16(session) && o !== null && typeof o === 'object' && isProfile(o.profile) && typeof o.name === 'string'
+      ? [[session, { profile: o.profile, name: o.name }] as [string, Own]]
+      : [],
+  )
 }
 
 const targetKey = (t: CliTarget | null) => (t === null ? '' : `${t.identity} ${t.port} ${t.certHash}`)

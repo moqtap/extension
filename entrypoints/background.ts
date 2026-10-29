@@ -70,6 +70,7 @@ import {
 } from '@/src/storage/datagram-store'
 import { startAccount } from '@/src/account/browser-account'
 import { startCli } from '@/src/cli/browser-cli'
+import { openedSession, panelSessionOpened } from '@/src/messaging/session-opened'
 import { isImpairPageMsg } from '@/src/impair/messages'
 import {
   acceptAutoExclusion,
@@ -107,6 +108,7 @@ interface SessionRecord {
   collector?: CollectorStatus
   /** The session goes through the moqtap CLI. */
   cli?: true
+  cliSession?: string
   streams: Map<number, StreamRecord>
   closed: boolean
   closedReason?: string
@@ -692,16 +694,7 @@ function replayState(tabId: number) {
   if (!state) return
 
   for (const session of state.sessions.values()) {
-    sendToPanel(tabId, {
-      type: 'panel:session:opened',
-      sessionId: session.sessionId,
-      url: session.url,
-      createdAt: session.createdAt,
-      ...(session.options ? { options: session.options } : {}),
-      ...(session.frameId !== 0 ? { frameId: session.frameId } : {}),
-      ...(session.collector ? { collector: session.collector } : {}),
-      ...(session.cli ? { cli: true } : {}),
-    })
+    sendToPanel(tabId, panelSessionOpened(session))
 
     if (session.negotiatedProtocol) {
       sendToPanel(tabId, {
@@ -904,13 +897,7 @@ function handleContentMessage(
     case 'session:opened': {
       const tracks = new Map<string, TrackRecord>()
       const record: SessionRecord = {
-        sessionId: message.sessionId,
-        url: message.url,
-        createdAt: message.createdAt,
-        options: message.options,
-        frameId,
-        ...(message.collector ? { collector: message.collector } : {}),
-        ...(message.cli === true ? { cli: true } : {}),
+        ...openedSession(message, frameId),
         streams: new Map(),
         closed: false,
         detection: null,
@@ -933,16 +920,7 @@ function handleContentMessage(
       // which tab owns this session even after a SW restart.
       saveSessionTab(message.sessionId, tabId)
 
-      sendToPanel(tabId, {
-        type: 'panel:session:opened',
-        sessionId: message.sessionId,
-        url: message.url,
-        createdAt: message.createdAt,
-        ...(message.options ? { options: message.options } : {}),
-        ...(frameId !== 0 ? { frameId } : {}),
-        ...(message.collector ? { collector: message.collector } : {}),
-        ...(message.cli === true ? { cli: true } : {}),
-      })
+      sendToPanel(tabId, panelSessionOpened(record))
       break
     }
 

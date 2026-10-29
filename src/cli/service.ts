@@ -20,6 +20,7 @@ import {
   parseCreatedTab,
   parseHello,
   parseProfiles,
+  parseSession,
   parseStatus,
   parseTab,
   toBase64Url,
@@ -65,7 +66,7 @@ export interface CliTarget {
  */
 export type CreateError = 'limit' | 'refused' | 'unreachable'
 
-/** How `POST tab/:id/profile` went: `gone` when the CLI no longer has the tab. */
+/** How a profile change went: `gone` when the CLI no longer has the tab or session. */
 export type SwitchResult = 'ok' | 'gone' | 'refused' | 'unreachable'
 
 export class CliBridge {
@@ -175,6 +176,17 @@ export class CliBridge {
     if (res === null) return 'unreachable'
     if (res.status === 404) return 'gone'
     if (!res.ok || parseTab(await res.json().catch(() => null)) === null) return 'refused'
+    return 'ok'
+  }
+
+  /** Gives one session its own profile, live, or with null the tab's again. */
+  async setSessionProfile(id: string, profile: Profile | null): Promise<SwitchResult> {
+    const t = this.target()
+    if (t === null || !isId16(id) || (profile !== null && !isProfile(profile))) return 'unreachable'
+    const res = await this.post(t, `session/${id}/profile`, { profile })
+    if (res === null) return 'unreachable'
+    if (res.status === 404) return 'gone'
+    if (!res.ok || parseSession(await res.json().catch(() => null)) === null) return 'refused'
     return 'ok'
   }
 

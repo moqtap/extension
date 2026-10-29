@@ -3,6 +3,7 @@ import type { CliView, TabImpairment } from '@/src/cli/messages'
 import { isOff, OFF, sameProfile, type ProfileChoice, type Profiles } from '@/src/cli/protocol'
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { DIRECT_NOTICE, impairmentProblem, PRO_URL, START_COMMAND } from '../cli-copy'
+import { profileChoices } from '../impair-choices'
 import CopyButton from './CopyButton.vue'
 
 const props = defineProps<{
@@ -23,7 +24,7 @@ const emit = defineEmits<{
 const dialogEl = ref<HTMLElement | null>(null)
 onMounted(() => {
   emit('readProfiles')
-  void nextTick(() => dialogEl.value?.querySelector<HTMLElement>('input:checked, button')?.focus())
+  void nextTick(() => dialogEl.value?.querySelector<HTMLElement>('input:checked:not(:disabled), button')?.focus())
 })
 
 const found = computed(() =>
@@ -33,15 +34,7 @@ const found = computed(() =>
 )
 const connected = computed(() => props.view?.state === 'connected')
 const current = computed(() => props.tab?.profile ?? OFF)
-const choices = computed<readonly ProfileChoice[]>(() => {
-  const out = [...(props.profiles?.profiles ?? [])]
-  if (!out.some((c) => isOff(c.profile))) out.unshift({ name: 'Off', profile: OFF })
-  const tab = props.tab
-  if (tab !== null && !out.some((c) => sameProfile(c.profile, tab.profile))) {
-    out.push({ name: tab.name, profile: tab.profile })
-  }
-  return out
-})
+const choices = computed(() => profileChoices(props.profiles, props.tab && { name: props.tab.name, profile: props.tab.profile }))
 /** Why the CLI could not read the sign-in, with what to do. */
 const accountError = computed(() => props.profiles?.account.error ?? null)
 const problem = computed(() => impairmentProblem(props.tab, props.view))

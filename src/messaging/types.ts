@@ -61,6 +61,8 @@ export interface SessionOpenedMsg {
   collector?: CollectorStatus
   /** The session goes through the moqtap CLI. */
   cli?: true
+  /** Its id at the CLI. */
+  cliSession?: string
 }
 
 /**
@@ -214,6 +216,8 @@ export interface PanelSessionOpenedMsg {
   collector?: CollectorStatus
   /** See {@link SessionOpenedMsg.cli}. */
   cli?: true
+  /** See {@link SessionOpenedMsg.cliSession}. */
+  cliSession?: string
 }
 
 /** The server's protocol pick, forwarded so the panel can show it. */

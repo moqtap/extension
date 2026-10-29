@@ -12,7 +12,7 @@ import {
   type TabImpairment,
   type TrustedCli,
 } from '@/src/cli/messages'
-import { isProfile, type Profile, type Profiles } from '@/src/cli/protocol'
+import { isProfile, type Profile, type ProfileChoice, type Profiles } from '@/src/cli/protocol'
 import { onBeforeUnmount, ref } from 'vue'
 
 export function useCli(tabId?: number) {
@@ -48,7 +48,8 @@ export function useCli(tabId?: number) {
 
   function send(msg: PageCliMsg) {
     try {
-      port?.postMessage(msg)
+      // A plain copy: Firefox cannot clone the reactive proxies a pick comes from.
+      port?.postMessage(JSON.parse(JSON.stringify(msg)))
     } catch {
       // Reconnecting.
     }
@@ -75,6 +76,17 @@ export function useCli(tabId?: number) {
     forget: (identity: string) => send({ type: 'cli:forget', identity }),
     setProfile: (profile: Profile, name: string) => {
       if (tabId !== undefined && isProfile(profile)) send({ type: 'cli:set-profile', tabId, profile, name })
+    },
+    /** null: the session takes the tab's profile again. */
+    setSessionProfile: (session: string, choice: ProfileChoice | null) => {
+      if (tabId === undefined) return
+      send({
+        type: 'cli:set-session-profile',
+        tabId,
+        session,
+        profile: choice?.profile ?? null,
+        name: choice?.name ?? null,
+      })
     },
   }
 }

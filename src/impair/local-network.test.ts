@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { impairmentProblem } from '@/entrypoints/devtools-panel/cli-copy'
+import { impairmentProblem, sessionImpairmentProblem } from '@/entrypoints/devtools-panel/cli-copy'
 import type { CliView, TabImpairment } from '@/src/cli/messages'
 import { routeFailure } from './local-network'
 
@@ -30,6 +30,9 @@ describe('the panel says why, with a remedy', () => {
     tabId: 1,
     profile: { preset: '3g' },
     name: '3G',
+    sessions: [],
+    unknown: [],
+    sessionErrors: [],
     failure: null,
     error: null,
     ...t,
@@ -62,5 +65,16 @@ describe('the panel says why, with a remedy', () => {
 
   it('names the remedy for a worker moqtap cannot instrument', () => {
     expect(impairmentProblem(tab({ failure: 'worker-uninstrumented' }), connected)).toContain('worker-src')
+  })
+
+  it("says why one connection did not take its profile, and leaves the tab's problem alone", () => {
+    const S = 'A'.repeat(21) + 'Q'
+    const t = tab({ sessionErrors: [{ session: S, error: 'refused' }] })
+    expect(sessionImpairmentProblem(t, S, connected)).toContain('refused this profile for this connection')
+    expect(sessionImpairmentProblem(t, 'B'.repeat(21) + 'Q', connected)).toBeNull()
+    expect(impairmentProblem(t, connected)).toBeNull()
+    const lost = tab({ sessionErrors: [{ session: S, error: 'unreachable' }] })
+    expect(sessionImpairmentProblem(lost, S, connected)).toContain('moqtap intercept --bridge')
+    expect(sessionImpairmentProblem(lost, S, { state: 'absent' })).toContain("isn't running")
   })
 })

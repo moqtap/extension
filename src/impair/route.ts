@@ -21,7 +21,12 @@ export interface Refused {
   readonly failure?: 'no-cli' | 'no-answer'
 }
 
-export type Routed = { readonly url: string; readonly options: Record<string, unknown> }
+export type Routed = {
+  readonly url: string
+  readonly options: Record<string, unknown>
+  /** The SESSION segment, the session's id at the CLI. */
+  readonly session: string
+}
 
 export type Route = Routed | Refused
 
@@ -182,7 +187,7 @@ export function routeThroughCli(
   // Pooling cannot be combined with serverCertificateHashes.
   delete copy.allowPooling
   copy.serverCertificateHashes = [{ algorithm: 'sha-256', value: fromB64(certHash) }]
-  return { url: 'https://127.0.0.1:' + port + path, options: copy }
+  return { url: 'https://127.0.0.1:' + port + path, options: copy, session }
 }
 
 /**

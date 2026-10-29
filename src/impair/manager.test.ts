@@ -18,6 +18,10 @@ class FakeCli implements ImpairCli {
   leases: string[] = []
   deletes: string[] = []
   switches: [string, Profile][] = []
+  sessionSwitches: [string, Profile | null][] = []
+  sessionResult: SwitchResult | null = null
+  /** Switches apply but their replies are lost. */
+  lostReply = false
   createError: CreateError | null = null
   switchResult: SwitchResult | null = null
   probes = 0
@@ -57,8 +61,27 @@ class FakeCli implements ImpairCli {
     const t = this.tabsById.get(id)
     if (t === undefined) return 'gone'
     this.switches.push([id, profile])
-    this.tabsById.set(id, { ...t, profile })
-    return 'ok'
+    this.tabsById.set(id, { ...t, profile, sessions: t.sessions.map((s) => ({ ...s, profile })) })
+    return this.lostReply ? 'unreachable' : 'ok'
+  }
+  /** A session the page opened on a tab port. */
+  addSession(tabId: string, id: string) {
+    const t = this.tabsById.get(tabId)!
+    const s = { id, upstream: 'https://relay.example/moq', profile: t.profile, connected: true }
+    this.tabsById.set(tabId, { ...t, sessions: [...t.sessions, s] })
+  }
+  dropSession(id: string) {
+    for (const [k, t] of this.tabsById) this.tabsById.set(k, { ...t, sessions: t.sessions.filter((s) => s.id !== id) })
+  }
+  async setSessionProfile(id: string, profile: Profile | null): Promise<SwitchResult> {
+    if (this.sessionResult !== null) return this.sessionResult
+    if (this.current === null) return 'unreachable'
+    const t = [...this.tabsById.values()].find((t) => t.sessions.some((s) => s.id === id))
+    if (t === undefined) return 'gone'
+    this.sessionSwitches.push([id, profile])
+    const sessions = t.sessions.map((s) => (s.id === id ? { ...s, profile: profile ?? t.profile } : s))
+    this.tabsById.set(t.id, { ...t, sessions })
+    return this.lostReply ? 'unreachable' : 'ok'
   }
   async deleteTab(id: string) {
     this.deletes.push(id)
@@ -152,7 +175,7 @@ describe('ImpairManager', () => {
     expect(last(3, 0)).toEqual({ on: true, route: routeOf(cli, 1) })
     expect(last(3, 5)).toEqual({ on: true, route: routeOf(cli, 1) })
     expect(flags).toEqual([false, true])
-    expect(manager.view(3)).toEqual({ tabId: 3, profile: G3, name: '3G', failure: null, error: null })
+    expect(manager.view(3)).toEqual({ tabId: 3, profile: G3, name: '3G', sessions: [], unknown: [], sessionErrors: [], failure: null, error: null })
   })
 
   it('keeps the tab port across reloads and answers each new document with it', async () => {
@@ -382,5 +405,157 @@ describe('ImpairManager', () => {
     await tick()
     expect(flags).toEqual([true])
     expect(manager.view(3).error).toBeNull()
+  })
+})
+
+describe('ImpairManager: a session with its own profile', () => {
+  const TAB = 't1'.padEnd(22, '0')
+  const S1 = 'A'.repeat(21) + 'Q'
+  const S2 = 'B'.repeat(21) + 'Q'
+
+  async function withSessions() {
+    const s = setup()
+    await s.manager.setProfile(3, G3, '3G')
+    s.cli.addSession(TAB, S1)
+    s.cli.addSession(TAB, S2)
+    return s
+  }
+
+  it('gives one session its own profile and shows it beside the tab profile', async () => {
+    const { cli, manager, tabs } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    expect(cli.sessionSwitches).toEqual([[S1, G4]])
+    expect(manager.view(3)).toEqual(
+      expect.objectContaining({ profile: G3, name: '3G', sessions: [{ session: S1, profile: G4, name: '4G' }] }),
+    )
+    expect(tabs.at(-1)?.sessions).toEqual([{ session: S1, profile: G4, name: '4G' }])
+  })
+
+  it('returns a session to the tab profile', async () => {
+    const { cli, manager } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    await manager.setSessionProfile(3, S1, null)
+    expect(cli.sessionSwitches).toEqual([
+      [S1, G4],
+      [S1, null],
+    ])
+    expect(manager.view(3).sessions).toEqual([])
+  })
+
+  it('clears every session profile when the tab profile changes', async () => {
+    const { manager, tabs } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    await manager.setSessionProfile(3, S2, { profile: OFF, name: 'Off' })
+    expect(manager.view(3).sessions).toHaveLength(2)
+    await manager.setProfile(3, OFF, 'Off')
+    expect(manager.view(3)).toEqual(expect.objectContaining({ name: 'Off', sessions: [] }))
+    expect(tabs.at(-1)).toEqual(expect.objectContaining({ name: 'Off', sessions: [] }))
+  })
+
+  it('keeps session profiles when the CLI refuses the tab switch', async () => {
+    const { cli, manager } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    cli.switchResult = 'refused'
+    await manager.setProfile(3, OFF, 'Off')
+    expect(manager.view(3).sessions).toEqual([{ session: S1, profile: G4, name: '4G' }])
+    expect(manager.view(3).error).toBe('refused')
+  })
+
+  it('forgets a session the CLI no longer has', async () => {
+    const { cli, manager, tick, tabs } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    await manager.setSessionProfile(3, S2, { profile: OFF, name: 'Off' })
+    cli.dropSession(S1)
+    const before = tabs.length
+    await tick()
+    expect(manager.view(3).sessions).toEqual([{ session: S2, profile: OFF, name: 'Off' }])
+    expect(tabs.length).toBeGreaterThan(before)
+    cli.dropSession(S2)
+    await manager.setSessionProfile(3, S2, { profile: G4, name: '4G' })
+    expect(manager.view(3).sessions).toEqual([])
+  })
+
+  it('records nothing and reports it for that session when the CLI does not take it', async () => {
+    const { cli, manager, tabs } = await withSessions()
+    for (const r of ['unreachable', 'refused'] as const) {
+      cli.sessionResult = r
+      const before = tabs.length
+      await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+      expect(tabs.length).toBeGreaterThan(before)
+      expect(manager.view(3)).toEqual(
+        expect.objectContaining({ sessions: [], sessionErrors: [{ session: S1, error: r }], error: null }),
+      )
+    }
+    cli.sessionResult = null
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    expect(manager.view(3).sessionErrors).toEqual([])
+  })
+
+  it('clears a session error once the tab profile changes or the session ends', async () => {
+    const { cli, manager, tick } = await withSessions()
+    cli.sessionResult = 'refused'
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    await manager.setSessionProfile(3, S2, { profile: G4, name: '4G' })
+    cli.dropSession(S1)
+    await tick()
+    expect(manager.view(3).sessionErrors).toEqual([{ session: S2, error: 'refused' }])
+    await manager.setProfile(3, G4, '4G')
+    expect(manager.view(3).sessionErrors).toEqual([])
+  })
+
+  it('does nothing for a tab without a tab port, and still answers the panel', async () => {
+    const { cli, manager, tabs } = setup()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    expect(cli.sessionSwitches).toEqual([])
+    expect(manager.view(3).sessions).toEqual([])
+    expect(tabs).toHaveLength(1)
+  })
+
+  it('follows the profile the CLI lists after a reply was lost', async () => {
+    const { cli, manager, tick, tabs } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    cli.lostReply = true
+    await manager.setSessionProfile(3, S1, null)
+    await manager.setSessionProfile(3, S2, { profile: OFF, name: 'Off' })
+    expect(manager.view(3).sessions).toEqual([{ session: S1, profile: G4, name: '4G' }])
+    const before = tabs.length
+    await tick()
+    expect(manager.view(3)).toEqual(expect.objectContaining({ sessions: [], unknown: [S2] }))
+    expect(tabs.length).toBeGreaterThan(before)
+    cli.lostReply = false
+    await manager.setSessionProfile(3, S2, null)
+    expect(manager.view(3).unknown).toEqual([])
+  })
+
+  it('names no profile for sessions after a tab switch whose reply was lost', async () => {
+    const { cli, manager, tick } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: OFF, name: 'Off' })
+    cli.lostReply = true
+    await manager.setProfile(3, G4, '4G')
+    await tick()
+    expect(manager.view(3)).toEqual(expect.objectContaining({ name: '4G', sessions: [], unknown: [] }))
+    cli.switchResult = 'unreachable'
+    await manager.setProfile(3, OFF, 'Off')
+    await tick()
+    expect(manager.view(3)).toEqual(expect.objectContaining({ name: 'Off', unknown: [S1, S2] }))
+  })
+
+  it('drops session profiles with a tab port the CLI lost', async () => {
+    const { cli, manager, tick } = await withSessions()
+    await manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    cli.tabsById.clear()
+    await tick()
+    expect(manager.view(3).sessions).toEqual([])
+  })
+
+  it('keeps session profiles across a restart of the background', async () => {
+    const store = memoryArea()
+    const first = setup({ store })
+    await first.manager.setProfile(3, G3, '3G')
+    first.cli.addSession(TAB, S1)
+    await first.manager.setSessionProfile(3, S1, { profile: G4, name: '4G' })
+    const second = setup({ cli: first.cli, store })
+    await second.manager.ready
+    expect(second.manager.view(3).sessions).toEqual([{ session: S1, profile: G4, name: '4G' }])
   })
 })

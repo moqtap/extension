@@ -6,7 +6,7 @@
 import { isExtensionPage, type PortLike } from '@/src/account/background'
 import type { ImpairManager } from '@/src/impair/manager'
 import type { CliStateMsg, PageCliMsg } from './messages'
-import { isProfile } from './protocol'
+import { isId16, isProfile } from './protocol'
 import type { CliBridge } from './service'
 
 export interface CliPortLike extends Omit<PortLike, 'postMessage'> {
@@ -83,6 +83,15 @@ export function serveCliPort(
           void impair.setProfile(msg.tabId, msg.profile, msg.name).catch(fail)
         }
         break
+      case 'cli:set-session-profile': {
+        if (!isTabId(msg.tabId) || !isId16(msg.session)) break
+        if (msg.profile === null) {
+          void impair.setSessionProfile(msg.tabId, msg.session, null).catch(fail)
+        } else if (isProfile(msg.profile) && isName(msg.name)) {
+          void impair.setSessionProfile(msg.tabId, msg.session, { profile: msg.profile, name: msg.name }).catch(fail)
+        }
+        break
+      }
       case 'cli:profiles':
         void bridge
           .profiles()

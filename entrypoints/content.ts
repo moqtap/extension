@@ -24,6 +24,7 @@ import { isImpairPageMsg, isTabAnswer, type WorkerImpairMsg } from '@/src/impair
 import { ANY_KEY } from '@/src/impair/flag'
 import { PageRoute, type WorkerLink } from '@/src/impair/page-route'
 import { checkUrl, decide, routeThroughCli, snapshotOptions } from '@/src/impair/route'
+import { sessionOpened } from '@/src/messaging/session-opened'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 
 /**
@@ -166,18 +167,11 @@ function bootstrap() {
   installWebTransportHook(
     globalThis,
     (session) => {
-      send({
-        type: 'session:opened',
-        sessionId: session.id,
-        url: session.url,
-        createdAt: session.createdAt,
-        options: session.options,
-        // Read now rather than in the panel: we share the page's global (MAIN
-        // world) and the panel does not, and the answer is only true as of the
-        // moment the connection opened -- `init()` may be called later.
-        collector: classifyConnection(session.createdAt),
-        ...(session.cli ? { cli: true } : {}),
-      })
+      // The collector is read now rather than in the panel: we share the
+      // page's global (MAIN world) and the panel does not, and the answer is
+      // only true as of the moment the connection opened -- `init()` may be
+      // called later.
+      send(sessionOpened(session, classifyConnection(session.createdAt)))
     },
     {
       onData(sessionId, streamId, data, direction, bidi, stack) {
@@ -964,7 +958,7 @@ var __moqtapNextStreamId = 0;
 var OrigWT = self.WebTransport;
 if (OrigWT) {
   var __moqtapOpen = function(url, options, r) {
-    var target = url, opts = options, routed = null;
+    var target = url, opts = options, routed = null, cliSession = null;
     if (r !== null) {
       if (r.refused) {
         if (r.name === "SyntaxError") throw new DOMException(r.refused, "SyntaxError");
@@ -976,6 +970,7 @@ if (OrigWT) {
       }
       target = r.url;
       opts = r.options;
+      cliSession = r.session;
       routed = String(url);
     }
     var inst;
@@ -1001,7 +996,10 @@ if (OrigWT) {
     var session = { id: __moqtapGenId(), url: String(url), createdAt: Date.now(), options: __moqtapOptions(options) };
     var sessionId = session.id;
     var opened = { type: "session:opened", sessionId: sessionId, url: session.url, createdAt: session.createdAt, options: session.options };
-    if (routed !== null) opened.cli = true;
+    if (routed !== null) {
+      opened.cli = true;
+      opened.cliSession = cliSession;
+    }
     __moqtapSend(opened);
     var origBidi = inst.createBidirectionalStream;
     if (typeof origBidi === "function") {

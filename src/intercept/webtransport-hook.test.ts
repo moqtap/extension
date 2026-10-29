@@ -609,6 +609,7 @@ describe('WebTransport hook — main-thread only (D10)', () => {
 describe('WebTransport hook — routing through the moqtap CLI', () => {
   const noStreams: StreamInterceptor = { onData: vi.fn(), onClose: vi.fn(), onError: vi.fn() }
   const CLI_URL = 'https://127.0.0.1:50001/moqtap/u/x'
+  const SESSION = 'AQEBAQEBAQEBAQEBAQEBAQ'
 
   function router(route: WebTransportRouter['route'], extra: Partial<WebTransportRouter> = {}): WebTransportRouter {
     return { route, wait: vi.fn(), failed: vi.fn(), threw: vi.fn(), ...extra }
@@ -646,10 +647,10 @@ describe('WebTransport hook — routing through the moqtap CLI', () => {
 
   it('opens the CLI route and captures the page URL as the session name', () => {
     const options = { serverCertificateHashes: [] }
-    const { WT, built, sessions } = install(router(() => ({ url: CLI_URL, options })))
+    const { WT, built, sessions } = install(router(() => ({ url: CLI_URL, options, session: SESSION })))
     new WT(new URL('https://relay.example/moq'))
     expect(built).toEqual([{ url: CLI_URL, options }])
-    expect(sessions[0]).toMatchObject({ url: 'https://relay.example/moq', cli: true })
+    expect(sessions[0]).toMatchObject({ url: 'https://relay.example/moq', cli: true, cliSession: SESSION })
   })
 
   it('throws a refused session at the page and shows it closed with the reason', () => {
@@ -742,7 +743,7 @@ describe('WebTransport hook — routing through the moqtap CLI', () => {
       const wt = new WT('https://relay.example/moq', { protocols: ['moqt-16'] }) as unknown as {
         ready: Promise<void>
       }
-      settle({ url: CLI_URL, options: { protocols: ['moqt-16'], serverCertificateHashes: [] } })
+      settle({ url: CLI_URL, options: { protocols: ['moqt-16'], serverCertificateHashes: [] }, session: SESSION })
       expect(built).toEqual([{ url: CLI_URL, options: { protocols: ['moqt-16'], serverCertificateHashes: [] } }])
       expect(sessions[0]).toMatchObject({ url: 'https://relay.example/moq', cli: true })
       await wt.ready

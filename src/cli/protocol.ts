@@ -200,7 +200,8 @@ export interface CliTab {
   readonly sessions: readonly CliSession[]
 }
 
-function parseSession(raw: unknown): CliSession | null {
+/** A session object, as `GET status` and `POST session/:id/profile` answer it. */
+export function parseSession(raw: unknown): CliSession | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
   if (!isId16(o.id) || typeof o.upstream !== 'string' || !isProfile(o.profile)) return null

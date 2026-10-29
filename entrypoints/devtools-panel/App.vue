@@ -1,8 +1,9 @@
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AccountChip from './components/AccountChip.vue'
 import ConnectionList from './components/ConnectionList.vue'
 import ImpairmentDialog from './components/ImpairmentDialog.vue'
+import SessionImpairmentDialog from './components/SessionImpairmentDialog.vue'
 import SessionView from './components/SessionView.vue'
 import ShareDialog from './components/ShareDialog.vue'
 import { DIRECT_NOTICE, impairmentProblem } from './cli-copy'
@@ -40,6 +41,8 @@ const cliConfirm = computed(() =>
   cliView.value?.state === 'confirm' ? cliView.value : null,
 )
 const impairmentOpen = ref(false)
+/** The CLI id of the session whose profile is being picked. */
+const sessionImpairment = ref<string | null>(null)
 const impairmentLabel = computed(() => `Impairment: ${cli.tab.value?.name ?? 'Off'}`)
 const impairmentOn = computed(() => cli.tab.value !== null && !isOff(cli.tab.value.profile))
 const impairmentIssue = computed(() => impairmentProblem(cli.tab.value, cliView.value))
@@ -129,6 +132,14 @@ function handleImportClick() {
 }
 
 const sessionList = computed(() => Array.from(sessions.value.values()))
+/** The session dialog's connection is still open; it is not after a close, a clear, or a reload. */
+const sessionImpairmentLive = computed(() => {
+  const id = sessionImpairment.value
+  return id !== null && sessionList.value.some((s) => s.cliSession === id && !s.closed && !s.imported)
+})
+watch(sessionImpairmentLive, (live) => {
+  if (!live) sessionImpairment.value = null
+})
 
 function reloadPage() {
   browser.devtools.inspectedWindow.reload({})
@@ -181,9 +192,11 @@ const selectedSession = computed(() =>
       <ConnectionList
         :sessions="sessionList"
         :impaired="impairmentOn"
+        :tab="cli.tab.value"
         :selected-id="selectedSessionId"
         :compact="sidebarCollapsed"
         @select="selectSession"
+        @impair="(s) => (sessionImpairment = s)"
       />
       <AccountChip
         :view="accountView"
@@ -365,6 +378,16 @@ const selectedSession = computed(() =>
         @read-profiles="cli.readProfiles"
         @set-profile="(c) => cli.setProfile(c.profile, c.name)"
         @allow="cli.allow"
+      />
+      <SessionImpairmentDialog
+        v-if="sessionImpairment && sessionImpairmentLive"
+        :view="cliView"
+        :tab="cli.tab.value"
+        :profiles="cli.profiles.value"
+        :session="sessionImpairment"
+        @close="sessionImpairment = null"
+        @read-profiles="cli.readProfiles"
+        @set-profile="(c) => cli.setSessionProfile(sessionImpairment!, c)"
       />
       <ShareDialog
         v-if="sharingSession"

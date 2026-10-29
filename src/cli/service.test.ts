@@ -17,6 +17,8 @@ interface FakeCli {
   /** Signs with this key instead, as a squatter without the identity would. */
   signer?: CryptoKey
   tabs: Map<string, { port: number; owner: string; profile: Profile }>
+  /** Sessions by id: their tab and own profile. */
+  sessions: Map<string, { tab: string; own: Profile | null }>
   posts: { endpoint: string; body: unknown }[]
   deletes: string[]
   nonces: Uint8Array[]
@@ -34,6 +36,7 @@ async function makeCli(port: number, extra: Partial<FakeCli> = {}): Promise<Fake
     keys,
     identity: toBase64Url(pub),
     tabs: new Map(),
+    sessions: new Map(),
     posts: [],
     deletes: [],
     nonces: [],
@@ -79,9 +82,15 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
         sig: toBase64Url(new Uint8Array(sig)),
       })
     }
+    const sessionEntry = (id: string) => {
+      const s = cli.sessions.get(id)!
+      const profile = s.own ?? cli.tabs.get(s.tab)!.profile
+      return { id, upstream: 'https://relay.example/moq', profile, connected: true }
+    }
     const entry = (id: string) => {
       const e = cli.tabs.get(id)!
-      return { id, port: e.port, owner: e.owner, profile: e.profile, sessions: [] }
+      const sessions = [...cli.sessions].filter(([, s]) => s.tab === id).map(([k]) => sessionEntry(k))
+      return { id, port: e.port, owner: e.owner, profile: e.profile, sessions }
     }
     const body = init?.body === undefined ? undefined : JSON.parse(String(init.body))
     if (init?.method === 'POST') cli.posts.push({ endpoint, body })
@@ -106,6 +115,7 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
       if (!cli.tabs.has(id)) return json({ error: 'no such tab' }, 404)
       if (m[2] && init?.method === 'POST') {
         cli.tabs.get(id)!.profile = body.profile
+        for (const s of cli.sessions.values()) if (s.tab === id) s.own = null
         return json(entry(id))
       }
       if (!m[2] && init?.method === 'DELETE') {
@@ -114,6 +124,13 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
         return new Response(null, { status: 204 })
       }
       return json({ error: 'method' }, 405)
+    }
+    const s = /^session\/([A-Za-z0-9_-]{22})\/profile$/.exec(endpoint)
+    if (s !== null && init?.method === 'POST') {
+      const session = cli.sessions.get(s[1]!)
+      if (session === undefined) return json({ error: 'no such session' }, 404)
+      session.own = body.profile
+      return json(sessionEntry(s[1]!))
     }
     return new Response(null, { status: 404 })
   }) as typeof fetch
@@ -266,6 +283,27 @@ describe('CliBridge', () => {
     expect(await bridge.setTabProfile(created.id, { preset: 'none' })).toBe('gone')
   })
 
+  it('gives a session its own profile and returns it to the tab', async () => {
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    const created = await bridge.createTab('tab-1', { preset: '3g' })
+    if ('error' in created) throw new Error(created.error)
+    const session = toBase64Url(new Uint8Array(16).fill(1))
+    cli.sessions.set(session, { tab: created.id, own: null })
+    expect(await bridge.setSessionProfile(session, { preset: '4g' })).toBe('ok')
+    expect(cli.posts.at(-1)).toEqual({ endpoint: `session/${session}/profile`, body: { profile: { preset: '4g' } } })
+    expect((await bridge.tabs())?.[0]?.sessions.map((s) => s.profile)).toEqual([{ preset: '4g' }])
+    expect(await bridge.setSessionProfile(session, null)).toBe('ok')
+    expect(cli.posts.at(-1)).toEqual({ endpoint: `session/${session}/profile`, body: { profile: null } })
+    expect((await bridge.tabs())?.[0]?.sessions.map((s) => s.profile)).toEqual([{ preset: '3g' }])
+    cli.sessions.delete(session)
+    expect(await bridge.setSessionProfile(session, { preset: '4g' })).toBe('gone')
+    const posts = cli.posts.length
+    expect(await bridge.setSessionProfile('short', { preset: '4g' })).toBe('unreachable')
+    expect(cli.posts).toHaveLength(posts)
+  })
+
   it('sends only valid profiles and owners', async () => {
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
@@ -378,8 +416,44 @@ describe('serveCliPort', () => {
     expect(impair.view(7).profile).toEqual({ preset: '3g' })
     expect(p.sent.filter((m) => m.type === 'cli:tab').at(-1)).toEqual({
       type: 'cli:tab',
-      tab: { tabId: 7, profile: { preset: '3g' }, name: '3G', failure: null, error: null },
+      tab: { tabId: 7, profile: { preset: '3g' }, name: '3G', sessions: [], unknown: [], sessionErrors: [], failure: null, error: null },
     })
+    p.close()
+  })
+
+  it('sets a session profile, and shows it cleared when the tab profile changes', async () => {
+    const cli = await makeCli(47310)
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    const impair = managerFor(bridge)
+    const p = fakePort('chrome-extension://abc/devtools-panel.html')
+    serveCliPort(bridge, impair, p.port, 'chrome-extension://abc/')
+    p.post({ type: 'cli:watch-tab', tabId: 7 })
+    p.post({ type: 'cli:set-profile', tabId: 7, profile: { preset: '3g' }, name: '3G' })
+    await new Promise((r) => setTimeout(r, 50))
+    const session = toBase64Url(new Uint8Array(16).fill(1))
+    cli.sessions.set(session, { tab: [...cli.tabs.keys()][0]!, own: null })
+    const lastTab = () => p.sent.filter((m) => m.type === 'cli:tab').at(-1)
+    p.post({ type: 'cli:set-session-profile', tabId: 7, session: 'bad', profile: { preset: '4g' }, name: '4G' })
+    p.post({ type: 'cli:set-session-profile', tabId: 7, session, profile: { preset: '4g' }, name: '' })
+    p.post({ type: 'cli:set-session-profile', tabId: 7, session, profile: { preset: '4g' }, name: '4G' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(cli.posts.filter((x) => x.endpoint.startsWith('session/'))).toHaveLength(1)
+    expect(lastTab()).toEqual({
+      type: 'cli:tab',
+      tab: expect.objectContaining({ name: '3G', sessions: [{ session, profile: { preset: '4g' }, name: '4G' }] }),
+    })
+    expect(cli.sessions.get(session)?.own).toEqual({ preset: '4g' })
+    p.post({ type: 'cli:set-profile', tabId: 7, profile: { preset: 'offline' }, name: 'Offline' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(lastTab()).toEqual({ type: 'cli:tab', tab: expect.objectContaining({ name: 'Offline', sessions: [] }) })
+    expect(cli.sessions.get(session)?.own).toBeNull()
+    p.post({ type: 'cli:set-session-profile', tabId: 7, session, profile: { preset: '4g' }, name: '4G' })
+    p.post({ type: 'cli:set-session-profile', tabId: 7, session, profile: null, name: null })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(lastTab()).toEqual({ type: 'cli:tab', tab: expect.objectContaining({ sessions: [] }) })
+    expect(cli.sessions.get(session)?.own).toBeNull()
     p.close()
   })
 

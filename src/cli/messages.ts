@@ -65,11 +65,28 @@ export const IMPAIR_FAILURES: readonly ImpairFailure[] = [
  */
 export type TabError = 'limit' | 'refused' | 'unreachable' | 'flag'
 
+/** A session in the tab with its own profile at the CLI. */
+export interface SessionImpairment {
+  /** Its id at the CLI. */
+  readonly session: string
+  readonly profile: Profile
+  readonly name: string
+}
+
+/** Why the CLI did not take a session's profile: as {@link TabError}. */
+export type SessionError = 'refused' | 'unreachable'
+
 export interface TabImpairment {
   readonly tabId: number
   readonly profile: Profile
   /** What the panel calls the profile. */
   readonly name: string
+  /** Sessions with their own profile; the rest have the tab's. */
+  readonly sessions: readonly SessionImpairment[]
+  /** Sessions the CLI lists with a profile that is neither the tab's nor one picked for them. */
+  readonly unknown: readonly string[]
+  /** Sessions whose last profile change the CLI did not take. */
+  readonly sessionErrors: readonly { readonly session: string; readonly error: SessionError }[]
   readonly failure: ImpairFailure | null
   readonly error: TabError | null
 }
@@ -82,6 +99,14 @@ export type PageCliMsg =
   | { readonly type: 'cli:forget'; readonly identity: string }
   | { readonly type: 'cli:watch-tab'; readonly tabId: number }
   | { readonly type: 'cli:set-profile'; readonly tabId: number; readonly profile: Profile; readonly name: string }
+  /** `profile` and `name` null: the session takes the tab's profile again. */
+  | {
+      readonly type: 'cli:set-session-profile'
+      readonly tabId: number
+      readonly session: string
+      readonly profile: Profile | null
+      readonly name: string | null
+    }
   | { readonly type: 'cli:profiles' }
 
 export type CliStateMsg =

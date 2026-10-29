@@ -23,6 +23,7 @@ describe('routeThroughCli', () => {
     const [, moqtap, kind, token, session, url, ...rest] = u.pathname.split('/')
     expect([moqtap, kind, token, rest]).toEqual(['moqtap', 'u', TOKEN, []])
     expect(fromBase64Url(session!)).toHaveLength(16)
+    expect(r.session).toBe(session)
     expect(decode(url!)).toBe('https://relay.example:4443/moq/live?token=a%20b&x=1')
   })
 

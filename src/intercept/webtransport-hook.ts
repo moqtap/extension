@@ -27,6 +27,8 @@ export interface InterceptedSession {
   options?: WebTransportOptionsInfo
   /** The session goes through the moqtap CLI. */
   cli?: true
+  /** Its id at the CLI, once the CLI was asked to open it. */
+  cliSession?: string
 }
 
 /**
@@ -277,7 +279,7 @@ export function installWebTransportHook(
       url: String(url),
       createdAt: Date.now(),
       options: extractSessionOptions(options),
-      ...(route !== null ? { cli: true as const } : {}),
+      ...(route !== null ? { cli: true as const, cliSession: route.session } : {}),
     }
     const sessionId = session.id
     onSession(session)

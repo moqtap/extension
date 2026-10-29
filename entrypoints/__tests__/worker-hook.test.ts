@@ -247,9 +247,9 @@ describe('the worker hook routes through the moqtap CLI while the tab has a prof
     expect(w.built[0]?.options.protocols).toEqual(['moqt-16'])
     expect(w.built[0]?.options.serverCertificateHashes[0].algorithm).toBe('sha-256')
     const opened = w.sent().filter((m: AnyScope) => m.type === 'session:opened')
-    expect(opened.map((m: AnyScope) => [m.url, m.cli])).toEqual([
-      ['https://relay.example/moq?x=1', true],
-      ['https://relay.example/moq?x=2', true],
+    expect(opened.map((m: AnyScope) => [m.url, m.cli, m.cliSession])).toEqual([
+      ['https://relay.example/moq?x=1', true, w.built[0]!.url.split('/')[6]],
+      ['https://relay.example/moq?x=2', true, w.built[1]!.url.split('/')[6]],
     ])
   })
 

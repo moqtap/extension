@@ -8,6 +8,9 @@ import {
   plural,
   shortSessionId,
 } from '../format'
+import type { TabImpairment } from '@/src/cli/messages'
+import Icon from './Icon.vue'
+import { sessionProfile } from '../impair-choices'
 import { computeRecentBitrate, type SessionEntry } from '../use-inspector'
 
 /* Reactive tick that drives the bitrate decay animation.
@@ -27,11 +30,27 @@ const props = defineProps<{
   compact?: boolean
   /** The tab has an impairment profile. */
   impaired?: boolean
+  /** The tab's impairment, for the profile of each session through the CLI. */
+  tab?: TabImpairment | null
 }>()
 
 const emit = defineEmits<{
   select: [id: string]
+  /** Pick the profile of the session with this CLI id. */
+  impair: [cliSession: string]
 }>()
+
+/** The profile of an open session through the CLI, or null when it has none to pick. */
+function cliProfile(session: SessionEntry) {
+  if (session.cliSession === undefined || session.closed || session.imported) return null
+  return sessionProfile(props.tab ?? null, session.cliSession)
+}
+
+function impairLabel(session: SessionEntry): string {
+  const p = cliProfile(session)
+  if (p === null || p.name === null) return 'Impairment for this connection'
+  return `Impairment for this connection: ${p.name}${p.own ? '' : ', same as tab'}`
+}
 
 function formatUrl(url: string): { host: string; path: string } {
   try {
@@ -278,6 +297,19 @@ function compactLabel(session: SessionEntry): string {
             <span>{{ plural(session.streams.size, 'stream') }}</span>
           </span>
         </button>
+        <div v-if="!compact && cliProfile(session)" class="session-impair">
+          <button
+            class="mq-badge session-impair__btn"
+            :class="{ 'mq-badge--tap': cliProfile(session)!.own }"
+            aria-haspopup="dialog"
+            :aria-label="impairLabel(session)"
+            title="Impairment for this connection"
+            @click="emit('impair', session.cliSession!)"
+          >
+            <Icon name="gauge" />
+            {{ cliProfile(session)!.name }}
+          </button>
+        </div>
       </li>
     </ul>
   </div>
@@ -318,6 +350,24 @@ function compactLabel(session: SessionEntry): string {
 }
 .connection-item[aria-current='true'] {
   background: var(--tap-soft);
+}
+.connection-item:has(+ .session-impair) {
+  border-bottom: 0;
+}
+
+.session-impair {
+  display: flex;
+  padding: 0 var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+li:has(> .connection-item[aria-current='true']) .session-impair {
+  background: var(--tap-soft);
+}
+.session-impair__btn {
+  cursor: pointer;
+}
+li:has(> .connection-item[aria-current='true']) .session-impair__btn.mq-badge--tap {
+  border-color: var(--tap);
 }
 
 .connection-header {
