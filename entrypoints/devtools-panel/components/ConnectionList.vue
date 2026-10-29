@@ -25,6 +25,8 @@ const props = defineProps<{
   selectedId: string | null
   /** The narrow sidebar: a status glyph and the short ID per connection. */
   compact?: boolean
+  /** The tab has an impairment profile. */
+  impaired?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -112,6 +114,11 @@ function collectorBadge(session: SessionEntry): {
           'so the SDK never saw it. Call init() before opening the transport.',
       }
   }
+}
+
+/** An open connection that bypasses the CLI while the tab has a profile. */
+function notImpaired(session: SessionEntry): boolean {
+  return props.impaired === true && !session.closed && !session.imported && !session.cli
 }
 
 function statusOf(session: SessionEntry): {
@@ -220,6 +227,13 @@ function compactLabel(session: SessionEntry): string {
               {{ statusOf(session).word }}
             </span>
             <span v-if="session.frameId" class="mq-badge">iframe</span>
+            <span
+              v-if="notImpaired(session)"
+              class="mq-badge mq-badge--check"
+              title="Opened before the profile was set. Reload the page to impair it."
+            >
+              not impaired
+            </span>
             <span
               v-if="collectorBadge(session)"
               class="mq-badge"

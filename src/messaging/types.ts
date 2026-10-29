@@ -59,6 +59,8 @@ export interface SessionOpenedMsg {
    * "unknown" rather than as "no".
    */
   collector?: CollectorStatus
+  /** The session goes through the moqtap CLI. */
+  cli?: true
 }
 
 /**
@@ -210,6 +212,8 @@ export interface PanelSessionOpenedMsg {
   options?: WebTransportOptionsInfo
   /** See {@link SessionOpenedMsg.collector}. */
   collector?: CollectorStatus
+  /** See {@link SessionOpenedMsg.cli}. */
+  cli?: true
 }
 
 /** The server's protocol pick, forwarded so the panel can show it. */

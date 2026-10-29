@@ -1,73 +1,94 @@
 /**
  * The background's side of tab impairment.
  *
- * A tab with a profile has an owner id at the CLI. Each of its frames gets a
- * few idle CLI sessions ahead of use, since `new WebTransport()` cannot wait;
- * the page reports each one it takes and the frame is topped up again. The
- * owner's lease is renewed while the profile is set. Profile changes go to
- * every session the CLI lists for the owner; Off and closing the tab delete
- * them.
+ * Picking a profile opens one tab port at the CLI, kept for the tab's
+ * lifetime: profile changes switch it and every session in it live, and Off
+ * leaves its sessions running unimpaired while new ones connect directly. The
+ * port and token reach every frame of the tab; a registered MAIN-world script
+ * tells documents that start while any tab has a profile to wait for them.
  */
 
 import type { KeyValueArea } from '@/src/account/stores'
-import type { ImpairFailure, PoolError, TabImpairment } from '@/src/cli/messages'
-import { isPreset, type CliSession, type CreatedSession, type Preset } from '@/src/cli/protocol'
-import type { CliTarget, CreateError } from '@/src/cli/service'
-import type { ImpairPageMsg, PoolEntry, PoolMsg } from './messages'
-import { MAX_WANT, RESERVE_SUBFRAME, RESERVE_TOP } from './page-pool'
+import type { ImpairFailure, TabError, TabImpairment } from '@/src/cli/messages'
+import { isOff, isProfile, OFF, type CliTab, type CreatedTab, type Profile } from '@/src/cli/protocol'
+import type { CliTarget, CreateError, SwitchResult } from '@/src/cli/service'
+import type { TabAnswer, TabAnswerMsg } from './messages'
 
 export const PROFILES_KEY = 'moqtap-impair-tabs'
 export const LEASE_MS = 10_000
+export const OFF_NAME = 'Off'
 
 export interface ImpairCli {
   target(): CliTarget | null
   probe(): Promise<void>
   onChange(fn: () => void): () => void
-  createSession(owner: string, preset: Preset): Promise<CreatedSession | { error: CreateError }>
-  setSessionPreset(id: string, preset: Preset): Promise<boolean>
-  deleteSession(id: string): Promise<void>
+  createTab(owner: string, profile: Profile): Promise<CreatedTab | { error: CreateError }>
+  setTabProfile(id: string, profile: Profile): Promise<SwitchResult>
+  deleteTab(id: string): Promise<void>
   renewLease(owner: string): Promise<boolean>
-  sessions(): Promise<CliSession[] | null>
+  tabs(): Promise<CliTab[] | null>
 }
 
 export interface ImpairDeps {
   readonly cli: ImpairCli
   /** `storage.session`, so profiles outlive a restart of the background. */
   readonly store: KeyValueArea
-  readonly sendToFrame: (tabId: number, frameId: number, msg: PoolMsg) => void
+  readonly sendToFrame: (tabId: number, frameId: number, msg: TabAnswerMsg) => void
   readonly tabExists: (tabId: number) => Promise<boolean>
   readonly newOwner: () => string
   readonly every: (ms: number, fn: () => void) => () => void
+  /** Registers the script that makes new documents wait for their tab's answer, or removes it. */
+  readonly setFlag: (any: boolean) => Promise<void>
 }
 
-interface Profile {
-  owner: string
-  preset: Preset
+/** The tab port a tab holds at the CLI. */
+interface Held {
+  readonly id: string
+  readonly port: number
+  readonly token: string
+  readonly certHash: string
+  /** The CLI identity that opened it. */
+  readonly cli: string
 }
 
-interface Frame {
-  want: number
-  /** Idle sessions handed to the frame and not reported used. */
-  readonly idle: Map<string, PoolEntry>
-  pending: number
+interface TabProfile {
+  readonly owner: string
+  profile: Profile
+  name: string
+  held: Held | null
+  /** No tab port yet and none has failed to open; frames wait instead of hearing route null. */
+  pending: boolean
 }
 
 interface TabState {
   failure: ImpairFailure | null
-  poolError: PoolError | null
+  error: TabError | null
 }
 
-const targetKey = (t: CliTarget | null) => (t === null ? '' : `${t.identity} ${t.port} ${t.certHash}`)
+const isHeld = (v: unknown): v is Held => {
+  if (typeof v !== 'object' || v === null) return false
+  const h = v as Record<string, unknown>
+  return (
+    typeof h.id === 'string' &&
+    Number.isInteger(h.port) &&
+    typeof h.token === 'string' &&
+    typeof h.certHash === 'string' &&
+    typeof h.cli === 'string'
+  )
+}
 
 export class ImpairManager {
-  private readonly profiles = new Map<number, Profile>()
-  private readonly frames = new Map<number, Map<number, Frame>>()
+  private readonly profiles = new Map<number, TabProfile>()
+  private readonly frames = new Map<number, Set<number>>()
   private readonly states = new Map<number, TabState>()
   private readonly listeners = new Set<(tab: TabImpairment) => void>()
   private stopLease: (() => void) | null = null
+  private flagged: boolean | null = null
+  private flagFailed = false
+  private readonly deferred = new Set<number>()
+  private chain: Promise<unknown> = Promise.resolve()
+  private ticking = false
   private target: string
-  /** Bumped when the CLI changes; replies for an older CLI are dropped. */
-  private generation = 0
   readonly ready: Promise<void>
 
   constructor(private readonly deps: ImpairDeps) {
@@ -77,12 +98,14 @@ export class ImpairManager {
   }
 
   view(tabId: number): TabImpairment {
+    const p = this.profiles.get(tabId)
     const s = this.states.get(tabId)
     return {
       tabId,
-      preset: this.profiles.get(tabId)?.preset ?? 'none',
+      profile: p?.profile ?? OFF,
+      name: p?.name ?? OFF_NAME,
       failure: s?.failure ?? null,
-      poolError: s?.poolError ?? null,
+      error: s?.error ?? (this.flagFailed && p !== undefined && !isOff(p.profile) ? 'flag' : null),
     }
   }
 
@@ -91,270 +114,257 @@ export class ImpairManager {
     return () => this.listeners.delete(fn)
   }
 
-  async setPreset(tabId: number, preset: Preset): Promise<void> {
-    await this.ready
-    const current = this.profiles.get(tabId)
-    this.state(tabId).failure = null
-    if (preset === 'none') {
-      if (current !== undefined) await this.drop(tabId)
-      this.emit(tabId)
-      return
-    }
-    if (current === undefined) {
-      if (this.deps.cli.target() === null) await this.deps.cli.probe().catch(() => {})
-      this.profiles.set(tabId, { owner: this.deps.newOwner(), preset })
-      await this.persist()
-      this.ensureLease()
-      this.pushAll(tabId)
-      this.refillAll(tabId)
-    } else if (current.preset !== preset) {
-      current.preset = preset
-      await this.persist()
-      const owned = (await this.deps.cli.sessions())?.filter((s) => s.owner === current.owner) ?? []
-      await Promise.all(owned.map((s) => this.deps.cli.setSessionPreset(s.id, preset)))
-    }
-    this.emit(tabId)
+  setProfile(tabId: number, profile: Profile, name: string): Promise<void> {
+    return this.serial(() => this.switchTo(tabId, profile, name))
   }
 
   /** A frame's bridge connected: a new document, or a reconnect. */
   frameConnected(tabId: number, frameId: number): void {
-    const frames = this.framesOf(tabId)
-    const old = frames.get(frameId)
-    if (old !== undefined) this.release(old)
-    frames.set(frameId, {
-      want: frameId === 0 ? RESERVE_TOP : RESERVE_SUBFRAME,
-      idle: new Map(),
-      pending: 0,
-    })
+    let frames = this.frames.get(tabId)
+    if (frames === undefined) {
+      frames = new Set()
+      this.frames.set(tabId, frames)
+    }
+    frames.add(frameId)
     if (frameId === 0 && this.states.get(tabId)?.failure) {
       this.state(tabId).failure = null
       this.emit(tabId)
     }
-    this.push(tabId, frameId)
-    this.refill(tabId, frameId)
+    void this.ready.then(() => this.push(tabId, frameId))
   }
 
   frameGone(tabId: number, frameId: number): void {
     const frames = this.frames.get(tabId)
-    const frame = frames?.get(frameId)
-    if (frames === undefined || frame === undefined) return
+    if (frames === undefined) return
     frames.delete(frameId)
     if (frames.size === 0) this.frames.delete(tabId)
-    this.release(frame)
   }
 
-  fromPage(tabId: number, frameId: number, msg: ImpairPageMsg): void {
-    const frame = this.frames.get(tabId)?.get(frameId)
-    switch (msg.type) {
-      case 'impair:took':
-        if (frame?.idle.delete(msg.id)) this.refill(tabId, frameId)
-        break
-      case 'impair:release':
-        if (frame?.idle.delete(msg.id)) {
-          void this.deps.cli.deleteSession(msg.id)
-          this.refill(tabId, frameId)
-        }
-        break
-      case 'impair:want':
-        if (frame === undefined) break
-        frame.want = Math.max(1, Math.min(MAX_WANT, msg.count))
-        this.push(tabId, frameId)
-        this.refill(tabId, frameId)
-        break
-      case 'impair:failed':
-        if (!this.profiles.has(tabId)) break
-        this.state(tabId).failure = msg.failure
+  failed(tabId: number, failure: ImpairFailure): void {
+    const p = this.profiles.get(tabId)
+    if (p === undefined || isOff(p.profile)) return
+    this.state(tabId).failure = failure
+    this.emit(tabId)
+  }
+
+  tabRemoved(tabId: number): Promise<void> {
+    return this.serial(() => this.remove(tabId))
+  }
+
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(() => this.ready).then(fn)
+    this.chain = run.catch(() => {})
+    return run
+  }
+
+  private async switchTo(tabId: number, profile: Profile, name: string): Promise<void> {
+    this.state(tabId).failure = null
+    let p = this.profiles.get(tabId)
+    if (p === undefined) {
+      if (isOff(profile)) {
         this.emit(tabId)
-        break
+        return
+      }
+      p = { owner: this.deps.newOwner(), profile, name, held: null, pending: true }
+      this.profiles.set(tabId, p)
+      this.ensureLease()
+    } else {
+      p.profile = profile
+      p.name = name
+      if (p.held !== null) {
+        const r = await this.deps.cli.setTabProfile(p.held.id, profile)
+        if (r === 'gone') drop(p)
+        else this.setError(tabId, r === 'ok' ? null : r)
+      }
+    }
+    if (p.held === null) {
+      if (isOff(profile)) this.profiles.delete(tabId)
+      else {
+        await this.syncFlag()
+        await this.open(tabId, p)
+      }
+    }
+    await this.persist()
+    await this.syncFlag()
+    this.pushAll(tabId)
+    this.emit(tabId)
+  }
+
+  private async open(tabId: number, p: TabProfile): Promise<void> {
+    try {
+      if (this.deps.cli.target() === null) await this.deps.cli.probe().catch(() => {})
+      const t = this.deps.cli.target()
+      if (t === null) {
+        this.setError(tabId, 'unreachable')
+        return
+      }
+      const r = await this.deps.cli.createTab(p.owner, p.profile)
+      if ('error' in r) {
+        this.setError(tabId, r.error)
+        return
+      }
+      p.held = { id: r.id, port: r.port, token: r.token, certHash: t.certHash, cli: t.identity }
+      this.setError(tabId, null)
+    } finally {
+      p.pending = false
     }
   }
 
-  async tabRemoved(tabId: number): Promise<void> {
-    await this.ready
+  private async remove(tabId: number): Promise<void> {
     this.frames.delete(tabId)
     this.states.delete(tabId)
-    if (this.profiles.has(tabId)) await this.drop(tabId)
+    this.deferred.delete(tabId)
+    const p = this.profiles.get(tabId)
+    if (p === undefined) return
+    this.profiles.delete(tabId)
+    await this.persist()
+    await this.syncFlag()
+    if (this.profiles.size === 0) {
+      this.stopLease?.()
+      this.stopLease = null
+    }
+    if (p.held !== null) await this.deps.cli.deleteTab(p.held.id)
   }
 
   private async restore(): Promise<void> {
     const raw = await this.deps.store.get(PROFILES_KEY).catch(() => undefined)
     if (typeof raw === 'object' && raw !== null) {
-      for (const [k, v] of Object.entries(raw as Record<string, Profile>)) {
+      for (const [k, v] of Object.entries(raw as Record<string, Record<string, unknown>>)) {
         const tabId = Number(k)
-        if (Number.isInteger(tabId) && typeof v?.owner === 'string' && isPreset(v?.preset) && v.preset !== 'none') {
-          this.profiles.set(tabId, { owner: v.owner, preset: v.preset })
-        }
+        if (!Number.isInteger(tabId) || typeof v !== 'object' || v === null) continue
+        if (typeof v.owner !== 'string' || !isProfile(v.profile) || typeof v.name !== 'string') continue
+        const held = isHeld(v.held) ? v.held : null
+        if (held === null && isOff(v.profile)) continue
+        this.profiles.set(tabId, { owner: v.owner, profile: v.profile, name: v.name, held, pending: held === null })
       }
     }
+    await this.syncFlag()
     if (this.profiles.size > 0) {
       this.ensureLease()
-      if (this.target !== '') await this.reconcile()
-      else void this.deps.cli.probe().catch(() => {})
+      void this.serial(() => this.tick())
     }
-  }
-
-  /** Deletes the owners' idle sessions that no frame holds, as after a restart. */
-  private async reconcile(): Promise<void> {
-    const sessions = await this.deps.cli.sessions()
-    if (sessions === null) return
-    const held = new Set<string>()
-    for (const frames of this.frames.values()) {
-      for (const f of frames.values()) for (const id of f.idle.keys()) held.add(id)
-    }
-    const owners = new Set([...this.profiles.values()].map((p) => p.owner))
-    await Promise.all(
-      sessions
-        .filter((s) => owners.has(s.owner) && !s.connected && !held.has(s.id))
-        .map((s) => this.deps.cli.deleteSession(s.id)),
-    )
   }
 
   private cliChanged(): void {
     const key = targetKey(this.deps.cli.target())
     if (key === this.target) return
     this.target = key
-    this.generation++
-    for (const frames of this.frames.values()) {
-      for (const f of frames.values()) {
-        f.idle.clear()
-        f.pending = 0
-      }
-    }
-    const refillEverything = () => {
-      for (const tabId of this.profiles.keys()) {
-        this.pushAll(tabId)
-        this.refillAll(tabId)
-      }
-    }
-    if (key === '') refillEverything()
-    else void this.reconcile().finally(refillEverything)
+    if (this.profiles.size > 0) void this.serial(() => this.tick())
   }
 
-  private async drop(tabId: number): Promise<void> {
-    const profile = this.profiles.get(tabId)
-    if (profile === undefined) return
-    this.profiles.delete(tabId)
-    await this.persist()
+  private ensureLease(): void {
+    this.stopLease ??= this.deps.every(LEASE_MS, () => {
+      if (this.ticking) return
+      this.ticking = true
+      void this.serial(() => this.tick()).finally(() => {
+        this.ticking = false
+      })
+    })
+  }
+
+  /** Renews leases, drops closed tabs, and reopens tab ports the CLI no longer has. */
+  private async tick(): Promise<void> {
+    if (this.deps.cli.target() === null) await this.deps.cli.probe().catch(() => {})
+    const t = this.deps.cli.target()
+    const before = new Map([...this.profiles].map(([tabId, p]) => [tabId, p.held]))
+    for (const [tabId, p] of [...this.profiles]) {
+      if (!(await this.deps.tabExists(tabId).catch(() => false))) {
+        await this.remove(tabId)
+        continue
+      }
+      if (p.held === null) continue
+      if (t !== null && p.held.cli !== t.identity) {
+        drop(p)
+        continue
+      }
+      const ok = await this.deps.cli.renewLease(p.owner)
+      this.setError(tabId, ok ? null : 'unreachable')
+    }
+    const listed = t === null ? null : await this.deps.cli.tabs()
+    for (const [tabId, p] of [...this.profiles]) {
+      const held = p.held
+      if (held !== null && listed !== null && !listed.some((x) => x.id === held.id)) drop(p)
+      if (p.held !== null) continue
+      if (isOff(p.profile)) this.profiles.delete(tabId)
+      else await this.open(tabId, p)
+    }
     if (this.profiles.size === 0) {
       this.stopLease?.()
       this.stopLease = null
     }
-    for (const f of this.frames.get(tabId)?.values() ?? []) {
-      f.idle.clear()
-      f.pending = 0
-    }
-    const s = this.states.get(tabId)
-    if (s) s.poolError = null
-    this.pushAll(tabId)
-    const owned = (await this.deps.cli.sessions())?.filter((x) => x.owner === profile.owner) ?? []
-    await Promise.all(owned.map((x) => this.deps.cli.deleteSession(x.id)))
-  }
-
-  private release(frame: Frame): void {
-    for (const id of frame.idle.keys()) void this.deps.cli.deleteSession(id)
-    frame.idle.clear()
-  }
-
-  private refillAll(tabId: number): void {
-    for (const frameId of this.frames.get(tabId)?.keys() ?? []) this.refill(tabId, frameId)
-  }
-
-  private refill(tabId: number, frameId: number): void {
-    const profile = this.profiles.get(tabId)
-    const frame = this.frames.get(tabId)?.get(frameId)
-    if (profile === undefined || frame === undefined) return
-    if (this.deps.cli.target() === null) {
-      this.setPoolError(tabId, 'unreachable')
-      return
-    }
-    const generation = this.generation
-    for (let n = frame.want - frame.idle.size - frame.pending; n > 0; n--) {
-      frame.pending++
-      const preset = profile.preset
-      void this.deps.cli.createSession(profile.owner, preset).then((r) => {
-        const stale =
-          generation !== this.generation ||
-          this.profiles.get(tabId) !== profile ||
-          this.frames.get(tabId)?.get(frameId) !== frame
-        if (!stale) frame.pending--
-        if ('error' in r) {
-          if (!stale) this.setPoolError(tabId, r.error)
-          return
-        }
-        if (stale) {
-          void this.deps.cli.deleteSession(r.id)
-          return
-        }
-        frame.idle.set(r.id, { id: r.id, port: r.port, secret: r.secret })
-        if (profile.preset !== preset) void this.deps.cli.setSessionPreset(r.id, profile.preset)
-        this.setPoolError(tabId, null)
-        this.push(tabId, frameId)
-      })
-    }
-  }
-
-  private ensureLease(): void {
-    this.stopLease ??= this.deps.every(LEASE_MS, () => void this.leaseTick())
-  }
-
-  private async leaseTick(): Promise<void> {
-    if (this.deps.cli.target() === null) await this.deps.cli.probe().catch(() => {})
-    for (const [tabId, profile] of [...this.profiles]) {
-      if (!(await this.deps.tabExists(tabId).catch(() => false))) {
-        await this.tabRemoved(tabId)
-        continue
+    await this.persist()
+    await this.syncFlag()
+    for (const [tabId, held] of before) {
+      if (this.profiles.get(tabId)?.held !== held || this.deferred.has(tabId)) {
+        this.pushAll(tabId)
+        this.emit(tabId)
       }
-      const ok = await this.deps.cli.renewLease(profile.owner)
-      if (!ok) this.setPoolError(tabId, 'unreachable')
-      else if (this.states.get(tabId)?.poolError) this.refillAll(tabId)
     }
+  }
+
+  private answer(tabId: number): TabAnswer {
+    const p = this.profiles.get(tabId)
+    if (p === undefined || isOff(p.profile)) return { on: false, route: null }
+    const h = p.held
+    return { on: true, route: h === null ? null : { port: h.port, token: h.token, certHash: h.certHash } }
   }
 
   private pushAll(tabId: number): void {
-    for (const frameId of this.frames.get(tabId)?.keys() ?? []) this.push(tabId, frameId)
+    this.deferred.delete(tabId)
+    for (const frameId of this.frames.get(tabId) ?? []) this.push(tabId, frameId)
   }
 
   private push(tabId: number, frameId: number): void {
-    const frame = this.frames.get(tabId)?.get(frameId)
-    if (frame === undefined) return
-    const on = this.profiles.has(tabId)
-    this.deps.sendToFrame(tabId, frameId, {
-      type: 'impair:pool',
-      on,
-      certHash: this.deps.cli.target()?.certHash ?? null,
-      entries: on ? [...frame.idle.values()] : [],
-      want: frame.want,
-    })
+    if (!this.frames.get(tabId)?.has(frameId)) return
+    const p = this.profiles.get(tabId)
+    if (p !== undefined && p.pending && p.held === null && !isOff(p.profile)) {
+      this.deferred.add(tabId)
+      return
+    }
+    this.deps.sendToFrame(tabId, frameId, { type: 'impair:tab', answer: this.answer(tabId) })
   }
 
-  private setPoolError(tabId: number, error: PoolError | null): void {
+  /** Retried by every tick until the browser takes it. */
+  private async syncFlag(): Promise<void> {
+    const any = [...this.profiles.values()].some((p) => !isOff(p.profile))
+    if (any !== this.flagged) {
+      try {
+        await this.deps.setFlag(any)
+        this.flagged = any
+      } catch (err) {
+        console.warn('[moqtap impair]', err)
+        this.setFlagFailed(true)
+        return
+      }
+    }
+    this.setFlagFailed(false)
+  }
+
+  private setFlagFailed(failed: boolean): void {
+    if (this.flagFailed === failed) return
+    this.flagFailed = failed
+    for (const tabId of this.profiles.keys()) this.emit(tabId)
+  }
+
+  private setError(tabId: number, error: TabError | null): void {
     const s = this.state(tabId)
-    if (s.poolError === error) return
-    s.poolError = error
+    if (s.error === error) return
+    s.error = error
     this.emit(tabId)
   }
 
   private state(tabId: number): TabState {
     let s = this.states.get(tabId)
     if (s === undefined) {
-      s = { failure: null, poolError: null }
+      s = { failure: null, error: null }
       this.states.set(tabId, s)
     }
     return s
   }
 
-  private framesOf(tabId: number): Map<number, Frame> {
-    let f = this.frames.get(tabId)
-    if (f === undefined) {
-      f = new Map()
-      this.frames.set(tabId, f)
-    }
-    return f
-  }
-
   private persist(): Promise<void> {
-    const out: Record<string, Profile> = {}
-    for (const [tabId, p] of this.profiles) out[tabId] = { owner: p.owner, preset: p.preset }
+    const out: Record<string, Omit<TabProfile, 'pending'>> = {}
+    for (const [tabId, p] of this.profiles) out[tabId] = { owner: p.owner, profile: p.profile, name: p.name, held: p.held }
     return this.deps.store.set(PROFILES_KEY, out).catch(() => {})
   }
 
@@ -363,3 +373,11 @@ export class ImpairManager {
     for (const fn of this.listeners) fn(v)
   }
 }
+
+/** Forgets a tab port the CLI no longer has; frames wait while it reopens. */
+function drop(p: TabProfile): void {
+  p.held = null
+  p.pending = true
+}
+
+const targetKey = (t: CliTarget | null) => (t === null ? '' : `${t.identity} ${t.port} ${t.certHash}`)

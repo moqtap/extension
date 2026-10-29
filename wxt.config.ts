@@ -67,7 +67,10 @@ export default defineConfig({
         : `WebTransport Inspector by moqtap (${env.mode})`,
     description:
       'DevTools extension for inspecting WebTransport connections and MoQT protocol traffic',
-    permissions: ['storage'],
+    // scripting and host access: the impairment flag script (src/cli/browser-cli.ts),
+    // which runs where the content scripts already do.
+    permissions: ['storage', 'scripting'],
+    host_permissions: ['<all_urls>'],
     devtools_page: 'devtools.html',
     browser_specific_settings: {
       gecko: {

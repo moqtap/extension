@@ -18,16 +18,12 @@
 import { opensUniControlStream } from '@/src/detect/uni-control-prefix'
 import { classifyConnection } from '@/src/intercept/collector-presence'
 import { installWebTransportHook } from '@/src/intercept/webtransport-hook'
+import { deferWebTransport } from '@/src/intercept/deferred-webtransport'
 import { routeFailure } from '@/src/impair/local-network'
-import { isImpairPageMsg, isPoolMsg, type WorkerImpairMsg } from '@/src/impair/messages'
-import {
-  NO_SESSION_MESSAGE,
-  PagePool,
-  RESERVE_SUBFRAME,
-  RESERVE_TOP,
-  type WorkerLink,
-} from '@/src/impair/page-pool'
-import { routeThroughCli } from '@/src/impair/route'
+import { isImpairPageMsg, isTabAnswer, type WorkerImpairMsg } from '@/src/impair/messages'
+import { ANY_KEY } from '@/src/impair/flag'
+import { PageRoute, type WorkerLink } from '@/src/impair/page-route'
+import { checkUrl, decide, routeThroughCli, snapshotOptions } from '@/src/impair/route'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 
 /**
@@ -101,39 +97,10 @@ try {
 
 let activated = false
 
-let isTopFrame = false
-try {
-  isTopFrame = window === window.top
-} catch {
-  /* cross-origin parent */
-}
-
-/** Whether the tab has a profile, for this origin's next document in the tab. */
-const IMPAIR_MARK = '__moqtap_impair'
-
-function readImpairMark(): boolean {
-  try {
-    return sessionStorage.getItem(IMPAIR_MARK) === '1'
-  } catch {
-    return false
-  }
-}
-
-function writeImpairMark(on: boolean) {
-  try {
-    if (on) sessionStorage.setItem(IMPAIR_MARK, '1')
-    else sessionStorage.removeItem(IMPAIR_MARK)
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-/** This frame's idle CLI sessions. Its messages skip the capture buffer. */
-const pool = new PagePool(
-  isTopFrame ? RESERVE_TOP : RESERVE_SUBFRAME,
+/** This frame's route for new sessions. Its messages skip the capture buffer. */
+const pageRoute = new PageRoute(
+  () => (globalThis as Record<symbol, unknown>)[ANY_KEY] === true,
   (msg) => forward(msg),
-  readImpairMark(),
-  writeImpairMark,
 )
 
 /** A buffered event plus its arrival order, so the buffers can be
@@ -171,8 +138,8 @@ export default defineContentScript({
     // Listen for activation signal from bridge (ISOLATED world)
     window.addEventListener('message', (event) => {
       if (event.source !== window) return
-      if (event.data?.source === 'moqtap-impair' && isPoolMsg(event.data.pool)) {
-        pool.apply(event.data.pool)
+      if (event.data?.source === 'moqtap-impair' && isTabAnswer(event.data.answer)) {
+        pageRoute.apply(event.data.answer)
       }
     })
 
@@ -209,6 +176,7 @@ function bootstrap() {
         // world) and the panel does not, and the answer is only true as of the
         // moment the connection opened -- `init()` may be called later.
         collector: classifyConnection(session.createdAt),
+        ...(session.cli ? { cli: true } : {}),
       })
     },
     {
@@ -264,9 +232,9 @@ function bootstrap() {
       send({ type: 'session:protocol', sessionId, protocol })
     },
     {
-      route: (url, options) => pool.route(url, document.baseURI, options),
-      opened: (route) => pool.opened(route),
-      threw: (route, url, err) => pool.threw(route, url, err),
+      route: (url, options) => pageRoute.route(url, document.baseURI, options),
+      wait: (fn) => pageRoute.wait(fn),
+      threw: (url, err) => pageRoute.threw(url, err),
       failed: (url) => {
         void routeFailure(navigator.permissions).then((failure) =>
           forward({ type: 'impair:failed', failure, url }),
@@ -516,13 +484,13 @@ function patchWorkerConstructor(hookSource: string) {
       options?: WorkerOptions,
     ): Worker {
       if (blocked || excludedOrigins.has(currentOrigin)) {
-        pool.report('worker-uninstrumented', workerHref(url))
+        pageRoute.report('worker-uninstrumented', workerHref(url))
         return new OriginalWorker(url, options)
       }
 
       let target: Worker | null = null
       const link: WorkerLink = { post: (m) => target?.postMessage(m) }
-      const init = pool.addWorker(link)
+      const init = pageRoute.addWorker(link)
       const wrappedUrl = wrapWorkerScript(url, options, impairPrelude(init) + hookSource)
       try {
         const instrumentedWorker = new OriginalWorker(
@@ -530,7 +498,7 @@ function patchWorkerConstructor(hookSource: string) {
           wrappedUrl.options,
         )
         target = instrumentedWorker
-        listenImpair(instrumentedWorker, link)
+        listenImpair(instrumentedWorker)
         // Wrap in recovery proxy to handle async CSP failures
         return createWorkerProxy(
           OriginalWorker,
@@ -538,11 +506,11 @@ function patchWorkerConstructor(hookSource: string) {
           url,
           options,
           wrappedUrl.url,
-          () => pool.removeWorker(link),
-          () => pool.report('worker-uninstrumented', workerHref(url)),
+          () => pageRoute.removeWorker(link),
+          () => pageRoute.report('worker-uninstrumented', workerHref(url)),
         )
       } catch (err) {
-        pool.removeWorker(link)
+        pageRoute.removeWorker(link)
         // Synchronous CSP failure — blob: worker creation blocked
         blocked = true
         revokeIfBlob(wrappedUrl.url)
@@ -559,7 +527,7 @@ function patchWorkerConstructor(hookSource: string) {
             error: String(err),
           } as ContentToBackgroundMsg)
         }
-        pool.report('worker-uninstrumented', workerHref(url))
+        pageRoute.report('worker-uninstrumented', workerHref(url))
         return new OriginalWorker(url, options)
       }
     } as unknown as typeof Worker
@@ -587,7 +555,7 @@ function patchWorkerConstructor(hookSource: string) {
         typeof options === 'string' ? { name: options } : options
 
       if (sharedBlocked || excludedOrigins.has(currentOrigin)) {
-        pool.report('worker-uninstrumented', workerHref(url))
+        pageRoute.report('worker-uninstrumented', workerHref(url))
         const origOpts: string | WorkerOptions | undefined =
           typeof options === 'string' ? options : opts
         return new OriginalSharedWorker(url, origOpts)
@@ -595,7 +563,7 @@ function patchWorkerConstructor(hookSource: string) {
 
       let target: MessagePort | null = null
       const link: WorkerLink = { post: (m) => target?.postMessage(m) }
-      const init = pool.addWorker(link)
+      const init = pageRoute.addWorker(link)
       const wrappedUrl = wrapWorkerScript(url, opts, impairPrelude(init) + hookSource)
       try {
         const worker = new OriginalSharedWorker(
@@ -603,7 +571,7 @@ function patchWorkerConstructor(hookSource: string) {
           wrappedUrl.options,
         )
         target = worker.port
-        listenImpair(worker.port, link)
+        listenImpair(worker.port)
         attachSharedWorkerListener(worker)
         // Async error detection for SharedWorker
         worker.addEventListener(
@@ -622,7 +590,7 @@ function patchWorkerConstructor(hookSource: string) {
         )
         return worker
       } catch (err) {
-        pool.removeWorker(link)
+        pageRoute.removeWorker(link)
         sharedBlocked = true
         revokeIfBlob(wrappedUrl.url)
         addExclusion(
@@ -638,7 +606,7 @@ function patchWorkerConstructor(hookSource: string) {
             error: String(err),
           } as ContentToBackgroundMsg)
         }
-        pool.report('worker-uninstrumented', workerHref(url))
+        pageRoute.report('worker-uninstrumented', workerHref(url))
         const origOpts: string | WorkerOptions | undefined =
           typeof options === 'string' ? options : opts
         return new OriginalSharedWorker(url, origOpts)
@@ -722,14 +690,12 @@ function impairPrelude(init: WorkerImpairMsg): string {
 }
 
 /** Takes the worker hook's impairment reports off the worker's messages. */
-function listenImpair(target: Worker | MessagePort, link: WorkerLink) {
+function listenImpair(target: Worker | MessagePort) {
   target.addEventListener('message', (event: Event) => {
     const data = (event as MessageEvent).data
     if (data?.source !== 'moqtap-worker' || !isImpairPageMsg(data.payload)) return
     event.stopImmediatePropagation()
-    const msg = data.payload
-    if (msg.type === 'impair:took') pool.workerTook(link, msg.id)
-    else if (msg.type === 'impair:failed') pool.report(msg.failure, msg.url)
+    pageRoute.report(data.payload.failure, data.payload.url)
   })
 }
 
@@ -745,7 +711,9 @@ function attachWorkerListener(worker: Worker) {
 
 function attachSharedWorkerListener(worker: SharedWorker) {
   worker.port.addEventListener('message', (event: MessageEvent) => {
-    if (event.data?.source === 'moqtap-worker') {
+    if (event.data?.source === 'moqtap-hook-ready') {
+      event.stopImmediatePropagation()
+    } else if (event.data?.source === 'moqtap-worker') {
       event.stopImmediatePropagation()
       const payload = event.data.payload as ContentToBackgroundMsg
       send(payload)
@@ -807,16 +775,26 @@ function __moqtapPost(payload, transfers) {
 }
 self.__moqtapPost = __moqtapPost;
 
-var __moqtapImpair = { on: false, known: false, certHash: null, entry: null };
+var __moqtapImpair = { any: false, answer: null };
+var __moqtapWaiters = [];
 function __moqtapImpairApply(d) {
   if (!d || typeof d !== "object" || d.source !== "moqtap-impair-worker") return false;
-  var e = d.entry;
-  __moqtapImpair = {
-    on: d.on === true,
-    known: d.known === true,
-    certHash: typeof d.certHash === "string" ? d.certHash : null,
-    entry: e && typeof e === "object" && typeof e.id === "string" && typeof e.port === "number" && typeof e.secret === "string" ? e : null
-  };
+  var a = d.answer, answer = null;
+  if (a === "unanswered") answer = a;
+  else if (a && typeof a === "object" && typeof a.on === "boolean") {
+    var r = a.route;
+    answer = {
+      on: a.on,
+      route: r && typeof r === "object" && typeof r.port === "number" && typeof r.token === "string" && typeof r.certHash === "string"
+        ? { port: r.port, token: r.token, certHash: r.certHash } : null
+    };
+  }
+  __moqtapImpair = { any: d.any === true, answer: answer };
+  if (answer !== null) {
+    var w = __moqtapWaiters;
+    __moqtapWaiters = [];
+    for (var i = 0; i < w.length; i++) { try { w[i](); } catch (e) {} }
+  }
   return true;
 }
 __moqtapImpairApply(self.__moqtapImpairInit);
@@ -829,8 +807,12 @@ function __moqtapImpairListen(target) {
 }
 if (!__moqtapIsShared) __moqtapImpairListen(self);
 var __moqtapRoute = ${routeThroughCli.toString()};
+var __moqtapDecide = ${decide.toString()};
+var __moqtapCheckUrl = ${checkUrl.toString()};
+var __moqtapSnapshot = ${snapshotOptions.toString()};
+var __moqtapDefer = ${deferWebTransport.toString()};
 var __moqtapRouteFailure = ${routeFailure.toString()};
-var __moqtapNoSession = ${JSON.stringify(NO_SESSION_MESSAGE)};
+function __moqtapBase() { return String(self.location && self.location.href); }
 var __moqtapInstanceId = Math.random().toString(36).slice(2, 10);
 var __moqtapSessionCounter = 0;
 function __moqtapGenId() { return "wt-w-" + __moqtapInstanceId + "-" + (++__moqtapSessionCounter); }
@@ -981,24 +963,16 @@ function __moqtapInterceptDatagrams(dg, sessionId) {
 var __moqtapNextStreamId = 0;
 var OrigWT = self.WebTransport;
 if (OrigWT) {
-  var PatchedWT = function(url, options) {
+  var __moqtapOpen = function(url, options, r) {
     var target = url, opts = options, routed = null;
-    if (!__moqtapImpair.on && !__moqtapImpair.known) {
-      __moqtapSend({ type: "impair:failed", failure: "opened-early", url: String(url) });
-    }
-    if (__moqtapImpair.on) {
-      var held = __moqtapImpair.entry;
-      var r = held && __moqtapImpair.certHash
-        ? __moqtapRoute(url, String(self.location && self.location.href), options, held.port, held.secret, __moqtapImpair.certHash)
-        : null;
-      if (!r || r.refused) {
-        var why = r ? r.refused : __moqtapNoSession;
-        if (!r) __moqtapSend({ type: "impair:failed", failure: "no-session", url: String(url) });
-        else if (r.failure) __moqtapSend({ type: "impair:failed", failure: r.failure, url: String(url) });
+    if (r !== null) {
+      if (r.refused) {
+        if (r.name === "SyntaxError") throw new DOMException(r.refused, "SyntaxError");
+        if (r.failure) __moqtapSend({ type: "impair:failed", failure: r.failure, url: String(url) });
         var rid = __moqtapGenId();
         __moqtapSend({ type: "session:opened", sessionId: rid, url: String(url), createdAt: Date.now(), options: __moqtapOptions(options) });
-        __moqtapSend({ type: "session:closed", sessionId: rid, reason: why });
-        throw new DOMException(why, "NetworkError");
+        __moqtapSend({ type: "session:closed", sessionId: rid, reason: r.refused });
+        throw new DOMException(r.refused, "NetworkError");
       }
       target = r.url;
       opts = r.options;
@@ -1011,14 +985,10 @@ if (OrigWT) {
       if (routed !== null) {
         if (err && err.name === "SecurityError") __moqtapSend({ type: "impair:failed", failure: "blocked-by-page", url: routed });
         var tid = __moqtapGenId();
-        __moqtapSend({ type: "session:opened", sessionId: tid, url: routed, createdAt: Date.now(), options: __moqtapOptions(options) });
+        __moqtapSend({ type: "session:opened", sessionId: tid, url: routed, createdAt: Date.now(), options: __moqtapOptions(options), cli: true });
         __moqtapSend({ type: "session:closed", sessionId: tid, reason: String(err && err.message || err) });
       }
       throw err;
-    }
-    if (routed !== null) {
-      if (__moqtapImpair.entry === held) __moqtapImpair.entry = null;
-      __moqtapSend({ type: "impair:took", id: held.id });
     }
     if (routed !== null && inst.ready && typeof inst.ready.then === "function") {
       inst.ready.then(null, function() {
@@ -1030,7 +1000,9 @@ if (OrigWT) {
     // String(url): callers may pass a URL object, which is not structured-cloneable
     var session = { id: __moqtapGenId(), url: String(url), createdAt: Date.now(), options: __moqtapOptions(options) };
     var sessionId = session.id;
-    __moqtapSend({ type: "session:opened", sessionId: sessionId, url: session.url, createdAt: session.createdAt, options: session.options });
+    var opened = { type: "session:opened", sessionId: sessionId, url: session.url, createdAt: session.createdAt, options: session.options };
+    if (routed !== null) opened.cli = true;
+    __moqtapSend(opened);
     var origBidi = inst.createBidirectionalStream;
     if (typeof origBidi === "function") {
       inst.createBidirectionalStream = function() {
@@ -1089,7 +1061,30 @@ if (OrigWT) {
     }
     return inst;
   };
+  var PatchedWT = function(url, options) {
+    var d = __moqtapDecide(__moqtapImpair, url, __moqtapBase(), options, __moqtapRoute);
+    if (d !== "wait") return __moqtapOpen(url, options, d);
+    var bad = __moqtapCheckUrl(url, __moqtapBase());
+    if (bad !== null) throw new DOMException(bad, "SyntaxError");
+    var snap = __moqtapSnapshot(options);
+    var def = __moqtapDefer(OrigWT, snap);
+    __moqtapWaiters.push(function() {
+      if (!def.wanted()) return;
+      try {
+        var now = __moqtapDecide(__moqtapImpair, url, __moqtapBase(), snap, __moqtapRoute);
+        if (now === "wait") throw new DOMException("moqtap impairment: no route.", "NetworkError");
+        def.attach(__moqtapOpen(url, snap, now));
+      } catch (err) {
+        def.fail(err);
+      }
+    });
+    return def.transport;
+  };
   PatchedWT.prototype = OrigWT.prototype;
+  Object.getOwnPropertyNames(OrigWT).forEach(function(k) {
+    if (k === "length" || k === "name" || k === "prototype") return;
+    try { Object.defineProperty(PatchedWT, k, Object.getOwnPropertyDescriptor(OrigWT, k)); } catch (e) {}
+  });
   Object.defineProperty(PatchedWT, "name", { value: "WebTransport" });
   self.WebTransport = PatchedWT;
 }

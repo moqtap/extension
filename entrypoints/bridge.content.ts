@@ -6,7 +6,7 @@
  *    to the background service worker via a persistent port.
  * 2. Listens for activation signal from background (when a DevTools panel
  *    connects) and forwards it to the MAIN world content script.
- * 3. Passes the frame's idle CLI sessions (src/impair) to the MAIN world.
+ * 3. Passes the tab's impairment answer (src/impair) to the MAIN world.
  *
  * On exactly APP_ORIGIN it also relays the sign-in callback and the
  * signed-in / signed-out hint to the background (src/account/bridge-relay.ts
@@ -28,7 +28,7 @@ import { APP_ORIGIN } from '@/src/account/config'
 import { accountRelay } from '@/src/account/bridge-relay'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 import { bytesToBase64 } from '@/src/messaging/types'
-import { isPoolMsg } from '@/src/impair/messages'
+import { isTabAnswerMsg, type TabAnswer } from '@/src/impair/messages'
 import { EXCLUSIONS_KEY, exclusionNotice } from '@/src/storage/worker-exclusions'
 
 export default defineContentScript({
@@ -75,14 +75,20 @@ export default defineContentScript({
       }, delay)
     }
 
+    function postAnswer(answer: TabAnswer) {
+      window.postMessage({ source: 'moqtap-impair', answer }, '*')
+    }
+
     function connect() {
       if (teardown) return
       try {
         port = browser.runtime.connect({ name: 'moqtap-bridge' })
       } catch {
-        // Extension context invalidated (extension disabled/uninstalled/updated)
+        // Extension context invalidated (extension disabled/uninstalled/updated).
+        // Nothing routes this tab any more, so its sessions connect directly.
         port = null
         teardown = true
+        postAnswer({ on: false, route: null })
         return
       }
       reconnectAttempt = 0
@@ -91,8 +97,8 @@ export default defineContentScript({
       port.onMessage.addListener((message: { type?: string }) => {
         if (message?.type === 'activate-tab') {
           window.postMessage({ source: 'moqtap-activate' }, '*')
-        } else if (isPoolMsg(message)) {
-          window.postMessage({ source: 'moqtap-impair', pool: message }, '*')
+        } else if (isTabAnswerMsg(message)) {
+          postAnswer(message.answer)
         }
       })
 

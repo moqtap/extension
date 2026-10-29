@@ -12,13 +12,15 @@ import {
   type TabImpairment,
   type TrustedCli,
 } from '@/src/cli/messages'
-import { isPreset, type Preset } from '@/src/cli/protocol'
+import { isProfile, type Profile, type Profiles } from '@/src/cli/protocol'
 import { onBeforeUnmount, ref } from 'vue'
 
 export function useCli(tabId?: number) {
   const view = ref<CliView | null>(null)
   const trusted = ref<readonly TrustedCli[]>([])
   const tab = ref<TabImpairment | null>(null)
+  /** The CLI's profiles as last read; undefined until the answer arrives. */
+  const profiles = ref<Profiles | null | undefined>(undefined)
   let port: Browser.runtime.Port | null = null
   let closed = false
 
@@ -32,6 +34,8 @@ export function useCli(tabId?: number) {
         trusted.value = msg.trusted
       } else if (msg.type === 'cli:tab' && msg.tab.tabId === tabId) {
         tab.value = msg.tab
+      } else if (msg.type === 'cli:profiles') {
+        profiles.value = msg.profiles
       }
     })
     port.onDisconnect.addListener(() => {
@@ -60,12 +64,17 @@ export function useCli(tabId?: number) {
     view,
     trusted,
     tab,
+    profiles,
+    readProfiles: () => {
+      profiles.value = undefined
+      send({ type: 'cli:profiles' })
+    },
     allow: (identity: string) => send({ type: 'cli:allow', identity }),
     decline: (identity: string) => send({ type: 'cli:decline', identity }),
     reconsider: () => send({ type: 'cli:reconsider' }),
     forget: (identity: string) => send({ type: 'cli:forget', identity }),
-    setPreset: (preset: Preset) => {
-      if (tabId !== undefined && isPreset(preset)) send({ type: 'cli:set-preset', tabId, preset })
+    setProfile: (profile: Profile, name: string) => {
+      if (tabId !== undefined && isProfile(profile)) send({ type: 'cli:set-profile', tabId, profile, name })
     },
   }
 }

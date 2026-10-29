@@ -81,6 +81,7 @@ import {
 } from '@/src/storage/worker-exclusions'
 import { createExtensionRecorder } from '@/src/trace/index'
 import type { SupportedDraft } from '@/src/types/common'
+import type { CollectorStatus } from '@/src/intercept/collector-presence'
 import type { TraceRecorder } from '@moqtap/trace'
 
 interface TabState {
@@ -103,6 +104,9 @@ interface SessionRecord {
   negotiatedProtocol?: string
   /** Frame ID — 0 for main frame, non-zero for iframes */
   frameId: number
+  collector?: CollectorStatus
+  /** The session goes through the moqtap CLI. */
+  cli?: true
   streams: Map<number, StreamRecord>
   closed: boolean
   closedReason?: string
@@ -695,6 +699,8 @@ function replayState(tabId: number) {
       createdAt: session.createdAt,
       ...(session.options ? { options: session.options } : {}),
       ...(session.frameId !== 0 ? { frameId: session.frameId } : {}),
+      ...(session.collector ? { collector: session.collector } : {}),
+      ...(session.cli ? { cli: true } : {}),
     })
 
     if (session.negotiatedProtocol) {
@@ -903,6 +909,8 @@ function handleContentMessage(
         createdAt: message.createdAt,
         options: message.options,
         frameId,
+        ...(message.collector ? { collector: message.collector } : {}),
+        ...(message.cli === true ? { cli: true } : {}),
         streams: new Map(),
         closed: false,
         detection: null,
@@ -933,6 +941,7 @@ function handleContentMessage(
         ...(message.options ? { options: message.options } : {}),
         ...(frameId !== 0 ? { frameId } : {}),
         ...(message.collector ? { collector: message.collector } : {}),
+        ...(message.cli === true ? { cli: true } : {}),
       })
       break
     }
@@ -1615,7 +1624,7 @@ export default defineBackground(() => {
 
       port.onMessage.addListener((message: ContentToBackgroundMsg) => {
         if (isImpairPageMsg(message)) {
-          impair.fromPage(tabId, frameId, message)
+          impair.failed(tabId, message.failure)
           return
         }
         handleContentMessage(message, tabId, frameId, sender)

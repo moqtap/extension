@@ -1,19 +1,30 @@
 <script lang="ts" setup>
 import type { CliView, TabImpairment } from '@/src/cli/messages'
-import { PRESETS, type Preset } from '@/src/cli/protocol'
+import { isOff, OFF, sameProfile, type ProfileChoice, type Profiles } from '@/src/cli/protocol'
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { impairmentProblem, PRESET_LABELS, PRO_URL, START_COMMAND } from '../cli-copy'
+import { DIRECT_NOTICE, impairmentProblem, PRO_URL, START_COMMAND } from '../cli-copy'
 import CopyButton from './CopyButton.vue'
 
-const props = defineProps<{ view: CliView | null; tab: TabImpairment | null }>()
+const props = defineProps<{
+  view: CliView | null
+  tab: TabImpairment | null
+  /** The CLI's answer to GET profiles; undefined while it is read. */
+  profiles: Profiles | null | undefined
+  /** Open connections in the tab bypass the CLI. */
+  direct: boolean
+}>()
 const emit = defineEmits<{
   close: []
-  setPreset: [preset: Preset]
+  setProfile: [choice: ProfileChoice]
   allow: [identity: string]
+  readProfiles: []
 }>()
 
 const dialogEl = ref<HTMLElement | null>(null)
-onMounted(() => void nextTick(() => dialogEl.value?.querySelector<HTMLElement>('input:checked, button')?.focus()))
+onMounted(() => {
+  emit('readProfiles')
+  void nextTick(() => dialogEl.value?.querySelector<HTMLElement>('input:checked, button')?.focus())
+})
 
 const found = computed(() =>
   props.view?.state === 'connected' || props.view?.state === 'confirm' || props.view?.state === 'declined'
@@ -21,11 +32,23 @@ const found = computed(() =>
     : null,
 )
 const connected = computed(() => props.view?.state === 'connected')
-const preset = computed<Preset>(() => props.tab?.preset ?? 'none')
+const current = computed(() => props.tab?.profile ?? OFF)
+const choices = computed<readonly ProfileChoice[]>(() => {
+  const out = [...(props.profiles?.profiles ?? [])]
+  if (!out.some((c) => isOff(c.profile))) out.unshift({ name: 'Off', profile: OFF })
+  const tab = props.tab
+  if (tab !== null && !out.some((c) => sameProfile(c.profile, tab.profile))) {
+    out.push({ name: tab.name, profile: tab.profile })
+  }
+  return out
+})
+/** Why the CLI could not read the sign-in, with what to do. */
+const accountError = computed(() => props.profiles?.account.error ?? null)
 const problem = computed(() => impairmentProblem(props.tab, props.view))
+const showDirect = computed(() => props.direct && !isOff(current.value))
 
-function choose(p: Preset) {
-  if (p !== preset.value) emit('setPreset', p)
+function choose(c: ProfileChoice) {
+  if (!sameProfile(c.profile, current.value)) emit('setProfile', c)
 }
 </script>
 
@@ -73,23 +96,30 @@ function choose(p: Preset) {
 
       <fieldset class="mq-fieldset">
         <legend class="mq-label">Profile for this tab</legend>
-        <label v-for="p in PRESETS" :key="p" class="mq-check">
+        <label v-for="c in choices" :key="c.name" class="mq-check">
           <input
             type="radio"
-            name="impair-preset"
-            :value="p"
-            :checked="preset === p"
-            :disabled="p !== 'none' && !connected"
-            @change="choose(p)"
+            name="impair-profile"
+            :checked="sameProfile(c.profile, current)"
+            :disabled="!isOff(c.profile) && !connected"
+            @change="choose(c)"
           />
-          <span>{{ PRESET_LABELS[p] }}</span>
+          <span>{{ c.name }}</span>
         </label>
       </fieldset>
-      <a class="mq-link" :href="PRO_URL" target="_blank" rel="noopener">More profiles with Pro</a>
+      <div v-if="accountError" class="mq-notice mq-notice--warning" role="status">
+        <span class="mq-notice__icon" aria-hidden="true">▲</span>
+        <p>{{ accountError }}</p>
+      </div>
+      <a v-else-if="profiles?.more" class="mq-link" :href="PRO_URL" target="_blank" rel="noopener">More profiles with Pro</a>
 
       <div v-if="problem" class="mq-notice mq-notice--warning" role="status">
         <span class="mq-notice__icon" aria-hidden="true">▲</span>
         <p>{{ problem }}</p>
+      </div>
+      <div v-if="showDirect" class="mq-notice mq-notice--info" role="status">
+        <span class="mq-notice__icon" aria-hidden="true">i</span>
+        <p>{{ DIRECT_NOTICE }} Reload the page to impair them.</p>
       </div>
 
       <div class="mq-dialog__actions">

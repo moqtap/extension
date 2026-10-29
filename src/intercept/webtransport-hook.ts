@@ -14,7 +14,8 @@
  * - Close/error events
  *
  * While the tab has an impairment profile, the router sends each session
- * through the moqtap CLI instead (src/impair).
+ * through the moqtap CLI instead (src/impair). Until the frame knows whether
+ * it has one, a session is a deferred stand-in that connects once it knows.
  */
 
 import type { WebTransportOptionsInfo } from '../messaging/types'
@@ -24,6 +25,8 @@ export interface InterceptedSession {
   url: string
   createdAt: number
   options?: WebTransportOptionsInfo
+  /** The session goes through the moqtap CLI. */
+  cli?: true
 }
 
 /**
@@ -127,16 +130,20 @@ export interface StreamInterceptor {
 }
 
 import { joinChain } from './patch-chain'
-import type { Refused, Routed } from '../impair/route'
+import { deferWebTransport } from './deferred-webtransport'
+import { snapshotOptions, type Refused, type Routed } from '../impair/route'
 
 /** Sends sessions through the moqtap CLI while the tab has an impairment profile. */
 export interface WebTransportRouter {
-  /** Null to connect as the page asked. */
-  route(url: string | URL, options: unknown): Routed | Refused | null
-  /** The constructor accepted the route, so its CLI session is in use. */
-  opened(route: Routed): void
-  /** The constructor threw `err` for the route, so its CLI session is unused. */
-  threw(route: Routed, url: string, err: unknown): void
+  /**
+   * Null to connect as the page asked, `wait` while the frame does not know
+   * yet whether its tab has a profile.
+   */
+  route(url: string | URL, options: unknown): Routed | Refused | null | 'wait'
+  /** Calls `fn` once {@link route} answers without waiting. */
+  wait(fn: () => void): void
+  /** The constructor threw `err` for a CLI route. */
+  threw(url: string, err: unknown): void
   /** A routed session failed to establish. */
   failed(url: string): void
 }
@@ -197,8 +204,33 @@ export function installWebTransportHook(
     url: string | URL,
     options?: Record<string, unknown>,
   ) {
-    const route = live && router ? router.route(url, options) : null
+    const decision = live && router ? router.route(url, options) : null
+    if (decision !== 'wait') return open(url, options, decision)
+    const snapshot = snapshotOptions(options) as Record<string, unknown> | undefined
+    const deferred = deferWebTransport(
+      OriginalWebTransport as { prototype: object },
+      snapshot,
+    )
+    router!.wait(() => {
+      if (!deferred.wanted()) return
+      const now = router!.route(url, snapshot)
+      try {
+        if (now === 'wait') throw new DOMException('moqtap impairment: no route.', 'NetworkError')
+        deferred.attach(open(url, snapshot, now))
+      } catch (err) {
+        deferred.fail(err)
+      }
+    })
+    return deferred.transport
+  }
+
+  function open(
+    url: string | URL,
+    options: Record<string, unknown> | undefined,
+    route: Routed | Refused | null,
+  ): Record<string, unknown> {
     if (route !== null && 'refused' in route) {
+      if (route.name === 'SyntaxError') throw new DOMException(route.refused, 'SyntaxError')
       const at = Date.now()
       const id = generateSessionId()
       onSession({ id, url: String(url), createdAt: at, options: extractSessionOptions(options) })
@@ -216,14 +248,13 @@ export function installWebTransportHook(
       )(route?.url ?? url, route?.options ?? options)
     } catch (err) {
       if (route !== null) {
-        router?.threw(route, String(url), err)
+        router?.threw(String(url), err)
         const id = generateSessionId()
-        onSession({ id, url: String(url), createdAt: Date.now(), options: extractSessionOptions(options) })
+        onSession({ id, url: String(url), createdAt: Date.now(), options: extractSessionOptions(options), cli: true })
         onSessionClosed?.(id, err instanceof Error ? err.message : String(err))
       }
       throw err
     }
-    if (route !== null) router?.opened(route)
 
     // Torn down but still in the constructor chain, because something patched
     // over us and we could not safely unwind. Delegate and observe nothing.
@@ -246,6 +277,7 @@ export function installWebTransportHook(
       url: String(url),
       createdAt: Date.now(),
       options: extractSessionOptions(options),
+      ...(route !== null ? { cli: true as const } : {}),
     }
     const sessionId = session.id
     onSession(session)
@@ -388,6 +420,11 @@ export function installWebTransportHook(
     OriginalWebTransport as { prototype: unknown }
   ).prototype
   Object.defineProperty(PatchedWebTransport, 'name', { value: 'WebTransport' })
+  for (const key of Object.getOwnPropertyNames(OriginalWebTransport)) {
+    if (key === 'length' || key === 'name' || key === 'prototype') continue
+    const d = Object.getOwnPropertyDescriptor(OriginalWebTransport, key)
+    if (d) Object.defineProperty(PatchedWebTransport, key, d)
+  }
 
   glob.WebTransport = PatchedWebTransport
 

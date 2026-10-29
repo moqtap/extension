@@ -608,11 +608,17 @@ describe('WebTransport hook — main-thread only (D10)', () => {
 
 describe('WebTransport hook — routing through the moqtap CLI', () => {
   const noStreams: StreamInterceptor = { onData: vi.fn(), onClose: vi.fn(), onError: vi.fn() }
+  const CLI_URL = 'https://127.0.0.1:50001/moqtap/u/x'
 
-  function install(router: WebTransportRouter) {
+  function router(route: WebTransportRouter['route'], extra: Partial<WebTransportRouter> = {}): WebTransportRouter {
+    return { route, wait: vi.fn(), failed: vi.fn(), threw: vi.fn(), ...extra }
+  }
+
+  function install(r: WebTransportRouter) {
     const g = createMockGlobal()
     const built: { url: string; options?: Record<string, unknown> }[] = []
     class Recording extends MockWebTransport {
+      static supportsReliableOnly = true
       constructor(url: string, options?: Record<string, unknown>) {
         super(url, options)
         built.push({ url, options })
@@ -621,41 +627,43 @@ describe('WebTransport hook — routing through the moqtap CLI', () => {
     g.WebTransport = Recording
     const sessions: InterceptedSession[] = []
     const closed: [string, string][] = []
-    installWebTransportHook(g, (s) => sessions.push(s), noStreams, (id, r) => closed.push([id, r]), undefined, router)
+    installWebTransportHook(g, (s) => sessions.push(s), noStreams, (id, why) => closed.push([id, why]), undefined, r)
     const WT = g.WebTransport as unknown as new (url: string | URL, o?: unknown) => MockWebTransport
-    return { WT, built, sessions, closed }
+    return { WT, built, sessions, closed, Recording }
   }
 
   it('connects as the page asked when the router has no route', () => {
-    const { WT, built } = install({ route: () => null, failed: vi.fn(), opened: vi.fn(), threw: vi.fn() })
+    const { WT, built, sessions } = install(router(() => null))
     new WT('https://relay.example/moq', { protocols: ['moqt-16'] })
     expect(built).toEqual([{ url: 'https://relay.example/moq', options: { protocols: ['moqt-16'] } }])
+    expect(sessions[0]?.cli).toBeUndefined()
+  })
+
+  it('keeps the constructor statics', () => {
+    const { WT } = install(router(() => null))
+    expect((WT as unknown as { supportsReliableOnly: boolean }).supportsReliableOnly).toBe(true)
   })
 
   it('opens the CLI route and captures the page URL as the session name', () => {
     const options = { serverCertificateHashes: [] }
-    const { WT, built, sessions } = install({
-      route: () => ({ url: 'https://127.0.0.1:50001/moqtap/u/x', options, id: 'id-1' }),
-      failed: vi.fn(),
-      opened: vi.fn(),
-      threw: vi.fn(),
-    })
+    const { WT, built, sessions } = install(router(() => ({ url: CLI_URL, options })))
     new WT(new URL('https://relay.example/moq'))
-    expect(built).toEqual([{ url: 'https://127.0.0.1:50001/moqtap/u/x', options }])
-    expect(sessions[0]?.url).toBe('https://relay.example/moq')
+    expect(built).toEqual([{ url: CLI_URL, options }])
+    expect(sessions[0]).toMatchObject({ url: 'https://relay.example/moq', cli: true })
   })
 
   it('throws a refused session at the page and shows it closed with the reason', () => {
-    const { WT, built, sessions, closed } = install({
-      route: () => ({ refused: 'no session' }),
-      failed: vi.fn(),
-      opened: vi.fn(),
-      threw: vi.fn(),
-    })
+    const { WT, built, sessions, closed } = install(router(() => ({ refused: 'no session' })))
     expect(() => new WT('https://relay.example/moq')).toThrow('no session')
     expect(built).toEqual([])
     expect(sessions.map((s) => s.url)).toEqual(['https://relay.example/moq'])
     expect(closed).toEqual([[sessions[0]!.id, 'no session']])
+  })
+
+  it('throws a SyntaxError for a URL the real constructor would refuse, capturing nothing', () => {
+    const { WT, sessions } = install(router(() => ({ refused: 'bad url', name: 'SyntaxError' })))
+    expect(() => new WT('http://relay.example/')).toThrow(expect.objectContaining({ name: 'SyntaxError' }))
+    expect(sessions).toEqual([])
   })
 
   it('reports a routed session that fails to establish', async () => {
@@ -669,30 +677,20 @@ describe('WebTransport hook — routing through the moqtap CLI', () => {
       }
     }
     g.WebTransport = Refused
-    installWebTransportHook(g, vi.fn(), noStreams, vi.fn(), undefined, {
-      route: () => ({ url: 'https://127.0.0.1:50001/moqtap/u/x', options: {}, id: 'id-1' }),
-      failed,
-      opened: vi.fn(),
-      threw: vi.fn(),
-    })
+    installWebTransportHook(
+      g,
+      vi.fn(),
+      noStreams,
+      vi.fn(),
+      undefined,
+      router(() => ({ url: CLI_URL, options: {} }), { failed }),
+    )
     new (g.WebTransport as unknown as new (u: string) => unknown)('https://relay.example/moq')
     await new Promise((r) => setTimeout(r, 0))
     expect(failed).toHaveBeenCalledWith('https://relay.example/moq')
   })
 
-  it('settles the route when the constructor returns', () => {
-    const route = { url: 'https://127.0.0.1:50001/moqtap/u/x', options: {}, id: 'id-1' }
-    const opened = vi.fn()
-    const threw = vi.fn()
-    const { WT } = install({ route: () => route, failed: vi.fn(), opened, threw })
-    new WT('https://relay.example/moq')
-    expect(opened).toHaveBeenCalledWith(route)
-    expect(threw).not.toHaveBeenCalled()
-  })
-
   it('reports a routed constructor that throws, shows the session closed and rethrows', () => {
-    const route = { url: 'https://127.0.0.1:50001/moqtap/u/x', options: {}, id: 'id-1' }
-    const opened = vi.fn()
     const threw = vi.fn()
     const g = createMockGlobal()
     const blocked = new DOMException('Refused to connect', 'SecurityError')
@@ -703,17 +701,98 @@ describe('WebTransport hook — routing through the moqtap CLI', () => {
     } as unknown as typeof g.WebTransport
     const sessions: InterceptedSession[] = []
     const closed: [string, string][] = []
-    installWebTransportHook(g, (s) => sessions.push(s), noStreams, (id, r) => closed.push([id, r]), undefined, {
-      route: () => route,
-      failed: vi.fn(),
-      opened,
-      threw,
-    })
+    installWebTransportHook(
+      g,
+      (s) => sessions.push(s),
+      noStreams,
+      (id, r) => closed.push([id, r]),
+      undefined,
+      router(() => ({ url: CLI_URL, options: {} }), { threw }),
+    )
     const WT = g.WebTransport as unknown as new (u: string) => unknown
     expect(() => new WT('https://relay.example/moq')).toThrow(blocked)
-    expect(threw).toHaveBeenCalledWith(route, 'https://relay.example/moq', blocked)
-    expect(opened).not.toHaveBeenCalled()
+    expect(threw).toHaveBeenCalledWith('https://relay.example/moq', blocked)
     expect(sessions.map((s) => s.url)).toEqual(['https://relay.example/moq'])
     expect(closed).toEqual([[sessions[0]!.id, 'Refused to connect']])
+  })
+
+  describe('while the frame does not know its answer', () => {
+    function deferring() {
+      let answer: ReturnType<WebTransportRouter['route']> = 'wait'
+      const waiters: (() => void)[] = []
+      const r = router(() => answer, { wait: (fn) => void waiters.push(fn) })
+      const env = install(r)
+      const settle = (now: ReturnType<WebTransportRouter['route']>) => {
+        answer = now
+        for (const fn of waiters.splice(0)) fn()
+      }
+      return { ...env, settle }
+    }
+
+    it('returns a stand-in at once and connects nothing yet', () => {
+      const { WT, built, sessions, Recording } = deferring()
+      const wt = new WT('https://relay.example/moq', { protocols: ['moqt-16'] })
+      expect(wt instanceof Recording).toBe(true)
+      expect(built).toEqual([])
+      expect(sessions).toEqual([])
+    })
+
+    it('connects through the CLI once the answer routes it', async () => {
+      const { WT, built, sessions, settle } = deferring()
+      const wt = new WT('https://relay.example/moq', { protocols: ['moqt-16'] }) as unknown as {
+        ready: Promise<void>
+      }
+      settle({ url: CLI_URL, options: { protocols: ['moqt-16'], serverCertificateHashes: [] } })
+      expect(built).toEqual([{ url: CLI_URL, options: { protocols: ['moqt-16'], serverCertificateHashes: [] } }])
+      expect(sessions[0]).toMatchObject({ url: 'https://relay.example/moq', cli: true })
+      await wt.ready
+    })
+
+    it('connects directly once the answer says so, with the options as the page passed them', () => {
+      const { WT, built, settle } = deferring()
+      const options = { protocols: ['moqt-16'] }
+      new WT('https://relay.example/moq', options)
+      options.protocols.push('moqt-15')
+      settle(null)
+      expect(built).toEqual([{ url: 'https://relay.example/moq', options: { protocols: ['moqt-16'] } }])
+    })
+
+    it('fails the stand-in with the refusal when the answer refuses it', async () => {
+      const { WT, built, settle } = deferring()
+      const wt = new WT('https://relay.example/moq') as unknown as { ready: Promise<void>; closed: Promise<unknown> }
+      settle({ refused: 'no cli' })
+      expect(built).toEqual([])
+      expect(await wt.ready.catch((e: DOMException) => [e.name, e.message])).toEqual(['NetworkError', 'no cli'])
+      expect(await wt.closed.catch((e: DOMException) => e.name)).toBe('NetworkError')
+    })
+
+    it('throws what the real constructor throws for the options, connecting nothing', () => {
+      const { WT, built, settle } = deferring()
+      expect(() => new WT('https://relay.example/moq', { protocols: 'moqt-16' })).toThrow(TypeError)
+      const hash = { algorithm: 'sha-256', value: new Uint8Array(32) }
+      expect(() => new WT('https://relay.example/moq', { allowPooling: true, serverCertificateHashes: [hash] })).toThrow(
+        expect.objectContaining({ name: 'NotSupportedError' }),
+      )
+      settle(null)
+      expect(built).toEqual([])
+    })
+
+    it('connects nothing for a stand-in the page closed while waiting', () => {
+      const { WT, built, settle } = deferring()
+      const wt = new WT('https://relay.example/moq') as unknown as { close(): void }
+      wt.close()
+      settle({ url: CLI_URL, options: {} })
+      expect(built).toEqual([])
+    })
+
+    it('throws what reading the page options throws, as the real constructor does', () => {
+      const { WT } = deferring()
+      const options = {
+        get protocols(): string[] {
+          throw new TypeError('getter')
+        },
+      }
+      expect(() => new WT('https://relay.example/moq', options)).toThrow('getter')
+    })
   })
 })

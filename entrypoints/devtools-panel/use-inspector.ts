@@ -61,6 +61,8 @@ export interface SessionEntry {
    * connection, where the marker is on a global we do not read.
    */
   collector?: CollectorStatus
+  /** The session goes through the moqtap CLI. */
+  cli?: true
   /** The application protocol the server selected (WebTransport `protocol`) */
   negotiatedProtocol?: string
   /** moqt_implementation from CLIENT_SETUP, when the client advertises one */
@@ -316,6 +318,7 @@ export function useInspector() {
         if (msg.frameId) session.frameId = msg.frameId
         if (msg.options) session.options = msg.options
         if (msg.collector) session.collector = msg.collector
+        if (msg.cli === true) session.cli = true
         // Auto-select first session
         if (!selectedSessionId.value) {
           selectedSessionId.value = msg.sessionId

@@ -1,6 +1,6 @@
 /** Messages between the background's CLI bridge and extension pages. */
 
-import type { Preset } from './protocol'
+import type { Profile, Profiles } from './protocol'
 
 /** Port name the panel and the options page open. */
 export const CLI_PORT = 'moqtap-cli'
@@ -30,37 +30,48 @@ export interface TrustedCli {
 /**
  * Why a connection in the tab did not go through the CLI.
  *
- * - `no-session`: the page opened it while no CLI session was ready
+ * - `no-cli`: the tab has a profile but no CLI tab port, so the connection was refused
+ * - `no-answer`: the frame never heard its tab's profile, so the connection was refused
  * - `local-network`: the browser refused the page access to 127.0.0.1
  * - `cli-session`: the connection to the CLI failed for another reason
- * - `protocols`: the page offered WebTransport protocols, which the CLI refuses
  * - `blocked-by-page`: the page's CSP does not allow connecting to 127.0.0.1
- * - `opened-early`: the page connected directly before it learned of the profile
  * - `worker-uninstrumented`: a worker runs without the hook, so it connects directly
  */
 export type ImpairFailure =
-  | 'no-session'
+  | 'no-cli'
+  | 'no-answer'
   | 'local-network'
   | 'cli-session'
-  | 'protocols'
   | 'blocked-by-page'
-  | 'opened-early'
   | 'worker-uninstrumented'
 
+export const IMPAIR_FAILURES: readonly ImpairFailure[] = [
+  'no-cli',
+  'no-answer',
+  'local-network',
+  'cli-session',
+  'blocked-by-page',
+  'worker-uninstrumented',
+]
+
 /**
- * Why the tab's sessions cannot be prepared.
+ * Why the tab's sessions may not go through the CLI.
  *
- * - `limit`: the CLI holds as many sessions as it allows
+ * - `limit`: the CLI holds as many tabs as it allows
  * - `refused`: the CLI refused to open one
  * - `unreachable`: no allowed CLI answers
+ * - `flag`: the browser refused the script that makes new documents wait for
+ *   the tab's profile, so they may connect directly
  */
-export type PoolError = 'limit' | 'refused' | 'unreachable'
+export type TabError = 'limit' | 'refused' | 'unreachable' | 'flag'
 
 export interface TabImpairment {
   readonly tabId: number
-  readonly preset: Preset
+  readonly profile: Profile
+  /** What the panel calls the profile. */
+  readonly name: string
   readonly failure: ImpairFailure | null
-  readonly poolError: PoolError | null
+  readonly error: TabError | null
 }
 
 export type PageCliMsg =
@@ -70,7 +81,8 @@ export type PageCliMsg =
   | { readonly type: 'cli:reconsider' }
   | { readonly type: 'cli:forget'; readonly identity: string }
   | { readonly type: 'cli:watch-tab'; readonly tabId: number }
-  | { readonly type: 'cli:set-preset'; readonly tabId: number; readonly preset: Preset }
+  | { readonly type: 'cli:set-profile'; readonly tabId: number; readonly profile: Profile; readonly name: string }
+  | { readonly type: 'cli:profiles' }
 
 export type CliStateMsg =
   | {
@@ -79,3 +91,5 @@ export type CliStateMsg =
       readonly trusted: readonly TrustedCli[]
     }
   | { readonly type: 'cli:tab'; readonly tab: TabImpairment }
+  /** The answer to `cli:profiles`; null when the CLI did not answer. */
+  | { readonly type: 'cli:profiles'; readonly profiles: Profiles | null }

@@ -4,7 +4,7 @@ import type { KeyValueArea } from '@/src/account/stores'
 import { ImpairManager } from '@/src/impair/manager'
 import { serveCliPort, type CliPortLike } from './background'
 import type { CliStateMsg, PageCliMsg } from './messages'
-import { fromBase64Url, signedMessage, toBase64Url, type Preset } from './protocol'
+import { fromBase64Url, signedMessage, toBase64Url, type Profile } from './protocol'
 import { CliBridge, CONSENT_KEY } from './service'
 
 const subtle = webcrypto.subtle as unknown as SubtleCrypto
@@ -16,12 +16,14 @@ interface FakeCli {
   identity: string
   /** Signs with this key instead, as a squatter without the identity would. */
   signer?: CryptoKey
-  sessions: Map<string, { port: number; owner: string; preset: Preset; connected: boolean }>
+  tabs: Map<string, { port: number; owner: string; profile: Profile }>
   posts: { endpoint: string; body: unknown }[]
   deletes: string[]
   nonces: Uint8Array[]
-  /** Answers POST session with this status instead. */
+  /** Answers POST tab with this status instead. */
   createStatus?: number
+  /** Answers GET profiles with this body. */
+  profiles?: unknown
 }
 
 async function makeCli(port: number, extra: Partial<FakeCli> = {}): Promise<FakeCli> {
@@ -31,7 +33,7 @@ async function makeCli(port: number, extra: Partial<FakeCli> = {}): Promise<Fake
     port,
     keys,
     identity: toBase64Url(pub),
-    sessions: new Map(),
+    tabs: new Map(),
     posts: [],
     deletes: [],
     nonces: [],
@@ -69,7 +71,7 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
         signedMessage(nonce, certHash, cli.port) as BufferSource,
       )
       return json({
-        v: 2,
+        v: 3,
         cli_version: '1.2.3',
         identity_pub: cli.identity,
         cert_hash: toBase64Url(certHash),
@@ -78,33 +80,36 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
       })
     }
     const entry = (id: string) => {
-      const e = cli.sessions.get(id)!
-      return { id, port: e.port, owner: e.owner, upstream: null, profile: { preset: e.preset }, connected: e.connected }
+      const e = cli.tabs.get(id)!
+      return { id, port: e.port, owner: e.owner, profile: e.profile, sessions: [] }
     }
     const body = init?.body === undefined ? undefined : JSON.parse(String(init.body))
     if (init?.method === 'POST') cli.posts.push({ endpoint, body })
     if (endpoint === 'status') {
-      return json({ v: 2, listen: null, cert_hash: toBase64Url(certHash), sessions: [...cli.sessions.keys()].map(entry) })
+      return json({ v: 3, listen: null, cert_hash: toBase64Url(certHash), tabs: [...cli.tabs.keys()].map(entry) })
     }
-    if (endpoint === 'session' && init?.method === 'POST') {
+    if (endpoint === 'profiles') {
+      return cli.profiles === undefined ? json({ error: 'no' }, 500) : json(cli.profiles)
+    }
+    if (endpoint === 'tab' && init?.method === 'POST') {
       if (cli.createStatus !== undefined) return json({ error: 'no' }, cli.createStatus)
       const id = toBase64Url(webcrypto.getRandomValues(new Uint8Array(16)))
-      const port = 50000 + cli.sessions.size
-      cli.sessions.set(id, { port, owner: body.owner, preset: body.profile.preset, connected: false })
-      const secret = toBase64Url(webcrypto.getRandomValues(new Uint8Array(16)))
-      return json({ id, port, secret })
+      const port = 50000 + cli.tabs.size
+      cli.tabs.set(id, { port, owner: body.owner, profile: body.profile })
+      const token = toBase64Url(webcrypto.getRandomValues(new Uint8Array(16)))
+      return json({ id, port, token })
     }
     if (endpoint === 'lease' && init?.method === 'POST') return new Response(null, { status: 204 })
-    const m = /^session\/([A-Za-z0-9_-]{22})(\/profile)?$/.exec(endpoint)
+    const m = /^tab\/([A-Za-z0-9_-]{22})(\/profile)?$/.exec(endpoint)
     if (m !== null) {
       const id = m[1]!
-      if (!cli.sessions.has(id)) return json({ error: 'unknown session' }, 404)
+      if (!cli.tabs.has(id)) return json({ error: 'no such tab' }, 404)
       if (m[2] && init?.method === 'POST') {
-        cli.sessions.get(id)!.preset = body.profile.preset
+        cli.tabs.get(id)!.profile = body.profile
         return json(entry(id))
       }
       if (!m[2] && init?.method === 'DELETE') {
-        cli.sessions.delete(id)
+        cli.tabs.delete(id)
         cli.deletes.push(id)
         return new Response(null, { status: 204 })
       }
@@ -199,7 +204,7 @@ describe('CliBridge', () => {
     if (v.state !== 'confirm') return
     expect(v.identity).toBe(cli.identity)
     expect(v.fingerprint).toMatch(/^[0-9A-F]{4}(-[0-9A-F]{4}){4}$/)
-    expect(await bridge.createSession('owner', '3g')).toEqual({ error: 'unreachable' })
+    expect(await bridge.createTab('owner', { preset: '3g' })).toEqual({ error: 'unreachable' })
     expect(cli.posts).toEqual([])
   })
 
@@ -244,40 +249,59 @@ describe('CliBridge', () => {
     expect(v.state === 'connected' && v.port).toBe(47311)
   })
 
-  it('opens, switches and deletes sessions, and renews leases', async () => {
+  it('opens, switches and deletes tabs, and renews leases', async () => {
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
     await bridge.allow(cli.identity)
-    const created = await bridge.createSession('tab-1', '3g')
+    const created = await bridge.createTab('tab-1', { preset: '3g' })
     if ('error' in created) throw new Error(created.error)
-    expect(created.secret).toMatch(/^[A-Za-z0-9_-]{22}$/)
-    expect(cli.posts[0]).toEqual({ endpoint: 'session', body: { profile: { preset: '3g' }, owner: 'tab-1' } })
-    expect(await bridge.setSessionPreset(created.id, '4g')).toBe(true)
-    expect(cli.sessions.get(created.id)?.preset).toBe('4g')
-    expect((await bridge.sessions())?.map((s) => s.id)).toEqual([created.id])
+    expect(created.token).toMatch(/^[A-Za-z0-9_-]{22}$/)
+    expect(cli.posts[0]).toEqual({ endpoint: 'tab', body: { profile: { preset: '3g' }, owner: 'tab-1' } })
+    expect(await bridge.setTabProfile(created.id, { preset: '4g' })).toBe('ok')
+    expect(cli.tabs.get(created.id)?.profile).toEqual({ preset: '4g' })
+    expect((await bridge.tabs())?.map((t) => t.id)).toEqual([created.id])
     expect(await bridge.renewLease('tab-1')).toBe(true)
-    await bridge.deleteSession(created.id)
+    await bridge.deleteTab(created.id)
     expect(cli.deletes).toEqual([created.id])
-    expect(await bridge.setSessionPreset(created.id, 'none')).toBe(false)
+    expect(await bridge.setTabProfile(created.id, { preset: 'none' })).toBe('gone')
   })
 
-  it('sends only the four presets and valid owners', async () => {
+  it('sends only valid profiles and owners', async () => {
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
     await bridge.allow(cli.identity)
-    expect(await bridge.createSession('tab-1', 'slow-4g' as Preset)).toEqual({ error: 'unreachable' })
-    expect(await bridge.createSession('tab 1', '3g')).toEqual({ error: 'unreachable' })
+    expect(await bridge.createTab('tab-1', { preset: 'slow-4g' } as unknown as Profile)).toEqual({
+      error: 'unreachable',
+    })
+    expect(await bridge.createTab('tab 1', { preset: '3g' })).toEqual({ error: 'unreachable' })
     expect(cli.posts).toEqual([])
   })
 
-  it('reports the CLI session limit', async () => {
+  it('reports the CLI tab limit', async () => {
     cli.createStatus = 429
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
     await bridge.allow(cli.identity)
-    expect(await bridge.createSession('tab-1', '3g')).toEqual({ error: 'limit' })
+    expect(await bridge.createTab('tab-1', { preset: '3g' })).toEqual({ error: 'limit' })
     cli.createStatus = 400
-    expect(await bridge.createSession('tab-1', '3g')).toEqual({ error: 'refused' })
+    expect(await bridge.createTab('tab-1', { preset: '3g' })).toEqual({ error: 'refused' })
+  })
+
+  it('reads the profiles the CLI offers, or null when it fails', async () => {
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    expect(await bridge.profiles()).toBeNull()
+    cli.profiles = {
+      account: { signed_in: false, org: null, plan: null, error: null },
+      profiles: [{ name: 'Off', profile: { preset: 'none' } }],
+      more: true,
+    }
+    expect(await bridge.profiles()).toEqual({
+      account: { signedIn: false, org: null, plan: null, error: null },
+      profiles: [{ name: 'Off', profile: { preset: 'none' } }],
+      more: true,
+    })
   })
 
   it('forgets consent and asks again', async () => {
@@ -308,6 +332,7 @@ function managerFor(bridge: CliBridge) {
     tabExists: async () => true,
     newOwner: () => 'owner-1',
     every: () => () => {},
+    setFlag: async () => {},
   })
 }
 
@@ -336,7 +361,7 @@ describe('serveCliPort', () => {
     expect(p.isDisconnected()).toBe(true)
   })
 
-  it('sets a tab preset only to the four values', async () => {
+  it('sets a tab profile only to valid profiles', async () => {
     const cli = await makeCli(47310)
     const { bridge } = bridgeFor([cli])
     await bridge.probe()
@@ -345,14 +370,40 @@ describe('serveCliPort', () => {
     const p = fakePort('chrome-extension://abc/devtools-panel.html')
     serveCliPort(bridge, impair, p.port, 'chrome-extension://abc/')
     p.post({ type: 'cli:watch-tab', tabId: 7 })
-    p.post({ type: 'cli:set-preset', tabId: 7, preset: 'custom' })
-    p.post({ type: 'cli:set-preset', tabId: '7', preset: '3g' })
-    p.post({ type: 'cli:set-preset', tabId: 7, preset: '3g' })
+    p.post({ type: 'cli:set-profile', tabId: 7, profile: { preset: 'custom' }, name: 'Custom' })
+    p.post({ type: 'cli:set-profile', tabId: '7', profile: { preset: '3g' }, name: '3G' })
+    p.post({ type: 'cli:set-profile', tabId: 7, profile: { preset: '3g' }, name: '' })
+    p.post({ type: 'cli:set-profile', tabId: 7, profile: { preset: '3g' }, name: '3G' })
     await new Promise((r) => setTimeout(r, 50))
-    expect(impair.view(7).preset).toBe('3g')
+    expect(impair.view(7).profile).toEqual({ preset: '3g' })
     expect(p.sent.filter((m) => m.type === 'cli:tab').at(-1)).toEqual({
       type: 'cli:tab',
-      tab: { tabId: 7, preset: '3g', failure: null, poolError: null },
+      tab: { tabId: 7, profile: { preset: '3g' }, name: '3G', failure: null, error: null },
+    })
+    p.close()
+  })
+
+  it('answers a profiles request', async () => {
+    const cli = await makeCli(47310)
+    cli.profiles = {
+      account: { signed_in: true, org: 'acme', plan: 'Pro', error: null },
+      profiles: [{ name: 'Off', profile: { preset: 'none' } }],
+      more: false,
+    }
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    const p = fakePort('chrome-extension://abc/devtools-panel.html')
+    serveCliPort(bridge, managerFor(bridge), p.port, 'chrome-extension://abc/')
+    p.post({ type: 'cli:profiles' })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(p.sent.find((m) => m.type === 'cli:profiles')).toEqual({
+      type: 'cli:profiles',
+      profiles: {
+        account: { signedIn: true, org: 'acme', plan: 'Pro', error: null },
+        profiles: [{ name: 'Off', profile: { preset: 'none' } }],
+        more: false,
+      },
     })
     p.close()
   })

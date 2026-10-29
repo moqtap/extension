@@ -6,14 +6,14 @@
  * `/moqtap/bridge/v1/`, JSON bodies. Binary fields are base64url without
  * padding.
  *
- * `GET hello?nonce=N` answers `{v: 2, cli_version, identity_pub, cert_hash, port, sig}`,
+ * `GET hello?nonce=N` answers `{v: 3, cli_version, identity_pub, cert_hash, port, sig}`,
  * where `sig` is Ed25519 by `identity_pub` over
  *
  * | bytes | content |
  * | --- | --- |
  * | 16 | ASCII `moqtap-bridge-v1` |
  * | 32 | the nonce, decoded |
- * | 32 | `cert_hash`, decoded (SHA-256 of the listen certificate's DER) |
+ * | 32 | `cert_hash`, decoded (SHA-256 of the tab ports' certificate DER) |
  * | 2 | `port`, big-endian |
  *
  * The identity's fingerprint, as `moqtap cert` prints it, is the first 10
@@ -24,25 +24,40 @@
 export const BRIDGE_PORTS: readonly number[] = Array.from({ length: 10 }, (_, i) => 47310 + i)
 export const BRIDGE_PATH = '/moqtap/bridge/v1/'
 
-export const PROTOCOL_VERSION = 2
+export const PROTOCOL_VERSION = 3
 
-/** The impairment presets the bridge accepts. Nothing else is ever sent. */
+/** The impairment presets the bridge accepts. */
 export const PRESETS = ['none', 'offline', '3g', '4g'] as const
 export type Preset = (typeof PRESETS)[number]
 
 export const isPreset = (v: unknown): v is Preset =>
   typeof v === 'string' && (PRESETS as readonly string[]).includes(v)
 
-/** `owner` in `POST session` and `POST lease`. */
+/** A profile as the bridge takes and lists it. */
+export type Profile = { readonly preset: Preset } | { readonly scenario: string }
+
+export const OFF: Profile = { preset: 'none' }
+
+export function isProfile(v: unknown): v is Profile {
+  if (typeof v !== 'object' || v === null) return false
+  const keys = Object.keys(v)
+  if (keys.length !== 1) return false
+  const o = v as Record<string, unknown>
+  if (keys[0] === 'preset') return isPreset(o.preset)
+  return keys[0] === 'scenario' && typeof o.scenario === 'string' && o.scenario.length > 0
+}
+
+export const isOff = (p: Profile): boolean => 'preset' in p && p.preset === 'none'
+
+export const sameProfile = (a: Profile, b: Profile): boolean =>
+  'preset' in a ? 'preset' in b && a.preset === b.preset : 'scenario' in b && a.scenario === b.scenario
+
+/** `owner` in `POST tab` and `POST lease`. */
 export const isOwner = (v: unknown): v is string =>
   typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v)
 
-/** A session id: 128 random bits, base64url. */
-export const isSessionId = (v: unknown): v is string =>
-  typeof v === 'string' && /^[A-Za-z0-9_-]{22}$/.test(v)
-
-/** A session's secret: 16 bytes, base64url. */
-export const isSecret = (v: unknown): v is string =>
+/** 16 bytes, base64url: tab ids, tokens and session ids. */
+export const isId16 = (v: unknown): v is string =>
   typeof v === 'string' && /^[A-Za-z0-9_-]{22}$/.test(v) && fromBase64Url(v)?.length === 16
 
 const isPort = (v: unknown): v is number =>
@@ -166,56 +181,105 @@ export async function verifyHello(
   }
 }
 
-/** A session the CLI holds, as `GET status` lists it. */
+/** A session in a tab, as `GET status` lists it. */
 export interface CliSession {
+  /** The SESSION segment the page chose. */
+  readonly id: string
+  readonly upstream: string
+  /** The profile in effect: its own, else the tab's. */
+  readonly profile: Profile
+  readonly connected: boolean
+}
+
+/** A tab, as `GET status` lists it. */
+export interface CliTab {
   readonly id: string
   readonly port: number
   readonly owner: string
-  /** The page's relay URL once a client connected. */
-  readonly upstream: string | null
-  readonly preset: Preset
-  readonly connected: boolean
+  readonly profile: Profile
+  readonly sessions: readonly CliSession[]
 }
 
 function parseSession(raw: unknown): CliSession | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
-  const profile = o.profile as Record<string, unknown> | null | undefined
-  if (!isSessionId(o.id) || !isPort(o.port) || !isOwner(o.owner)) return null
-  if (o.upstream !== null && typeof o.upstream !== 'string') return null
-  if (typeof profile !== 'object' || profile === null || !isPreset(profile.preset)) return null
+  if (!isId16(o.id) || typeof o.upstream !== 'string' || !isProfile(o.profile)) return null
   if (typeof o.connected !== 'boolean') return null
-  return {
-    id: o.id,
-    port: o.port,
-    owner: o.owner,
-    upstream: o.upstream,
-    preset: profile.preset,
-    connected: o.connected,
-  }
+  return { id: o.id, upstream: o.upstream, profile: o.profile, connected: o.connected }
 }
 
-/** `GET status`: `{v, listen, cert_hash, sessions}`. */
-export function parseStatus(raw: unknown): CliSession[] | null {
+/** A tab object, as `GET status` and `POST tab/:id/profile` answer it. */
+export function parseTab(raw: unknown): CliTab | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
-  if (o.v !== PROTOCOL_VERSION || !Array.isArray(o.sessions)) return null
+  if (!isId16(o.id) || !isPort(o.port) || !isOwner(o.owner) || !isProfile(o.profile)) return null
+  if (!Array.isArray(o.sessions)) return null
   const sessions = o.sessions.map(parseSession)
-  return sessions.every((s) => s !== null) ? (sessions as CliSession[]) : null
+  if (!sessions.every((s) => s !== null)) return null
+  return { id: o.id, port: o.port, owner: o.owner, profile: o.profile, sessions: sessions as CliSession[] }
 }
 
-/** A session `POST session` opened: where it listens and the secret its CONNECT path starts with. */
-export interface CreatedSession {
+/** `GET status`: `{v, listen, cert_hash, tabs}`. */
+export function parseStatus(raw: unknown): CliTab[] | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  if (o.v !== PROTOCOL_VERSION || !Array.isArray(o.tabs)) return null
+  const tabs = o.tabs.map(parseTab)
+  return tabs.every((t) => t !== null) ? (tabs as CliTab[]) : null
+}
+
+/** A tab `POST tab` opened: where its sessions connect and the token their paths carry. */
+export interface CreatedTab {
   readonly id: string
   readonly port: number
-  readonly secret: string
+  readonly token: string
 }
 
-/** `POST session`: `{id, port, secret}`. */
-export function parseCreated(raw: unknown): CreatedSession | null {
+/** `POST tab`: `{id, token, port}`. */
+export function parseCreatedTab(raw: unknown): CreatedTab | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
-  return isSessionId(o.id) && isPort(o.port) && isSecret(o.secret)
-    ? { id: o.id, port: o.port, secret: o.secret }
-    : null
+  return isId16(o.id) && isPort(o.port) && isId16(o.token) ? { id: o.id, port: o.port, token: o.token } : null
+}
+
+export interface ProfileChoice {
+  readonly name: string
+  readonly profile: Profile
+}
+
+/** `GET profiles`. */
+export interface Profiles {
+  /** `signedIn` is null when the sign-in could not be read; `error` then says what to do. */
+  readonly account: {
+    readonly signedIn: boolean | null
+    readonly org: string | null
+    readonly plan: string | null
+    readonly error: string | null
+  }
+  readonly profiles: readonly ProfileChoice[]
+  /** The plan has more profiles to offer. */
+  readonly more: boolean
+}
+
+const isNullableString = (v: unknown): v is string | null => v === null || typeof v === 'string'
+
+export function parseProfiles(raw: unknown): Profiles | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const a = o.account as Record<string, unknown> | null | undefined
+  if (typeof a !== 'object' || a === null) return null
+  const signedIn = a.signed_in
+  if (signedIn !== null && typeof signedIn !== 'boolean') return null
+  if (!isNullableString(a.org) || !isNullableString(a.plan)) return null
+  const error = a.error ?? null
+  if (!isNullableString(error)) return null
+  if (!Array.isArray(o.profiles) || typeof o.more !== 'boolean') return null
+  const profiles: ProfileChoice[] = []
+  for (const p of o.profiles as unknown[]) {
+    const e = p as Record<string, unknown> | null
+    if (typeof e !== 'object' || e === null || typeof e.name !== 'string' || e.name === '') return null
+    if (!isProfile(e.profile)) return null
+    profiles.push({ name: e.name, profile: e.profile })
+  }
+  return { account: { signedIn, org: a.org, plan: a.plan, error }, profiles, more: o.more }
 }

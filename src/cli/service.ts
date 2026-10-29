@@ -1,5 +1,5 @@
 /**
- * Finds the moqtap CLI's bridge on loopback and opens impaired sessions on it.
+ * Finds the moqtap CLI's bridge on loopback and opens impaired tabs on it.
  *
  * A CLI is believed only when its `hello` is signed over a nonce made here,
  * and controlled only once the user has allowed its identity. Consent is kept
@@ -13,19 +13,22 @@ import {
   bridgeUrl,
   Ed25519UnsupportedError,
   fingerprint,
+  isId16,
   isOwner,
-  isPreset,
-  isSessionId,
+  isProfile,
   NONCE_BYTES,
-  parseCreated,
+  parseCreatedTab,
   parseHello,
+  parseProfiles,
   parseStatus,
+  parseTab,
   toBase64Url,
   verifyHello,
-  type CliSession,
-  type CreatedSession,
+  type CliTab,
+  type CreatedTab,
   type Hello,
-  type Preset,
+  type Profile,
+  type Profiles,
 } from './protocol'
 
 export const CONSENT_KEY = 'moqtap-cli-consent'
@@ -47,20 +50,23 @@ interface Found {
 
 type Consents = Record<string, { fingerprint: string; at: number }>
 
-/** The CLI the bridge is allowed to use: where it is and the certificate its sessions serve. */
+/** The CLI the bridge is allowed to use: where it is and the certificate its tab ports serve. */
 export interface CliTarget {
   readonly identity: string
   readonly port: number
-  /** base64url SHA-256 of the session listeners' certificate. */
+  /** base64url SHA-256 of the tab ports' certificate. */
   readonly certHash: string
 }
 
 /**
- * - `limit`: the CLI holds as many sessions as it allows
+ * - `limit`: the CLI holds as many tabs as it allows
  * - `refused`: the CLI answered with another error
  * - `unreachable`: no allowed CLI answered
  */
 export type CreateError = 'limit' | 'refused' | 'unreachable'
+
+/** How `POST tab/:id/profile` went: `gone` when the CLI no longer has the tab. */
+export type SwitchResult = 'ok' | 'gone' | 'refused' | 'unreachable'
 
 export class CliBridge {
   private current: CliView = { state: 'searching' }
@@ -149,33 +155,33 @@ export class CliBridge {
     }
   }
 
-  /** Opens an idle session listener for `owner`, armed with `preset`. */
-  async createSession(
-    owner: string,
-    preset: Preset,
-  ): Promise<CreatedSession | { error: CreateError }> {
+  /** Opens a tab port for `owner`, impaired with `profile`. */
+  async createTab(owner: string, profile: Profile): Promise<CreatedTab | { error: CreateError }> {
     const t = this.target()
-    if (t === null || !isOwner(owner) || !isPreset(preset)) return { error: 'unreachable' }
-    const res = await this.post(t, 'session', { profile: { preset }, owner })
+    if (t === null || !isOwner(owner) || !isProfile(profile)) return { error: 'unreachable' }
+    const res = await this.post(t, 'tab', { profile, owner })
     if (res === null) return { error: 'unreachable' }
     if (res.status === 429) return { error: 'limit' }
     if (!res.ok) return { error: 'refused' }
-    const created = parseCreated(await res.json().catch(() => null))
+    const created = parseCreatedTab(await res.json().catch(() => null))
     return created ?? { error: 'refused' }
   }
 
-  /** Switches a session's impairment live. False when the CLI does not know it. */
-  async setSessionPreset(id: string, preset: Preset): Promise<boolean> {
+  /** Switches a tab and every session in it, live. */
+  async setTabProfile(id: string, profile: Profile): Promise<SwitchResult> {
     const t = this.target()
-    if (t === null || !isSessionId(id) || !isPreset(preset)) return false
-    const res = await this.post(t, `session/${id}/profile`, { profile: { preset } })
-    return res?.ok === true
+    if (t === null || !isId16(id) || !isProfile(profile)) return 'unreachable'
+    const res = await this.post(t, `tab/${id}/profile`, { profile })
+    if (res === null) return 'unreachable'
+    if (res.status === 404) return 'gone'
+    if (!res.ok || parseTab(await res.json().catch(() => null)) === null) return 'refused'
+    return 'ok'
   }
 
-  async deleteSession(id: string): Promise<void> {
+  async deleteTab(id: string): Promise<void> {
     const t = this.target()
-    if (t === null || !isSessionId(id)) return
-    await this.send(t, `session/${id}`, { method: 'DELETE' })
+    if (t === null || !isId16(id)) return
+    await this.send(t, `tab/${id}`, { method: 'DELETE' })
   }
 
   /** Renews `owner`'s lease. False when the CLI did not answer. */
@@ -186,13 +192,22 @@ export class CliBridge {
     return res?.ok === true
   }
 
-  /** The CLI's sessions, or null when it does not answer. */
-  async sessions(): Promise<CliSession[] | null> {
+  /** The CLI's tabs, or null when it does not answer. */
+  async tabs(): Promise<CliTab[] | null> {
     const t = this.target()
     if (t === null) return null
     const res = await this.send(t, 'status', {})
     if (res === null || !res.ok) return null
     return parseStatus(await res.json().catch(() => null))
+  }
+
+  /** The profiles the CLI offers for its account, or null when it does not answer. */
+  async profiles(): Promise<Profiles | null> {
+    const t = this.target()
+    if (t === null) return null
+    const res = await this.send(t, 'profiles', {})
+    if (res === null || !res.ok) return null
+    return parseProfiles(await res.json().catch(() => null))
   }
 
   private post(t: CliTarget, endpoint: string, body: unknown): Promise<Response | null> {

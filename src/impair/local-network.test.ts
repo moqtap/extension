@@ -28,9 +28,10 @@ describe('the panel says why, with a remedy', () => {
   const connected: CliView = { state: 'connected', identity: 'i', fingerprint: 'f', port: 47310, cliVersion: '1' }
   const tab = (t: Partial<TabImpairment>): TabImpairment => ({
     tabId: 1,
-    preset: '3g',
+    profile: { preset: '3g' },
+    name: '3G',
     failure: null,
-    poolError: null,
+    error: null,
     ...t,
   })
 
@@ -44,25 +45,19 @@ describe('the panel says why, with a remedy', () => {
     expect(impairmentProblem(tab({ failure: 'blocked-by-page' }), connected)).toContain('connect-src')
   })
 
-  it('says to switch off a page that offers protocols', () => {
-    expect(impairmentProblem(tab({ failure: 'protocols' }), connected)).toContain('Set Impairment to Off')
-  })
-
   it('says nothing when nothing is wrong or the tab is off', () => {
     expect(impairmentProblem(tab({}), connected)).toBeNull()
-    expect(impairmentProblem(tab({ preset: 'none', failure: 'local-network' }), connected)).toBeNull()
+    expect(impairmentProblem(tab({ profile: { preset: 'none' }, failure: 'local-network' }), connected)).toBeNull()
   })
 
-  it('names the CLI command when no session could be prepared', () => {
-    expect(impairmentProblem(tab({ failure: 'no-session' }), { state: 'absent' })).toContain(
-      'moqtap intercept --bridge',
-    )
-    expect(impairmentProblem(tab({ poolError: 'limit' }), connected)).toContain('Close other impaired tabs')
-    expect(impairmentProblem(tab({ failure: 'no-session' }), connected)).toContain('Connect again')
+  it('names the CLI command when the CLI is not reachable', () => {
+    expect(impairmentProblem(tab({ failure: 'no-cli' }), { state: 'absent' })).toContain('moqtap intercept --bridge')
+    expect(impairmentProblem(tab({ error: 'unreachable' }), connected)).toContain('moqtap intercept --bridge')
+    expect(impairmentProblem(tab({ error: 'limit' }), connected)).toContain('Set other tabs to Off')
   })
 
-  it('says to reload after a connection that opened before the profile applied', () => {
-    expect(impairmentProblem(tab({ failure: 'opened-early' }), connected)).toContain('Reload the page')
+  it('says to reload after the page missed its answer', () => {
+    expect(impairmentProblem(tab({ failure: 'no-answer' }), connected)).toContain('Reload the page')
   })
 
   it('names the remedy for a worker moqtap cannot instrument', () => {

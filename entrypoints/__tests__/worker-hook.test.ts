@@ -168,6 +168,8 @@ describe('a shared worker posts through its connected port', () => {
 
 describe('the worker hook routes through the moqtap CLI while the tab has a profile', () => {
   const CERT = 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk'
+  const TOKEN = 'BwcHBwcHBwcHBwcHBwcHBw'
+  const ROUTE = { port: 50001, token: TOKEN, certHash: CERT }
 
   function routedWorker(init: unknown, permissions?: unknown) {
     const scope = fakeDedicated()
@@ -181,17 +183,26 @@ describe('the worker hook routes through the moqtap CLI while the tab has a prof
     const built: { url: string; options: AnyScope }[] = []
     let ready: Promise<void> = Promise.resolve()
     let throwing: unknown = null
-    scope.WebTransport = class {
-      ready = ready
+    class WebTransport {
+      static supportsReliableOnly = true
+      readonly built: { url: string; options: AnyScope }
       constructor(url: string, options: AnyScope) {
         if (throwing !== null) {
           const err = throwing
           throwing = null
           throw err
         }
-        built.push({ url, options })
+        this.built = { url, options }
+        built.push(this.built)
+      }
+      get ready() {
+        return ready
+      }
+      get closed() {
+        return new Promise(() => {})
       }
     }
+    scope.WebTransport = WebTransport
     evaluateHook(scope, undefined)
     const sent = () => scope.postMessage.mock.calls.map((c: AnyScope) => c[0]?.payload).filter(Boolean)
     const deliver = (data: unknown) => {
@@ -206,13 +217,13 @@ describe('the worker hook routes through the moqtap CLI while the tab has a prof
     const throwNext = (err: unknown) => {
       throwing = err
     }
-    return { scope, built, sent, deliver, failNext, throwNext }
+    return { scope, built, sent, deliver, failNext, throwNext, WebTransport }
   }
 
-  const SECRET = 'BwcHBwcHBwcHBwcHBwcHBw'
-  const entry = { id: 'id-1', port: 50001, secret: SECRET }
-  const on = (e: unknown) => ({ source: 'moqtap-impair-worker', on: true, known: true, certHash: CERT, entry: e })
-  const off = { source: 'moqtap-impair-worker', on: false, known: true, certHash: null, entry: null }
+  const state = (any: boolean, answer: unknown) => ({ source: 'moqtap-impair-worker', any, answer })
+  const on = state(true, { on: true, route: ROUTE })
+  const off = state(false, { on: false, route: null })
+  const CLI_PATH = /^https:\/\/127\.0\.0\.1:50001\/moqtap\/u\/BwcHBwcHBwcHBwcHBwcHBw\/[A-Za-z0-9_-]{22}\/[A-Za-z0-9_-]+$/
 
   it('connects directly with no profile', () => {
     const w = routedWorker(off)
@@ -221,56 +232,87 @@ describe('the worker hook routes through the moqtap CLI while the tab has a prof
     expect(w.sent().some((m: AnyScope) => m.type === 'impair:failed')).toBe(false)
   })
 
-  it('connects directly before the page knows, and says so', () => {
-    const w = routedWorker({ ...off, known: false })
+  it('connects directly at once before the page knows, while no tab has a profile', () => {
+    const w = routedWorker(state(false, null))
     new w.scope.WebTransport('https://relay.example/moq')
     expect(w.built[0]?.url).toBe('https://relay.example/moq')
-    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'opened-early', url: 'https://relay.example/moq' })
   })
 
-  it('opens its session at the CLI and reports it taken', () => {
-    const w = routedWorker(on(entry))
-    new w.scope.WebTransport('https://relay.example/moq?x=1')
-    expect(w.built[0]?.url).toMatch(/^https:\/\/127\.0\.0\.1:50001\/moqtap\/u\/BwcHBwcHBwcHBwcHBwcHBw\/[A-Za-z0-9_-]+$/)
+  it('opens every session at the tab port, each with its own session id, protocols kept', () => {
+    const w = routedWorker(on)
+    new w.scope.WebTransport('https://relay.example/moq?x=1', { protocols: ['moqt-16'] })
+    new w.scope.WebTransport('https://relay.example/moq?x=2')
+    expect(w.built.map((b) => b.url)).toEqual([expect.stringMatching(CLI_PATH), expect.stringMatching(CLI_PATH)])
+    expect(w.built[0]!.url.split('/')[6]).not.toBe(w.built[1]!.url.split('/')[6])
+    expect(w.built[0]?.options.protocols).toEqual(['moqt-16'])
     expect(w.built[0]?.options.serverCertificateHashes[0].algorithm).toBe('sha-256')
-    expect(w.sent()).toContainEqual({ type: 'impair:took', id: 'id-1' })
-    const opened = w.sent().find((m: AnyScope) => m.type === 'session:opened')
-    expect(opened.url).toBe('https://relay.example/moq?x=1')
+    const opened = w.sent().filter((m: AnyScope) => m.type === 'session:opened')
+    expect(opened.map((m: AnyScope) => [m.url, m.cli])).toEqual([
+      ['https://relay.example/moq?x=1', true],
+      ['https://relay.example/moq?x=2', true],
+    ])
   })
 
-  it('fails visibly once its session is used, until the page sends another', () => {
-    const w = routedWorker(on(entry))
-    new w.scope.WebTransport('https://relay.example/a')
-    expect(() => new w.scope.WebTransport('https://relay.example/b')).toThrow('moqtap impairment')
-    expect(w.built).toHaveLength(1)
-    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'no-session', url: 'https://relay.example/b' })
-    const ev = w.deliver(on({ id: 'id-2', port: 50002, secret: SECRET }))
+  it('waits while some tab has a profile, then connects where the page says', async () => {
+    const w = routedWorker(state(true, null))
+    const wt = new w.scope.WebTransport('https://relay.example/moq', { protocols: ['moqt-16'] })
+    expect(wt instanceof w.WebTransport).toBe(true)
+    expect(w.built).toEqual([])
+    const ev = w.deliver(on)
     expect(ev.stopImmediatePropagation).toHaveBeenCalled()
-    new w.scope.WebTransport('https://relay.example/c')
-    expect(w.built[1]?.url).toMatch(/^https:\/\/127\.0\.0\.1:50002\//)
+    expect(w.built.map((b) => b.url)).toEqual([expect.stringMatching(CLI_PATH)])
+    expect(w.built[0]?.options.protocols).toEqual(['moqt-16'])
+    await wt.ready
   })
 
-  it('refuses a session that offers protocols, keeping its CLI session', () => {
-    const w = routedWorker(on(entry))
-    expect(() => new w.scope.WebTransport('https://relay.example/a', { protocols: ['moqt-16'] })).toThrow(
-      'WebTransport protocols',
+  it('connects a waiting session directly when the page says the tab has no profile', () => {
+    const w = routedWorker(state(true, null))
+    new w.scope.WebTransport('https://relay.example/moq')
+    w.deliver(state(true, { on: false, route: null }))
+    expect(w.built.map((b) => b.url)).toEqual(['https://relay.example/moq'])
+  })
+
+  it('fails a waiting session when the answer never came', async () => {
+    const w = routedWorker(state(true, null))
+    const wt = new w.scope.WebTransport('https://relay.example/moq')
+    w.deliver(state(true, 'unanswered'))
+    expect(w.built).toEqual([])
+    expect(await wt.ready.catch((e: DOMException) => e.name)).toBe('NetworkError')
+    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'no-answer', url: 'https://relay.example/moq' })
+  })
+
+  it('refuses at once while the tab has a profile but no CLI port', () => {
+    const w = routedWorker(state(true, { on: true, route: null }))
+    expect(() => new w.scope.WebTransport('https://relay.example/moq')).toThrow('moqtap impairment')
+    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'no-cli', url: 'https://relay.example/moq' })
+  })
+
+  it('throws a SyntaxError for a URL the browser refuses, even while waiting', () => {
+    const w = routedWorker(state(true, null))
+    expect(() => new w.scope.WebTransport('http://relay.example/moq')).toThrow(
+      expect.objectContaining({ name: 'SyntaxError' }),
     )
-    expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'protocols', url: 'https://relay.example/a' })
-    new w.scope.WebTransport('https://relay.example/b')
-    expect(w.built[0]?.url).toMatch(/^https:..127.0.0.1:50001./)
   })
 
-  it('keeps its session and names a CSP block when the constructor throws', () => {
-    const w = routedWorker(on(entry))
+  it('throws what the browser throws for the options, even while waiting', () => {
+    const w = routedWorker(state(true, null))
+    expect(() => new w.scope.WebTransport('https://relay.example/moq', { protocols: 'moqt-16' })).toThrow(TypeError)
+    w.deliver(state(true, { on: false, route: null }))
+    expect(w.built).toEqual([])
+  })
+
+  it('names a CSP block when the constructor throws', () => {
+    const w = routedWorker(on)
     w.throwNext(new DOMException('Refused to connect', 'SecurityError'))
     expect(() => new w.scope.WebTransport('https://relay.example/a')).toThrow('Refused to connect')
     expect(w.sent()).toContainEqual({ type: 'impair:failed', failure: 'blocked-by-page', url: 'https://relay.example/a' })
-    expect(w.sent().some((m: AnyScope) => m.type === 'impair:took')).toBe(false)
     const closed = w.sent().find((m: AnyScope) => m.type === 'session:closed')
     expect(closed.reason).toBe('Refused to connect')
-    new w.scope.WebTransport('https://relay.example/b')
-    expect(w.built[0]?.url).toMatch(/^https:..127.0.0.1:50001./)
-    expect(w.sent()).toContainEqual({ type: 'impair:took', id: 'id-1' })
+  })
+
+  it('keeps the constructor statics', () => {
+    const w = routedWorker(off)
+    expect(w.scope.WebTransport.supportsReliableOnly).toBe(true)
   })
 
   it('leaves the page its own messages', () => {
@@ -282,7 +324,7 @@ describe('the worker hook routes through the moqtap CLI while the tab has a prof
     const permissions = {
       query: async ({ name }: { name: string }) => ({ state: name === 'loopback-network' ? 'denied' : 'granted' }),
     }
-    const w = routedWorker(on(entry), permissions)
+    const w = routedWorker(on, permissions)
     w.failNext()
     new w.scope.WebTransport('https://relay.example/moq')
     await new Promise((r) => setTimeout(r, 0))

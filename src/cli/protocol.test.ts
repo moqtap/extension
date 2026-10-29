@@ -3,9 +3,12 @@ import { describe, expect, it } from 'vitest'
 import {
   fingerprint,
   fromBase64Url,
-  parseCreated,
+  isProfile,
+  parseCreatedTab,
   parseHello,
+  parseProfiles,
   parseStatus,
+  parseTab,
   signedMessage,
   toBase64Url,
   verifyHello,
@@ -45,14 +48,14 @@ describe('bridge protocol', () => {
   })
 
   it('verifies the fixed vector and derives its fingerprint', async () => {
-    const hello = parseHello({ v: 2, cli_version: '0.0.0', ...VECTOR })!
+    const hello = parseHello({ v: 3, cli_version: '0.0.0', ...VECTOR })!
     expect(hello).not.toBeNull()
     expect(await verifyHello(subtle, hello, fromBase64Url(VECTOR.nonce)!, VECTOR.port)).toBe(true)
     expect(await fingerprint(subtle, hello.identityPub)).toBe(VECTOR.fingerprint)
   })
 
   it('rejects the vector on another port or nonce', async () => {
-    const hello = parseHello({ v: 2, cli_version: '0.0.0', ...VECTOR })!
+    const hello = parseHello({ v: 3, cli_version: '0.0.0', ...VECTOR })!
     const nonce = fromBase64Url(VECTOR.nonce)!
     expect(await verifyHello(subtle, hello, nonce, 47311)).toBe(false)
     const other = nonce.slice()
@@ -69,7 +72,7 @@ describe('bridge protocol', () => {
   })
 
   it('refuses malformed hellos', () => {
-    const base = { v: 2, cli_version: '0.0.0', ...VECTOR }
+    const base = { v: 3, cli_version: '0.0.0', ...VECTOR }
     expect(parseHello({ ...base, v: 1 })).toBeNull()
     expect(parseHello({ ...base, sig: VECTOR.sig.slice(4) })).toBeNull()
     expect(parseHello({ ...base, identity_pub: VECTOR.cert_hash.slice(2) })).toBeNull()
@@ -78,37 +81,83 @@ describe('bridge protocol', () => {
 
   it('reads status as the CLI sends it', () => {
     const session = {
+      id: 'AQEBAQEBAQEBAQEBAQEBAQ',
+      upstream: 'https://relay.example/moq',
+      profile: { preset: '3g' },
+      connected: true,
+    }
+    const tab = {
       id: 'AAAAAAAAAAAAAAAAAAAAAA',
       port: 50123,
       owner: 'tab-owner_1',
-      upstream: null,
       profile: { preset: '3g' },
-      connected: false,
+      sessions: [session],
     }
-    const base = { v: 2, listen: null, cert_hash: VECTOR.cert_hash, sessions: [session] }
-    expect(parseStatus(base)).toEqual([
-      { id: session.id, port: 50123, owner: 'tab-owner_1', upstream: null, preset: '3g', connected: false },
-    ])
-    expect(parseStatus({ ...base, sessions: [{ ...session, upstream: 'https://relay.example/moq', connected: true }] }))
-      .toEqual([expect.objectContaining({ upstream: 'https://relay.example/moq', connected: true })])
-    expect(parseStatus({ ...base, sessions: [] })).toEqual([])
-    expect(parseStatus({ ...base, v: 1 })).toBeNull()
-    expect(parseStatus({ ...base, sessions: [{ ...session, profile: { preset: 'slow-4g' } }] })).toBeNull()
-    expect(parseStatus({ ...base, sessions: [{ ...session, id: 'short' }] })).toBeNull()
-    expect(parseStatus({ ...base, sessions: [{ ...session, connected: 'yes' }] })).toBeNull()
+    const base = { v: 3, listen: null, cert_hash: VECTOR.cert_hash, tabs: [tab] }
+    expect(parseStatus(base)).toEqual([tab])
+    expect(parseStatus({ ...base, tabs: [] })).toEqual([])
+    expect(parseStatus({ ...base, v: 2 })).toBeNull()
+    expect(parseStatus({ ...base, tabs: [{ ...tab, profile: { preset: 'slow-4g' } }] })).toBeNull()
+    expect(parseStatus({ ...base, tabs: [{ ...tab, id: 'short' }] })).toBeNull()
+    expect(parseStatus({ ...base, tabs: [{ ...tab, sessions: [{ ...session, connected: 'yes' }] }] })).toBeNull()
+    expect(parseStatus({ ...base, tabs: [{ ...tab, sessions: [{ ...session, upstream: null }] }] })).toBeNull()
+    expect(parseTab({ ...tab, sessions: [] })).toEqual({ ...tab, sessions: [] })
   })
 
-  it('reads a created session', () => {
-    const secret = 'BwcHBwcHBwcHBwcHBwcHBw'
-    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123, secret })).toEqual({
-      id: 'AAAAAAAAAAAAAAAAAAAAAA',
-      port: 50123,
-      secret,
+  it('reads a created tab', () => {
+    const token = 'BwcHBwcHBwcHBwcHBwcHBw'
+    const id = 'AAAAAAAAAAAAAAAAAAAAAA'
+    expect(parseCreatedTab({ id, port: 50123, token })).toEqual({ id, port: 50123, token })
+    expect(parseCreatedTab({ id, port: 0, token })).toBeNull()
+    expect(parseCreatedTab({ id: 'AAAA', port: 50123, token })).toBeNull()
+    expect(parseCreatedTab({ id, port: 50123 })).toBeNull()
+    expect(parseCreatedTab({ id, port: 50123, token: 'BwcHBwcHBwcHBwcHBwcH' })).toBeNull()
+    expect(parseCreatedTab({ id, port: 50123, token: 'BwcHBwcHBwcHBwcHBwcHB/' })).toBeNull()
+  })
+
+  it('takes presets and named scenarios as profiles, and nothing else', () => {
+    expect(isProfile({ preset: '4g' })).toBe(true)
+    expect(isProfile({ scenario: 'lossy' })).toBe(true)
+    expect(isProfile({ preset: 'slow' })).toBe(false)
+    expect(isProfile({ preset: '3g', scenario: 'x' })).toBe(false)
+    expect(isProfile({ scenario: '' })).toBe(false)
+    expect(isProfile(null)).toBe(false)
+  })
+
+  it('reads the profiles the CLI offers', () => {
+    const raw = {
+      account: { signed_in: true, org: 'acme', plan: 'Free' },
+      profiles: [
+        { name: 'Off', profile: { preset: 'none' } },
+        { name: '3G', profile: { preset: '3g' } },
+      ],
+      more: true,
+    }
+    expect(parseProfiles(raw)).toEqual({
+      account: { signedIn: true, org: 'acme', plan: 'Free', error: null },
+      profiles: [
+        { name: 'Off', profile: { preset: 'none' } },
+        { name: '3G', profile: { preset: '3g' } },
+      ],
+      more: true,
     })
-    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 0, secret })).toBeNull()
-    expect(parseCreated({ id: 'AAAA', port: 50123, secret })).toBeNull()
-    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123 })).toBeNull()
-    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123, secret: 'BwcHBwcHBwcHBwcHBwcH' })).toBeNull()
-    expect(parseCreated({ id: 'AAAAAAAAAAAAAAAAAAAAAA', port: 50123, secret: 'BwcHBwcHBwcHBwcHBwcHB/' })).toBeNull()
+    expect(parseProfiles({ ...raw, account: { signed_in: false, org: null, plan: null } })?.account).toEqual({
+      signedIn: false,
+      org: null,
+      plan: null,
+      error: null,
+    })
+    const unread = { signed_in: null, org: null, plan: null, error: 'Delete it and run `moqtap login`.' }
+    expect(parseProfiles({ ...raw, account: unread })?.account).toEqual({
+      signedIn: null,
+      org: null,
+      plan: null,
+      error: 'Delete it and run `moqtap login`.',
+    })
+    expect(parseProfiles({ ...raw, account: { ...unread, error: 1 } })).toBeNull()
+    expect(parseProfiles({ ...raw, account: { ...unread, signed_in: 'no' } })).toBeNull()
+    expect(parseProfiles({ ...raw, more: 'yes' })).toBeNull()
+    expect(parseProfiles({ ...raw, profiles: [{ name: 'Slow', profile: { preset: 'slow' } }] })).toBeNull()
+    expect(parseProfiles({ ...raw, profiles: [{ name: '', profile: { preset: 'none' } }] })).toBeNull()
   })
 })

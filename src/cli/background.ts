@@ -6,7 +6,7 @@
 import { isExtensionPage, type PortLike } from '@/src/account/background'
 import type { ImpairManager } from '@/src/impair/manager'
 import type { CliStateMsg, PageCliMsg } from './messages'
-import { isPreset } from './protocol'
+import { isProfile } from './protocol'
 import type { CliBridge } from './service'
 
 export interface CliPortLike extends Omit<PortLike, 'postMessage'> {
@@ -16,6 +16,7 @@ export interface CliPortLike extends Omit<PortLike, 'postMessage'> {
 const REFRESH_MS = 2000
 
 const isTabId = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
+const isName = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 64
 
 export function serveCliPort(
   bridge: CliBridge,
@@ -77,8 +78,16 @@ export function serveCliPort(
         void impair.ready.then(() => send({ type: 'cli:tab', tab: impair.view(tabId) }))
         break
       }
-      case 'cli:set-preset':
-        if (isTabId(msg.tabId) && isPreset(msg.preset)) void impair.setPreset(msg.tabId, msg.preset).catch(fail)
+      case 'cli:set-profile':
+        if (isTabId(msg.tabId) && isProfile(msg.profile) && isName(msg.name)) {
+          void impair.setProfile(msg.tabId, msg.profile, msg.name).catch(fail)
+        }
+        break
+      case 'cli:profiles':
+        void bridge
+          .profiles()
+          .catch(() => null)
+          .then((profiles) => send({ type: 'cli:profiles', profiles }))
         break
     }
   })

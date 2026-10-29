@@ -25,7 +25,7 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 - Stack traces for control messages and stream creation
 - Export/import `.moqtrace` trace files
 - Optional moqtap account: upload a session to your library and share it by link or with a team
-- Sets the network link (none, offline, 3G, 4G) of a running `moqtap intercept --bridge` from the panel
+- Impairs the inspected tab through `moqtap intercept --bridge` (Off, Offline, 3G, 4G), each WebTransport session on its own link
 - Graceful handling of non-MoQT WebTransport connections
 
 ## Development
@@ -78,28 +78,25 @@ in through a background tab, and signing out there signs it out.
 ## Impairment with the moqtap CLI
 
 With `moqtap intercept --bridge` running, **Impairment** at the top of the
-panel sets a network profile for the inspected tab: Off, Offline, 3G or 4G.
-While a profile is set, the WebTransport sessions the tab opens, in workers
-too, go through the CLI and are each impaired on their own; changing the
-profile switches the tab's open sessions live. Off sends new sessions directly again
-and closes the ones going through the CLI, as does closing the tab. The
-inspector shows each session under the URL the page opened.
+panel sets a network profile for the inspected tab, from the profiles the CLI
+offers. While a profile is set, every WebTransport session the tab opens, in
+workers too, goes through the CLI on its own impaired link, including sessions
+that offer `protocols` or pass `serverCertificateHashes`. Changing the profile
+switches them live, and the profile stays with the tab across reloads until
+the tab closes. Off leaves those sessions running unimpaired and sends new
+ones directly. The inspector shows each session under the URL the page opened.
 
-While a profile is set, a session that cannot go through the CLI fails, and
-the panel says what to do. A public site needs permission to access local
-network devices to reach the CLI on `127.0.0.1`, and a page whose
-Content Security Policy sets `connect-src` needs `https://127.0.0.1:*` in it.
-A page that passes `serverCertificateHashes` needs the CLI started with `-k`.
-A session that offers WebTransport `protocols` cannot go through the CLI; set
-the profile to Off to connect it. A session opened as the page loads, before a
-CLI session is ready for it, fails too; connect again once the page has
-loaded.
+Sessions opened before the profile was set stay direct; the panel marks them
+not impaired, and a reload impairs them. While any tab has a profile, a
+session a page opens as it loads connects once the page knows its tab's
+profile.
 
-Two kinds of session connect directly while a profile is set, and the panel
-says so: one the page opens just after navigating to another site, before the
-profile reaches it, which a reload fixes, and one in a worker moqtap cannot
+A session that cannot go through the CLI fails, and the panel says what to
+do. A public site needs permission to access local network devices to reach
+the CLI on `127.0.0.1`, and a page whose Content Security Policy sets
+`connect-src` needs `https://127.0.0.1:*` in it. A worker moqtap cannot
 instrument, for example because the page's `worker-src` does not allow
-`blob:`.
+`blob:`, connects directly, and the panel says so.
 
 The panel uses a CLI only after you allow its identity, which `moqtap cert`
 prints; a CLI with a different identity asks again. Allowed identities are

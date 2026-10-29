@@ -5,7 +5,8 @@ import ConnectionList from './components/ConnectionList.vue'
 import ImpairmentDialog from './components/ImpairmentDialog.vue'
 import SessionView from './components/SessionView.vue'
 import ShareDialog from './components/ShareDialog.vue'
-import { impairmentProblem, PRESET_LABELS } from './cli-copy'
+import { DIRECT_NOTICE, impairmentProblem } from './cli-copy'
+import { isOff } from '@/src/cli/protocol'
 import { getCachedPref, savePref } from './prefs'
 import { useAccount } from './use-account'
 import { useCli } from './use-cli'
@@ -39,10 +40,13 @@ const cliConfirm = computed(() =>
   cliView.value?.state === 'confirm' ? cliView.value : null,
 )
 const impairmentOpen = ref(false)
-const impairmentLabel = computed(
-  () => `Impairment: ${PRESET_LABELS[cli.tab.value?.preset ?? 'none']}`,
-)
+const impairmentLabel = computed(() => `Impairment: ${cli.tab.value?.name ?? 'Off'}`)
+const impairmentOn = computed(() => cli.tab.value !== null && !isOff(cli.tab.value.profile))
 const impairmentIssue = computed(() => impairmentProblem(cli.tab.value, cliView.value))
+/** Open connections that bypass the CLI while the tab has a profile. */
+const directSessions = computed(() =>
+  impairmentOn.value ? sessionList.value.some((s) => !s.closed && !s.imported && !s.cli) : false,
+)
 const accountView = account.view
 /** The session the share dialog is open for. */
 const sharingSessionId = ref<string | null>(null)
@@ -176,6 +180,7 @@ const selectedSession = computed(() =>
       </div>
       <ConnectionList
         :sessions="sessionList"
+        :impaired="impairmentOn"
         :selected-id="selectedSessionId"
         :compact="sidebarCollapsed"
         @select="selectSession"
@@ -201,7 +206,7 @@ const selectedSession = computed(() =>
       <div class="tool-bar main-bar">
         <button
           class="mq-btn mq-btn--quiet impair-btn"
-          :aria-pressed="(cli.tab.value?.preset ?? 'none') !== 'none'"
+          :aria-pressed="impairmentOn"
           aria-haspopup="dialog"
           @click="impairmentOpen = true"
         >
@@ -217,6 +222,17 @@ const selectedSession = computed(() =>
       >
         <span class="mq-notice__icon" aria-hidden="true">▲</span>
         <p>{{ impairmentIssue }}</p>
+      </div>
+      <div
+        v-if="directSessions && !impairmentOpen"
+        class="mq-notice mq-notice--info main-notice"
+        role="status"
+      >
+        <span class="mq-notice__icon" aria-hidden="true">i</span>
+        <p>
+          {{ DIRECT_NOTICE }}
+          <a href="#" class="mq-link" @click.prevent="reloadPage">Reload the page</a> to impair them.
+        </p>
       </div>
       <div
         v-if="cliConfirm"
@@ -343,8 +359,11 @@ const selectedSession = computed(() =>
         v-if="impairmentOpen"
         :view="cliView"
         :tab="cli.tab.value"
+        :profiles="cli.profiles.value"
+        :direct="directSessions"
         @close="impairmentOpen = false"
-        @set-preset="cli.setPreset"
+        @read-profiles="cli.readProfiles"
+        @set-profile="(c) => cli.setProfile(c.profile, c.name)"
         @allow="cli.allow"
       />
       <ShareDialog

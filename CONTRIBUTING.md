@@ -18,7 +18,7 @@ Page JS -> content.ts (MAIN world, hooks WebTransport)
 - `src/intercept/`: WebTransport constructor hooks
 - `src/account/`: sign-in, tokens and the trace library client used for sharing
 - `src/cli/`: the moqtap CLI's loopback bridge: discovery, identity check and consent
-- `src/impair/`: tab impairment: the CLI sessions each frame holds and the WebTransport route through them
+- `src/impair/`: tab impairment: each tab's CLI port and the WebTransport route through it
 
 Use bun: the lockfile is `bun.lock`, and releases install with
 `bun install --frozen-lockfile`.

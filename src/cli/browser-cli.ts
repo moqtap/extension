@@ -3,13 +3,14 @@
 import { browser } from 'wxt/browser'
 import { storageArea } from '@/src/account/stores'
 import { ImpairManager } from '@/src/impair/manager'
-import type { PoolMsg } from '@/src/impair/messages'
+import { FLAG_SCRIPT_ID } from '@/src/impair/flag'
+import type { TabAnswerMsg } from '@/src/impair/messages'
 import { serveCliPort, type CliPortLike } from './background'
 import { CLI_PORT } from './messages'
 import { toBase64Url } from './protocol'
 import { CliBridge } from './service'
 
-export function startCli(sendToFrame: (tabId: number, frameId: number, msg: PoolMsg) => void): ImpairManager {
+export function startCli(sendToFrame: (tabId: number, frameId: number, msg: TabAnswerMsg) => void): ImpairManager {
   const bridge = new CliBridge({
     fetch: (input, init) => fetch(input, init),
     local: storageArea(browser.storage.local),
@@ -28,10 +29,32 @@ export function startCli(sendToFrame: (tabId: number, frameId: number, msg: Pool
       const t = setInterval(fn, ms)
       return () => clearInterval(t)
     },
+    setFlag,
   })
   const extensionBase = browser.runtime.getURL('/')
   browser.runtime.onConnect.addListener((port) => {
     if (port.name === CLI_PORT) serveCliPort(bridge, impair, port as unknown as CliPortLike, extensionBase)
   })
   return impair
+}
+
+/** Registers `impair-flag.js` in every frame while `any`, so documents wait for their tab's answer. */
+async function setFlag(any: boolean): Promise<void> {
+  const registered = await browser.scripting.getRegisteredContentScripts({ ids: [FLAG_SCRIPT_ID] })
+  if (any && registered.length === 0) {
+    await browser.scripting.registerContentScripts([
+      {
+        id: FLAG_SCRIPT_ID,
+        js: ['impair-flag.js'],
+        matches: ['<all_urls>'],
+        allFrames: true,
+        matchOriginAsFallback: true,
+        runAt: 'document_start',
+        world: 'MAIN',
+        persistAcrossSessions: false,
+      },
+    ])
+  } else if (!any && registered.length > 0) {
+    await browser.scripting.unregisterContentScripts({ ids: [FLAG_SCRIPT_ID] })
+  }
 }
