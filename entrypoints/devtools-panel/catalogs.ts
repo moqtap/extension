@@ -31,7 +31,7 @@ import {
   parseStreamFraming,
   parseStreamPrefix,
 } from './stream-framing'
-import type { SessionEntry, TrackEntry } from './use-inspector'
+import type { SessionEntry, StreamEntry, TrackEntry } from './use-inspector'
 
 // ─── Keys and namespaces ──────────────────────────────────────────
 
@@ -84,49 +84,86 @@ function dataDirection(track: TrackEntry): 'tx' | 'rx' {
 }
 
 /**
- * Every data stream of `session` whose track is a catalog track. An alias
- * resolves only when exactly one track sending in the stream's direction
- * claimed it; any other alias is ambiguous and its stream is left out. A
- * draft-22 fill fetch carries the
- * SUBSCRIBE's request id (transport-22 3.4), so a fetch stream's track may be
- * any request kind.
+ * The track an alias names for data travelling `direction`: the one track
+ * sending that way that claimed it, or null when none or several did.
  */
-export function locateCatalogStreams(
-  session: Pick<SessionEntry, 'streams' | 'tracks'>,
-): CatalogStreamRef[] {
+export function aliasResolver(
+  tracks: Iterable<TrackEntry>,
+): (alias: number, direction: 'tx' | 'rx') => TrackEntry | null {
   const byAlias = new Map<string, TrackEntry[]>()
-  let anyCatalog = false
-  for (const track of session.tracks.values()) {
-    if (isCatalogTrackName(track.trackName)) anyCatalog = true
+  for (const track of tracks) {
     if (track.trackAlias == null) continue
     const list = byAlias.get(track.trackAlias)
     if (list) list.push(track)
     else byAlias.set(track.trackAlias, [track])
   }
-  if (!anyCatalog) return []
+  return (alias, direction) => {
+    const claims = byAlias.get(String(alias))
+    if (!claims) return null
+    const matching = claims.filter((t) => dataDirection(t) === direction)
+    return matching.length === 1 ? matching[0] : null
+  }
+}
 
-  const refs: CatalogStreamRef[] = []
+/** A data stream and the track it carries. */
+export interface TrackStream {
+  stream: StreamEntry
+  track: TrackEntry
+  kind: 'subgroup' | 'fetch'
+  /** The alias (subgroup) or request id (fetch) the stream's header carries */
+  id: number
+}
+
+/**
+ * Every data stream of `session` whose track `include` accepts. An alias
+ * resolves only as {@link aliasResolver} says; a stream whose alias is
+ * ambiguous is left out. A draft-22 fill fetch carries the SUBSCRIBE's request
+ * id (transport-22 3.4), so a fetch stream's track may be any request kind.
+ */
+export function locateTrackStreams(
+  session: Pick<SessionEntry, 'streams' | 'tracks'>,
+  include: (track: TrackEntry) => boolean,
+): TrackStream[] {
+  let any = false
+  for (const track of session.tracks.values()) {
+    if (include(track)) {
+      any = true
+      break
+    }
+  }
+  if (!any) return []
+
+  const resolve = aliasResolver(session.tracks.values())
+  const found: TrackStream[] = []
   for (const stream of session.streams.values()) {
     if (stream.isControl) continue
-    let track: TrackEntry | undefined
-    let kind: CatalogStreamRef['kind']
+    let track: TrackEntry | null | undefined
+    let kind: 'subgroup' | 'fetch'
     let id: number
     if (stream.fetchRequestId != null) {
       track = session.tracks.get(String(stream.fetchRequestId))
       kind = 'fetch'
       id = stream.fetchRequestId
     } else if (stream.trackAlias != null) {
-      const claims = byAlias.get(String(stream.trackAlias))
-      if (!claims) continue
-      const matching = claims.filter((t) => dataDirection(t) === stream.direction)
-      if (matching.length !== 1) continue
-      track = matching[0]
+      track = resolve(stream.trackAlias, stream.direction)
       kind = 'subgroup'
       id = stream.trackAlias
     } else {
       continue
     }
-    if (!track || !isCatalogTrackName(track.trackName)) continue
+    if (track && include(track)) found.push({ stream, track, kind, id })
+  }
+  return found
+}
+
+/** Every data stream of `session` whose track is a catalog track. */
+export function locateCatalogStreams(
+  session: Pick<SessionEntry, 'streams' | 'tracks'>,
+): CatalogStreamRef[] {
+  const refs: CatalogStreamRef[] = []
+  for (const { stream, track, kind, id } of locateTrackStreams(session, (t) =>
+    isCatalogTrackName(t.trackName),
+  )) {
     const namespace = namespaceText(track.trackNamespace)
     refs.push({
       streamId: stream.streamId,
@@ -147,10 +184,17 @@ export function locateCatalogStreams(
 
 /**
  * A problem with a catalog object: the library's, plus `object_order` for the
- * Group rules, which need the Group and Object IDs.
+ * Group rules, which need the Group and Object IDs. Every rule either source
+ * checks is a MUST, a Required field or a value's JSON type (msf 5), so each
+ * is an error.
  */
-export interface CatalogObjectProblem extends Omit<CatalogProblem, 'category'> {
+export interface CatalogObjectProblem extends Omit<CatalogProblem, 'category' | 'severity'> {
+  severity: 'error'
   category: CatalogProblemCategory | 'object_order'
+}
+
+function asObjectProblem(p: CatalogProblem): CatalogObjectProblem {
+  return { ...p, severity: 'error' }
 }
 
 /**
@@ -158,13 +202,10 @@ export interface CatalogObjectProblem extends Omit<CatalogProblem, 'category'> {
  *
  * - `applied`: it changed the catalog
  * - `refused`: it broke a rule that binds the reader; the catalog stayed as it was
- * - `compressed`: gzip (msf-01 12.1), not decompressed here; the catalog it
- *   carries is not known
  * - `skipped`: a delta with nothing to apply to, because the independent
- *   catalog its Group starts with was not recorded or is compressed
+ *   catalog its Group starts with was not recorded
  */
-export type CatalogObjectOutcome =
-  'applied' | 'refused' | 'compressed' | 'skipped'
+export type CatalogObjectOutcome = 'applied' | 'refused' | 'skipped'
 
 export interface CatalogObjectRecord {
   groupId: number
@@ -195,8 +236,6 @@ export interface CatalogView {
   objects: CatalogObjectRecord[]
   /** The data streams it was read from */
   streamIds: number[]
-  /** The newest independent catalog is compressed; `state` is empty */
-  compressed: boolean
   /** Why objects the track sent may be missing; empty when none are known */
   incomplete: string[]
 }
@@ -227,7 +266,7 @@ function groupRuleSection(draft: CatalogDraft | null): string | null {
 /**
  * The Group rules: the first object of a Group is independent (msf-00 5,
  * msf-01 5); from MSF-01 the rest of the Group is deltas, all in Subgroup 0.
- * Breaking one is a warning and the object still applies.
+ * The object still applies.
  */
 function orderProblems(
   parsed: ParsedCatalog,
@@ -245,7 +284,7 @@ function orderProblems(
   const problems: CatalogObjectProblem[] = []
   if (parsed.kind === 'delta' && objectId === 0) {
     problems.push({
-      severity: 'warning',
+      severity: 'error',
       category: 'object_order',
       path: '',
       section,
@@ -254,7 +293,7 @@ function orderProblems(
   }
   if (msf01 && parsed.kind === 'independent' && objectId > 0) {
     problems.push({
-      severity: 'warning',
+      severity: 'error',
       category: 'object_order',
       path: '',
       section,
@@ -263,7 +302,7 @@ function orderProblems(
   }
   if (msf01 && subgroupId !== 0) {
     problems.push({
-      severity: 'warning',
+      severity: 'error',
       category: 'object_order',
       path: '',
       section,
@@ -286,8 +325,6 @@ class CatalogLog {
   state: CatalogState
   /** Group of the independent catalog `state` rests on; null before one */
   private baseGroup: number | null = null
-  /** The newest independent catalog was compressed */
-  compressed = false
   /** Groups whose deltas had no independent catalog to apply to */
   readonly missingBase = new Set<number>()
   readonly streamIds = new Set<number>()
@@ -316,7 +353,8 @@ class CatalogLog {
 
     const parsed = parseCatalog(payload, { catalogNamespace: this.namespace })
     const readProblems: CatalogObjectProblem[] = [
-      ...parsed.problems,
+      // The draft badge shows every candidate draft.
+      ...parsed.problems.filter((p) => p.category !== 'ambiguous_draft').map(asObjectProblem),
       ...orderProblems(parsed, groupId, subgroupId, objectId),
     ]
     const entry: Entry = {
@@ -348,7 +386,6 @@ class CatalogLog {
       this.applied = 0
       this.state = createCatalogState({ catalogNamespace: this.namespace })
       this.baseGroup = null
-      this.compressed = false
       this.missingBase.clear()
     }
     for (; this.applied < this.entries.length; this.applied++) {
@@ -358,23 +395,9 @@ class CatalogLog {
 
   private apply(entry: Entry): void {
     const { parsed } = entry
-    if (parsed.kind === 'compressed') {
-      // The catalog is now unknown; the older one is not shown as current.
-      this.state = createCatalogState({ catalogNamespace: this.namespace })
-      this.baseGroup = entry.groupId
-      this.compressed = true
-      entry.outcome = 'compressed'
-      entry.problems = entry.readProblems
-      return
-    }
     if (parsed.kind === 'delta') {
       // A delta applies only to the independent catalog starting its own
       // Group (msf-00 5, msf-01 5).
-      if (this.compressed && this.baseGroup === entry.groupId) {
-        entry.outcome = 'skipped'
-        entry.problems = entry.readProblems
-        return
-      }
       if (this.baseGroup !== entry.groupId) {
         // An object 0 that arrived but was not independent has its own problem.
         if (!this.ids.has(`${entry.groupId}:0`)) {
@@ -386,14 +409,11 @@ class CatalogLog {
       }
     }
     const update = applyCatalogObject(this.state, parsed)
-    entry.problems = [...entry.readProblems, ...update.problems]
+    entry.problems = [...entry.readProblems, ...update.problems.map(asObjectProblem)]
     entry.outcome = update.applied ? 'applied' : 'refused'
     if (update.applied) {
       this.state = update.state
-      if (parsed.kind === 'independent') {
-        this.baseGroup = entry.groupId
-        this.compressed = false
-      }
+      if (parsed.kind === 'independent') this.baseGroup = entry.groupId
     }
   }
 }
@@ -624,7 +644,7 @@ export class SessionCatalogs {
     }
     for (const group of log.missingBase) {
       incomplete.push(
-        `The independent catalog that starts group ${group} was not recorded, so its deltas were not applied.`,
+        `The independent catalog that starts group ${group} was not recorded.`,
       )
     }
     const records: CatalogObjectRecord[] = log.entries.map(
@@ -641,7 +661,6 @@ export class SessionCatalogs {
       publishTracks: catalogTracks(document, { ...options, publish: true }),
       objects: records,
       streamIds: Array.from(log.streamIds),
-      compressed: log.compressed,
       incomplete,
     }
   }
@@ -649,20 +668,30 @@ export class SessionCatalogs {
 
 // ─── Packaging join ───────────────────────────────────────────────
 
-/** What a catalog says about one track. */
-export interface TrackPackaging {
+/** What one catalog says about one track. */
+export interface PackagingClaim {
   /** The catalog track that says it */
   catalog: TrackKey
+  /** That catalog track's namespace and name, as the panel writes a track */
+  catalogName: string
   track: CatalogTrack
   /** Declared in `publishTracks` rather than `tracks` */
   publish: boolean
+  /** The draft of that catalog, or the drafts it may be while open */
+  drafts: readonly CatalogDraft[]
+}
+
+/** What the session's catalogs say about one track. */
+export interface TrackPackaging extends PackagingClaim {
+  /** Every catalog's description of the track, the first one included */
+  claims: PackagingClaim[]
 }
 
 /**
  * Every track the session's catalogs describe, keyed like the registry's
- * tracks so the two join on (namespace text, name). When two catalogs
- * describe one track the first found wins, and `tracks` wins over
- * `publishTracks`.
+ * tracks so the two join on (namespace text, name). The entry's own fields
+ * are the first description found, `tracks` before `publishTracks`; `claims`
+ * holds them all.
  */
 export function packagingIndex(
   views: readonly CatalogView[],
@@ -672,13 +701,77 @@ export function packagingIndex(
     for (const view of views) {
       for (const track of publish ? view.publishTracks : view.tracks) {
         const key = trackKey(track.namespace, track.name)
-        if (!index.has(key)) {
-          index.set(key, { catalog: view.key, track, publish })
+        const claim: PackagingClaim = {
+          catalog: view.key,
+          catalogName: `${view.namespace} / ${view.name}`,
+          track,
+          publish,
+          drafts: view.state.draft ? [view.state.draft] : view.state.candidates,
         }
+        const entry = index.get(key)
+        if (entry) entry.claims.push(claim)
+        else index.set(key, { ...claim, claims: [claim] })
       }
     }
   }
   return index
+}
+
+/** One field on which a track's catalog descriptions differ. */
+export interface PackagingConflict {
+  field: 'packaging' | 'codec'
+  /** Each description's value, null where it gives none */
+  values: { catalogName: string; value: string | null }[]
+}
+
+/**
+ * Where a track's catalog descriptions disagree: on packaging, or on codec
+ * between descriptions that give one.
+ */
+export function packagingConflicts(p: TrackPackaging): PackagingConflict[] {
+  const out: PackagingConflict[] = []
+  const valuesOf = (get: (t: CatalogTrack) => string | null | undefined) =>
+    p.claims.map((c) => ({ catalogName: c.catalogName, value: get(c.track) ?? null }))
+  const packaging = valuesOf((t) => t.packaging)
+  if (new Set(packaging.map((v) => v.value)).size > 1) {
+    out.push({ field: 'packaging', values: packaging })
+  }
+  const codecs = valuesOf((t) => t.codec)
+  if (new Set(codecs.filter((v) => v.value !== null).map((v) => v.value)).size > 1) {
+    out.push({ field: 'codec', values: codecs })
+  }
+  return out
+}
+
+/** Every draft the catalogs describing a track are, or may be. */
+export function catalogDrafts(p: TrackPackaging | undefined): Set<CatalogDraft> {
+  return new Set(p?.claims.flatMap((c) => [...c.drafts]) ?? [])
+}
+
+/** A value every description gives alike, absence included; undefined when they differ. */
+export function agreedValue<T>(
+  p: TrackPackaging | undefined,
+  get: (t: CatalogTrack) => T | null,
+): T | null | undefined {
+  if (!p) return null
+  const values = new Set(p.claims.map((c) => get(c.track) ?? null))
+  return values.size === 1 ? [...values][0]! : undefined
+}
+
+/** The packaging every description of the track gives, or null when they differ. */
+export function agreedPackaging(p: TrackPackaging | undefined): string | null {
+  if (!p) return null
+  const values = new Set(p.claims.map((c) => c.track.packaging ?? null))
+  return values.size === 1 ? [...values][0]! : null
+}
+
+/** The codec the descriptions that give one agree on, or null. */
+export function agreedCodec(p: TrackPackaging | undefined): string | null {
+  if (!p) return null
+  const values = new Set(
+    p.claims.map((c) => c.track.codec ?? null).filter((v) => v !== null),
+  )
+  return values.size === 1 ? [...values][0]! : null
 }
 
 /** A packaging value as a badge says it. */

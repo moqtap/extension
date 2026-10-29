@@ -14,9 +14,15 @@ const props = withDefaults(
     objects?: StreamObject[]
     /** A caveat about where the bytes came from, shown in the footer */
     note?: string
+    /** Set the objects' property blocks apart from the rest of their framing */
+    markProperties?: boolean
+    /** Name each object's ISO BMFF boxes */
+    mediaBoxes?: boolean
   }>(),
   {
     headerSize: 0,
+    markProperties: false,
+    mediaBoxes: true,
   },
 )
 
@@ -31,11 +37,12 @@ const OVERSCAN = 10
  * Per-byte annotation:
  *   'header'  — stream-level protocol header (dimmed)
  *   'framing' — per-object framing bytes (objectId, length varints — dimmed)
+ *   'props'   — an object's property block, when `markProperties` is set
  *   'even'    — payload byte in an even-indexed object
  *   'odd'     — payload byte in an odd-indexed object
  *   'none'    — no annotation
  */
-type ByteKind = 'header' | 'framing' | 'even' | 'odd' | 'none'
+type ByteKind = 'header' | 'framing' | 'props' | 'even' | 'odd' | 'none'
 
 // ── Per-object media annotation ──────────────────────────────────
 interface ObjectAnnotation {
@@ -57,7 +64,7 @@ const objectAnnotations = computed((): ObjectAnnotation[] => {
         ? props.data.subarray(obj.payloadOffset, end)
         : null
     const media =
-      payload && payload.length >= 8 ? detectMediaInfo(payload) : null
+      props.mediaBoxes && payload && payload.length >= 8 ? detectMediaInfo(payload) : null
     return {
       objectId: obj.objectId,
       payloadSize: obj.payloadLength,
@@ -227,6 +234,16 @@ function computeByteKinds(from: number, to: number): ByteKind[] {
       for (let i = Math.max(obj.offset, from); i < framingEnd; i++) {
         kinds[i - from] = 'framing'
       }
+      if (props.markProperties && obj.propertiesOffset !== undefined) {
+        const propsEnd = Math.min(
+          obj.propertiesOffset + (obj.propertiesLength ?? 0),
+          len,
+          to,
+        )
+        for (let i = Math.max(obj.propertiesOffset, from); i < propsEnd; i++) {
+          kinds[i - from] = 'props'
+        }
+      }
 
       const payloadEnd = Math.min(
         obj.payloadOffset + obj.payloadLength,
@@ -241,6 +258,12 @@ function computeByteKinds(from: number, to: number): ByteKind[] {
 
   return kinds
 }
+
+const hasPropertyBlocks = computed(
+  () =>
+    props.markProperties &&
+    (props.objects ?? []).some((o) => (o.propertiesLength ?? 0) > 0),
+)
 
 // ── Visible entries ──────────────────────────────────────────────
 type DataEntry = {
@@ -430,6 +453,7 @@ function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
   return {
     'hex-gap': colIdx === 7,
     'hex-proto': kind === 'header' || kind === 'framing',
+    'hex-props': kind === 'props',
     'hex-obj-even': kind === 'even',
     'hex-obj-odd': kind === 'odd',
   }
@@ -535,6 +559,8 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
           v-if="objects && objects.length > 0"
           >, {{ plural(objects.length, 'object') }}</template
         >)</template
+      ><template v-if="hasPropertyBlocks">
+        · <span class="hex-props">property blocks</span></template
       ><template v-if="note">
         · <span class="hex-note">{{ note }}</span></template
       >
@@ -706,6 +732,11 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 /* Stream header and per-object framing bytes */
 .hex-proto {
   color: var(--ink-muted);
+}
+
+/* Object property blocks, inside the framing */
+.hex-props {
+  color: var(--info);
 }
 
 /* Odd-indexed object payloads sit on a tint so neighbouring objects part. */

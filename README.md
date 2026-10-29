@@ -7,11 +7,16 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 - Intercepts all WebTransport connections on a page (main thread, workers, and iframes)
 - Auto-detects MoQT from wire bytes, and the draft (07 through 22) from the negotiated `moqt-NN` protocol
 - Decodes control messages with full field display, error codes by name for the session's draft, and each response's time since its request
-- Lists a session's problems in Details: error responses, requests left without a response, blocked or exhausted request IDs, GOAWAY and undecodable bytes
+- Problems list in Details covering control messages (error responses, requests left without a response, blocked or exhausted request IDs, GOAWAY, undecodable bytes), catalogs, catalogs that disagree on a track, media timeline templates, and LOC, CMAF and timeline objects: each with its severity and, where they apply, the spec section and links to the objects, catalog objects or messages where it was seen, filterable by severity
 - Tracks tab with per-track subscription state, timing, namespace grouping, and each track's packaging, codec and size from its catalog
-- MSF and CMSF catalogs: a Catalog view on catalog streams, with the tracks each catalog declares
+- MSF and CMSF catalogs: a Catalog view on catalog streams, with the tracks each catalog declares and the rules each catalog object breaks
+- Media payloads: a track is read as LOC, CMAF, a media timeline or an event timeline when its catalogs agree on its packaging; a LOC draft can also be picked in the Tracks tab for a track whose catalogs say LOC or whose objects carry Object Properties
+  - LOC: each object's properties, decoded under the LOC draft the track's property types allow, and its payload's NAL unit framing
+  - CMAF: the track's CMAF header, and each object's boxes, track_IDs, first sample, SAP type and earliest presentation time, checked against CMSF
+  - Timelines: media timeline records, event timeline records, and the CMSF SAP type timeline compared with the media track it describes
+  - Media timeline templates: the template the catalogs give a track, of any packaging, shown with its streams and in the Tracks tab
 - WebTransport datagram interception and decoding (shown in Streams tab)
-- Stream content detection: JSON, CBOR, MessagePack, and ISO BMFF media (CMAF, fMP4)
+- Stream content detection: JSON, CBOR, MessagePack, H.264 and H.265 Annex-B, and ISO BMFF boxes
 - Hex viewer with inline object boundary annotations and object navigation
 - Live bitrate display for active connections
 - Filter toolbar for messages (active only, group by namespace, outgoing/incoming direction, message name under any draft's name for it) and streams (text search)

@@ -8,7 +8,10 @@
  * to connected DevTools panels.
  */
 
-import { parseStreamFraming } from '@/entrypoints/devtools-panel/stream-framing'
+import {
+  carriesObjectProperties,
+  parseStreamFraming,
+} from '@/entrypoints/devtools-panel/stream-framing'
 import {
   decodeControlMessage,
   getCodec,
@@ -189,6 +192,8 @@ interface StreamRecord {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string when the payload is a raw elementary stream */
   codecString?: string
+  /** An object in the first chunk carries an Object Properties block */
+  objectProperties?: boolean
   firstDataAt?: number
   /** Whether a stream-opened event has been written to the trace recorder */
   openedRecorded?: boolean
@@ -752,6 +757,7 @@ function replayState(tabId: number) {
           fetchRequestId: stream.fetchRequestId,
           mediaInfo: stream.mediaInfo,
           codecString: stream.codecString,
+          objectProperties: stream.objectProperties,
           bidi: stream.bidi,
           ...(session.controlStreams.has(stream.streamId)
             ? {
@@ -779,6 +785,7 @@ function replayState(tabId: number) {
         datagramCount: group.count,
         contentType: group.contentType,
         mediaInfo: group.mediaInfo,
+        objectProperties: group.objectProperties,
         firstDataAt: group.firstTimestamp,
         closed: group.closed,
       })
@@ -1144,6 +1151,7 @@ function handleContentMessage(
               // Fetch streams identify their track by the request id in the
               // header; only subgroup and datagram streams carry an alias.
               stream.fetchRequestId = framing.headerFields.requestId
+              if (carriesObjectProperties(framing)) stream.objectProperties = true
 
               // Use framing boundaries for precise BMFF detection on first object payload
               if (framing.objects.length > 0) {
@@ -1221,6 +1229,7 @@ function handleContentMessage(
                 fetchRequestId: stream.fetchRequestId,
                 mediaInfo: stream.mediaInfo,
                 codecString: stream.codecString,
+                objectProperties: stream.objectProperties,
                 bidi: stream.bidi,
                 ...(isControlStream
                   ? {
@@ -1397,6 +1406,12 @@ function handleContentMessage(
           appendResult.group.codecString = detectAnnexB(dg.payload)?.codecString
         }
       }
+      if (appendResult.isNewGroup) {
+        const framing = parseStreamFraming(bytes, session.detectedDraft)
+        if (framing && carriesObjectProperties(framing)) {
+          appendResult.group.objectProperties = true
+        }
+      }
 
       // Queue datagram notification for panel (batched)
       const panelMsg: BackgroundToPanelMsg = {
@@ -1414,6 +1429,7 @@ function handleContentMessage(
               contentType: appendResult.group.contentType,
               mediaInfo: appendResult.group.mediaInfo,
               codecString: appendResult.group.codecString,
+              objectProperties: appendResult.group.objectProperties,
             }
           : {}),
         ...(decoded.endOfGroup ? { endOfGroup: true } : {}),

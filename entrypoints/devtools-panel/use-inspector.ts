@@ -42,12 +42,9 @@ export interface SessionEntry {
   draft?: string
   /**
    * True when nothing on the connection named the draft and `draft` is the
-   * newest this build supports rather than something observed. The UI has to
-   * say so — a guessed draft decodes just as confidently as a known one.
+   * newest this build supports rather than something observed.
    */
   draftAssumed?: boolean
-  /** Why no draft could be identified, when `draftAssumed` is set. */
-  draftAssumedReason?: string
   /**
    * The `moqt-NN` string the draft was read out of, when one was. It may be
    * the server's pick or the client's offer — `negotiatedProtocol` below holds
@@ -155,6 +152,8 @@ export interface StreamEntry {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string when the payload is a raw elementary stream */
   codecString?: string
+  /** An object framed at capture carries an Object Properties block */
+  objectProperties?: boolean
   /** Timestamp of first data chunk (ms) */
   firstDataAt?: number
   /** Timestamp of most recent data chunk (ms) */
@@ -217,6 +216,8 @@ export interface DatagramGroupEntry {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string when the payload is a raw elementary stream */
   codecString?: string
+  /** An object framed at capture carries an Object Properties block */
+  objectProperties?: boolean
   firstDataAt?: number
   lastDataAt?: number
   /**
@@ -340,8 +341,6 @@ export function useInspector() {
           if (msg.result.protocol !== 'unknown') {
             const evidence = msg.result.evidence
             session.draftAssumed = evidence.via === 'unidentified'
-            session.draftAssumedReason =
-              evidence.via === 'unidentified' ? evidence.reason : undefined
             session.draftFromProtocol =
               evidence.via === 'negotiated-protocol'
                 ? evidence.protocol
@@ -406,6 +405,7 @@ export function useInspector() {
               contentType: msg.contentType ?? 'binary',
               mediaInfo: msg.mediaInfo,
               codecString: msg.codecString,
+              objectProperties: msg.objectProperties,
               firstDataAt: now,
               trackAlias: msg.trackAlias,
               fetchRequestId: msg.fetchRequestId,
@@ -419,6 +419,7 @@ export function useInspector() {
             stream.contentType = msg.contentType
             stream.mediaInfo = msg.mediaInfo
             stream.codecString = msg.codecString
+            stream.objectProperties = msg.objectProperties
             stream.trackAlias = msg.trackAlias
             stream.fetchRequestId = msg.fetchRequestId
             if (msg.bidi !== undefined) stream.bidi = msg.bidi
@@ -451,6 +452,7 @@ export function useInspector() {
             contentType: msg.contentType,
             mediaInfo: msg.mediaInfo,
             codecString: msg.codecString,
+            objectProperties: msg.objectProperties,
             trackAlias: msg.trackAlias,
             fetchRequestId: msg.fetchRequestId,
             bidi: msg.bidi,
@@ -597,6 +599,7 @@ export function useInspector() {
               contentType: msg.contentType ?? 'binary',
               mediaInfo: msg.mediaInfo,
               codecString: msg.codecString,
+              objectProperties: msg.objectProperties,
               firstDataAt: now,
             }
             session.datagramGroups.set(gk, group)
@@ -604,6 +607,7 @@ export function useInspector() {
             group.contentType = msg.contentType
             group.mediaInfo = msg.mediaInfo
             group.codecString = msg.codecString
+            group.objectProperties = msg.objectProperties
           }
           group.byteCount += msg.byteLength
           group.datagramCount++
@@ -635,6 +639,7 @@ export function useInspector() {
             datagramCount: msg.datagramCount,
             contentType: msg.contentType ?? 'binary',
             mediaInfo: msg.mediaInfo,
+            objectProperties: msg.objectProperties,
             firstDataAt: msg.firstDataAt,
           })
           return true

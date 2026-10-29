@@ -1,8 +1,7 @@
 <script lang="ts" setup>
-import type { PayloadMediaInfo } from '@moqtap/media/bmff'
-import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { formatBytes, messageTypeName, plural } from '../format'
+import { byteLabel, byteTitle, type StreamFormat } from '../stream-format'
 import type { MessageEntry, StreamEntry, TrackEntry } from '../use-inspector'
 import Icon from './Icon.vue'
 
@@ -20,6 +19,8 @@ const props = defineProps<{
   recording: boolean
   /** Control messages, used to name draft-17+ request streams by their request */
   messages?: MessageEntry[]
+  /** What each stream is read as; without it, what its bytes prove */
+  formatOf?: (stream: StreamEntry) => StreamFormat
 }>()
 
 const emit = defineEmits<{
@@ -185,46 +186,17 @@ function sumBytes(list: StreamEntry[], dir?: 'tx' | 'rx'): number {
   return total
 }
 
-const VARIANT_LABELS: Record<string, string> = {
-  cmaf: 'CMAF',
-  fmp4: 'fMP4',
-}
-
-function mediaLabel(info: PayloadMediaInfo): string {
-  return VARIANT_LABELS[info.variant] ?? 'fMP4'
-}
-
-function codecLabel(contentType: StreamContentType): string {
-  return contentType === 'h265' ? 'H.265' : 'H.264'
+function formatOf(stream: StreamEntry): StreamFormat {
+  return props.formatOf?.(stream) ?? { from: 'bytes', ...stream }
 }
 
 /** The short content type shown in the Type column, or null. */
 function contentLabel(stream: StreamEntry): string | null {
-  switch (stream.contentType) {
-    case 'fmp4':
-      return stream.mediaInfo ? mediaLabel(stream.mediaInfo) : 'fMP4'
-    case 'h264':
-    case 'h265':
-      return codecLabel(stream.contentType)
-    case 'json':
-      return 'JSON'
-    case 'cbor':
-      return 'CBOR'
-    case 'msgpack':
-      return 'MsgPack'
-    default:
-      return null
-  }
+  return byteLabel(formatOf(stream))
 }
 
 function contentTitle(stream: StreamEntry): string | undefined {
-  if (stream.contentType === 'fmp4' && stream.mediaInfo) {
-    return stream.mediaInfo.boxes.join(' · ')
-  }
-  if (stream.contentType === 'h264' || stream.contentType === 'h265') {
-    return stream.codecString ?? codecLabel(stream.contentType)
-  }
-  return undefined
+  return byteTitle(formatOf(stream))
 }
 
 /**

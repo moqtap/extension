@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, toRaw, watch } from 'vue'
 import {
   formatBytes,
   formatDuration,
@@ -22,6 +22,8 @@ const props = defineProps<{
   responseTimes: Map<MessageEntry, number>
   /** Each error response's code by name. */
   errorLabels: Map<MessageEntry, string>
+  /** A message to open and scroll to */
+  focus?: { message: MessageEntry; seq: number } | null
 }>()
 
 const filterText = ref('')
@@ -39,6 +41,24 @@ watch(filterText, () => {
 })
 const logContainer = ref<HTMLElement | null>(null)
 useAutoScroll(logContainer)
+
+watch(
+  () => props.focus,
+  async (focus) => {
+    if (!focus) return
+    filterText.value = ''
+    await nextTick()
+    const target = toRaw(focus.message)
+    const index = shownMessages.value.findIndex((m) => toRaw(m) === target)
+    if (index < 0) return
+    expandedIndex.value = index
+    await nextTick()
+    logContainer.value
+      ?.querySelectorAll('.message-row')
+      [index]?.scrollIntoView({ block: 'nearest' })
+  },
+  { immediate: true },
+)
 
 function toggle(index: number) {
   expandedIndex.value = expandedIndex.value === index ? null : index

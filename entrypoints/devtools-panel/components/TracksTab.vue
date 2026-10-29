@@ -1,13 +1,16 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  agreedPackaging,
   type CatalogView,
+  packagingConflicts,
   packagingLabel,
   registryTrackKey,
   type TrackKey,
   type TrackPackaging,
   trackSummary,
 } from '../catalogs'
+import { initText, type SessionCmafView } from '../cmaf'
 import {
   formatBitrate,
   formatBytes,
@@ -18,7 +21,18 @@ import {
 } from '../format'
 import type { DirectionFilter } from '../prefs'
 import { getCachedPref, loadPrefs, savePref } from '../prefs'
+import {
+  LOC_PROFILES,
+  type LocProfile,
+  propertyTypeText,
+  resolutionLabel,
+  type SessionLocView,
+  tracksWithObjectProperties,
+} from '../loc'
+import { sessionPins } from '../packaging'
 import { type RequestTimes, trackRoundTrip } from '../requests'
+import { trackByteLabels } from '../stream-format'
+import { TIMELINE_LABELS, templateOf, templateText } from '../timelines'
 import { trackColourClass } from '../track-colour'
 import type { SessionEntry, TrackEntry } from '../use-inspector'
 
@@ -32,6 +46,10 @@ const props = defineProps<{
   catalogs?: CatalogView[]
   /** What those catalogs say about each track, by {@link registryTrackKey} */
   packaging?: Map<TrackKey, TrackPackaging>
+  /** The session's LOC tracks */
+  loc?: SessionLocView
+  /** The session's CMAF and timeline tracks */
+  cmaf?: SessionCmafView
 }>()
 
 // ── Bitrate tick (same pattern as ConnectionList.vue) ────────────
@@ -194,33 +212,34 @@ function mediaCell(track: TrackEntry): MediaCell | null {
   const key = registryTrackKey(track)
   const catalog = catalogsByKey.value.get(key)
   if (catalog) {
-    const notes: string[] = []
-    if (catalog.compressed) notes.push('compressed')
-    if (catalog.incomplete.length > 0) notes.push('incomplete')
-    // No object read means the declared tracks are unknown, not none.
-    const read = catalog.objects.length > 0
-    const unread =
-      catalog.streamIds.length === 0
-        ? 'No stream of this track has been read.'
-        : 'No catalog object has been read from its streams.'
+    const parts: string[] = []
+    // With no object read there is no track count to give.
+    if (catalog.objects.length > 0) parts.push(plural(catalog.tracks.length, 'track'))
+    if (catalog.incomplete.length > 0) parts.push('incomplete')
     return {
       badge: 'catalog',
-      text: [
-        read ? plural(catalog.tracks.length, 'track') : 'nothing read',
-        ...notes,
-      ].join(' · '),
-      title: [...(read ? [] : [unread]), ...catalog.incomplete].join(' '),
+      text: parts.join(' · '),
+      title: catalog.incomplete.join(' '),
       catalog: true,
     }
   }
   const described = props.packaging?.get(key)
   if (!described) return null
   const t = described.track
+  const disagree = packagingConflicts(described).map(
+    (c) =>
+      `catalogs disagree on ${c.field}: ${c.values
+        .map((v) => `${v.catalogName} ${v.value ?? 'none'}`)
+        .join(', ')}`,
+  )
+  const template = templateOf(described)?.template
   const title = [
     t.role,
     t.mimeType,
     t.bitrate != null ? formatBitrate(t.bitrate) : null,
+    template ? `template ${templateText(template)}` : null,
     described.publish ? 'listed under publishTracks' : null,
+    ...disagree,
   ]
   return {
     badge: packagingLabel(t.packaging) ?? '?',
@@ -230,13 +249,114 @@ function mediaCell(track: TrackEntry): MediaCell | null {
   }
 }
 
+// ── How the track is read ────────────────────────────────────────
+
+const pins = computed(() => sessionPins(props.session))
+
+/** For each track, the byte format all its streams share. */
+const byteLabels = computed(() => trackByteLabels(props.session, props.packaging))
+
+/** The tracks whose objects may be LOC by what capture saw. */
+const propertyTracks = computed(() => tracksWithObjectProperties(props.session))
+
+/**
+ * The Media cell: one badge for what the track is read as, then whatever the
+ * catalog gave. On a track that may be LOC, the badge picks the LOC draft.
+ */
+interface FormatCell {
+  badge: string | null
+  badgeClass: string
+  text: string
+  title: string
+  /** Set when a LOC draft can be picked: the pinned profile, or '' */
+  pin: string | null
+  /** The picker's first entry: how the track reads without a pin */
+  autoLabel: string
+}
+
+function formatCell(track: TrackEntry, media: MediaCell | null): FormatCell {
+  void pins.value.revision.value
+  const key = registryTrackKey(track)
+  const pinned = pins.value.get(key) ?? ''
+  const agreed = agreedPackaging(props.packaging?.get(key))
+  const pickable = agreed === 'loc' || pinned !== '' || propertyTracks.value.has(key)
+  const bytes = byteLabels.value.get(key) ?? null
+  const base = {
+    text: media?.text ?? '',
+    pin: pickable ? pinned : null,
+    autoLabel: agreed === 'loc' ? 'LOC, draft from its properties' : (bytes ?? 'hex'),
+  }
+  const titled = (title: string) => [title, media?.title].filter((x) => x).join(' · ')
+
+  if (media?.catalog) {
+    return { ...base, badge: 'catalog', badgeClass: 'mq-badge--note', title: media.title, pin: null }
+  }
+  const cmaf = props.cmaf?.trackState(track) ?? null
+  if (cmaf) {
+    return {
+      ...base,
+      badge: 'CMAF',
+      badgeClass: cmaf.init.status === 'known' ? 'mq-badge--ok' : 'mq-badge--check',
+      title: titled(`${initText(cmaf.init)}. ${plural(cmaf.objectCount, 'object')} read.`),
+    }
+  }
+  const timeline = props.cmaf?.timelineState(track) ?? null
+  if (timeline) {
+    const describes =
+      timeline.depends.length > 0 ? ` Describes ${timeline.depends.join(', ')}.` : ''
+    return {
+      ...base,
+      badge: TIMELINE_LABELS[timeline.kind],
+      badgeClass: 'mq-badge--ok',
+      title: titled(`${plural(timeline.objectCount, 'object')} read.${describes}`),
+    }
+  }
+  const loc = locReading(track)
+  if (loc) return { ...base, ...loc, title: titled(loc.title) }
+  return { ...base, badge: media?.badge ?? bytes, badgeClass: '', title: media?.title ?? '' }
+}
+
+function locReading(
+  track: TrackEntry,
+): { badge: string; title: string; badgeClass: string } | null {
+  const state = props.loc?.trackState(track) ?? null
+  if (!state) return null
+  const r = state.resolution
+  const seen =
+    state.types.length === 0
+      ? 'No LOC property IDs seen'
+      : `Property ${state.types.length === 1 ? 'ID' : 'IDs'} seen: ${state.types.map(propertyTypeText).join(', ')}`
+  const title = [
+    state.via === 'catalog' ? '' : 'Pinned.',
+    'profile' in r ? '' : `${resolutionLabel(r)}.`,
+    `${seen} in ${plural(state.objectCount, 'object')}.`,
+    state.malformedCount > 0
+      ? `${plural(state.malformedCount, 'property block')} did not decode.`
+      : '',
+    state.conflicts?.some((c) => c.field === 'codec')
+      ? 'The catalogs disagree on the codec.'
+      : '',
+  ]
+    .filter((x) => x)
+    .join(' ')
+  if ('profile' in r) return { badge: `LOC ${r.profile}`, title, badgeClass: 'mq-badge--ok' }
+  if (state.objectCount === 0) return { badge: 'LOC', title, badgeClass: '' }
+  if (r.candidates.length === 0) return { badge: 'LOC ?', title, badgeClass: 'mq-badge--error' }
+  return { badge: `LOC ${r.candidates.join(' / ')}`, title, badgeClass: 'mq-badge--check' }
+}
+
+function onPin(track: TrackEntry, event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  pins.value.set(registryTrackKey(track), value === '' ? undefined : (value as LocProfile))
+}
+
 // ── Computed rows with bitrate ───────────────────────────────────
 
 interface TrackRow {
   track: TrackEntry
   stats: TrackStats | undefined
   bitrate: number
-  media: MediaCell | null
+  format: FormatCell
 }
 
 const trackRows = computed((): TrackRow[] => {
@@ -259,7 +379,12 @@ const trackRows = computed((): TrackRow[] => {
       const decay = Math.max(0, 1 - (now - stats.lastDataAt) / DECAY_WINDOW_MS)
       bitrate = activeBps * decay
     }
-    return { track, stats, bitrate, media: mediaCell(track) }
+    return {
+      track,
+      stats,
+      bitrate,
+      format: formatCell(track, mediaCell(track)),
+    }
   })
 })
 
@@ -331,7 +456,9 @@ function activeFor(track: TrackEntry, stats: TrackStats | undefined): string {
         track.subscribeErrorAt ??
         stats?.lastDataAt ??
         start)
-      : Date.now()
+      : props.session.closed
+        ? (stats?.lastDataAt ?? start)
+        : Date.now()
   return formatDuration(end - start)
 }
 
@@ -344,6 +471,7 @@ function formatLatency(track: TrackEntry): string {
 const visibleGroups = computed((): NsGroup[] =>
   groupByNs.value ? groups.value : [{ ns: '', rows: trackRows.value }],
 )
+
 
 const headerCount = computed(() => {
   const shown = filteredTracks.value.length
@@ -409,10 +537,7 @@ const headerCount = computed(() => {
             <th class="col-dir"><span class="mq-sr">Direction</span></th>
             <th class="col-status"><span class="mq-sr">Status</span></th>
             <th class="col-name">Track</th>
-            <th
-              class="col-media"
-              title="What the session's catalog says about the track"
-            >
+            <th class="col-media" title="What the track is read as, and what its catalog says">
               Media
             </th>
             <th class="mq-r" title="SUBSCRIBE sent, from session start">
@@ -483,17 +608,35 @@ const headerCount = computed(() => {
                     >{{ row.track.trackNamespace.join('/') }} / </span
                   >{{ row.track.trackName }}
                 </td>
-                <td class="col-media" :title="row.media?.title || undefined">
-                  <template v-if="row.media">
-                    <span
-                      class="mq-badge mq-badge--mono"
-                      :class="{ 'mq-badge--note': row.media.catalog }"
-                      >{{ row.media.badge }}</span
+                <td class="col-media" :title="row.format.title || undefined">
+                  <label
+                    v-if="row.format.pin !== null"
+                    class="mq-badge mq-badge--mono format-pick"
+                    :class="row.format.badgeClass"
+                    >{{ row.format.badge ?? 'hex' }}<span
+                      class="format-chevron"
+                      aria-hidden="true"
+                      >▾</span
+                    ><select
+                      :aria-label="`LOC draft for ${row.track.fullName}`"
+                      :value="row.format.pin"
+                      @change="onPin(row.track, $event)"
                     >
-                    <span v-if="row.media.text" class="mono media-text">{{
-                      row.media.text
-                    }}</span>
-                  </template>
+                      <option value="">{{ row.format.autoLabel }}</option>
+                      <option v-for="p in LOC_PROFILES" :key="p" :value="p">
+                        LOC {{ p }}
+                      </option>
+                    </select></label
+                  >
+                  <span
+                    v-else-if="row.format.badge"
+                    class="mq-badge mq-badge--mono"
+                    :class="row.format.badgeClass"
+                    >{{ row.format.badge }}</span
+                  >
+                  <span v-if="row.format.text" class="mono media-text">{{
+                    row.format.text
+                  }}</span>
                 </td>
                 <td class="mono mq-r" :title="absTitle(row.track.subscribedAt)">
                   {{ relTime(row.track.subscribedAt) }}
@@ -597,6 +740,25 @@ td.col-error {
 .media-text {
   margin-left: var(--space-1);
   color: var(--ink-muted);
+}
+.format-pick {
+  position: relative;
+  cursor: pointer;
+}
+.format-pick:has(select:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.format-chevron {
+  margin-left: 2px;
+}
+/* The native select sits over the badge, invisible, so the badge is the control */
+.format-pick select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .ns-group-row td {

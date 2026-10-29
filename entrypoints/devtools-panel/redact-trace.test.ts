@@ -748,7 +748,8 @@ describe('catalog redaction for sharing', () => {
       expect(catalogPayloads(out).size).toBe(0)
       expect(catalogHeaders(out)).toHaveLength(4)
     }
-  })
+    // Inflates 16 MiB twice
+  }, 30_000)
 
   it('a catalog-looking object that does not parse is dropped; one that names no catalog field is kept', async () => {
     const broken = enc.encode('{"tracks":[{"name":"v","token":"CUT-SHORT"')

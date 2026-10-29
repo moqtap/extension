@@ -112,6 +112,8 @@ export interface DatagramGroupState {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string when the payload is a raw elementary stream */
   codecString?: string
+  /** The first datagram carries an Object Properties block */
+  objectProperties?: boolean
   /** True when endOfGroup was received or session closed. */
   closed: boolean
 }

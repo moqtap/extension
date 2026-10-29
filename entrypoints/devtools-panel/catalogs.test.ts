@@ -8,7 +8,9 @@ import * as media from '@moqtap/media/catalog'
 import { encodeFetchStream, encodeSubgroupStream } from '@moqtap/codec/draft22'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  type CatalogView,
   locateCatalogStreams,
+  packagingConflicts,
   packagingIndex,
   registryTrackKey,
   SessionCatalogs,
@@ -415,27 +417,36 @@ describe('following a catalog track', () => {
 })
 
 describe('what a catalog cannot say', () => {
-  it('shows a compressed object as compressed, not as an error', () => {
+  it('refuses gzip bytes as a payload that is not JSON', () => {
     const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
     const gzip = new Uint8Array([0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 3])
     t.put(3, subgroup(5, 0, [gzip, ADD_AUDIO]))
     const reader = new SessionCatalogs()
     pump(reader, t)
     const [view] = reader.views()
-    expect(view.compressed).toBe(true)
-    expect(view.objects.map((o) => o.outcome)).toEqual([
-      'compressed',
-      'skipped',
+    expect(view.objects.map((o) => o.outcome)).toEqual(['refused', 'skipped'])
+    expect(view.objects[0]!.problems.map((p) => [p.severity, p.category])).toEqual([
+      ['error', 'invalid_json'],
     ])
-    expect(
-      view.objects
-        .flatMap((o) => o.problems)
-        .filter((p) => p.severity === 'error'),
-    ).toEqual([])
+    expect(view.tracks).toEqual([])
     expect(view.incomplete).toEqual([])
   })
 
-  it('flags a delta sent as the first object of a group, with the rule', () => {
+  it('shows both drafts of an open catalog without a problem for it', () => {
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    const open = text.encode(
+      JSON.stringify({ version: 1, tracks: [{ name: 'video', packaging: 'loc' }] }),
+    )
+    t.put(3, subgroup(5, 0, [open]))
+    const reader = new SessionCatalogs()
+    pump(reader, t)
+    const [view] = reader.views()
+    expect(view.state.candidates).toEqual(['msf-00', 'cmsf-00'])
+    expect(view.objects[0].outcome).toBe('applied')
+    expect(view.objects[0].problems.map((p) => p.category)).not.toContain('ambiguous_draft')
+  })
+
+  it('flags a delta sent as the first object of a group as an error, with the rule', () => {
     const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
     t.put(3, subgroup(5, 0, [ADD_AUDIO]))
     const reader = new SessionCatalogs()
@@ -445,6 +456,7 @@ describe('what a catalog cannot say', () => {
       (p) => p.category === 'object_order',
     )
     expect(problem?.section).toBe('MSF-01 5')
+    expect(problem?.severity).toBe('error')
     // The producer broke the rule; nothing was lost in recording.
     expect(view.incomplete).toEqual([])
   })
@@ -515,6 +527,37 @@ describe('the packaging join', () => {
       samplerate: 48000,
     })
     expect(index.get(registryTrackKey(other))).toBeUndefined()
+  })
+
+  it('keeps the description of every catalog and names where they differ', () => {
+    const view = (name: string, packaging: string, codec: string | null) =>
+      ({
+        key: trackKey('live', name),
+        namespace: 'live',
+        name,
+        state: { draft: null, candidates: [] },
+        tracks: [{ namespace: 'live', name: 'video', packaging, codec }],
+        publishTracks: [],
+      }) as unknown as CatalogView
+    const index = packagingIndex([
+      view('catalog-a', 'loc', 'avc1.64001f'),
+      view('catalog-b', 'cmaf', null),
+    ])
+    const entry = index.get(trackKey('live', 'video'))!
+    expect(entry.track.packaging).toBe('loc')
+    expect(entry.claims.map((c) => c.catalogName)).toEqual([
+      'live / catalog-a',
+      'live / catalog-b',
+    ])
+    expect(packagingConflicts(entry)).toEqual([
+      {
+        field: 'packaging',
+        values: [
+          { catalogName: 'live / catalog-a', value: 'loc' },
+          { catalogName: 'live / catalog-b', value: 'cmaf' },
+        ],
+      },
+    ])
   })
 
   it('honours a track namespace the catalog states itself', () => {

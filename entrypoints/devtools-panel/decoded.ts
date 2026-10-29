@@ -37,7 +37,7 @@ function isTaggedBytes(v: unknown): v is TaggedBytes {
   )
 }
 
-function hexToBytes(hex: string): Uint8Array {
+export function hexToBytes(hex: string): Uint8Array {
   const out = new Uint8Array(Math.floor(hex.length / 2))
   for (let i = 0; i < out.length; i += 1) {
     out[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)

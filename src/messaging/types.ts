@@ -288,6 +288,8 @@ export interface PanelStreamDataMsg {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string from the elementary stream (if h264/h265) */
   codecString?: string
+  /** An object in the first chunk carries an Object Properties block (first chunk only) */
+  objectProperties?: boolean
   /** Bidirectional stream (first chunk only; undefined if the page-side hook predates the flag) */
   bidi?: boolean
   /** True when this stream carries control-plane messages */
@@ -321,6 +323,8 @@ export interface PanelStreamInfoMsg {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string from the elementary stream (if h264/h265) */
   codecString?: string
+  /** An object in the first chunk carries an Object Properties block */
+  objectProperties?: boolean
   /** Bidirectional stream (undefined if the page-side hook predates the flag) */
   bidi?: boolean
   /** True when this stream carries control-plane messages */
@@ -414,6 +418,8 @@ export interface PanelDatagramDataMsg {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string (first datagram in group only, if h264/h265). */
   codecString?: string
+  /** The first datagram in the group carries an Object Properties block (first datagram only). */
+  objectProperties?: boolean
   /** True when endOfGroup flag was set. */
   endOfGroup?: boolean
   /** See PanelStreamDataMsg.capturedAt — same semantics. */
@@ -437,6 +443,8 @@ export interface PanelDatagramGroupInfoMsg {
   mediaInfo?: PayloadMediaInfo
   /** RFC 6381 codec string from the elementary stream (if h264/h265) */
   codecString?: string
+  /** The first datagram carries an Object Properties block */
+  objectProperties?: boolean
   firstDataAt?: number
   closed: boolean
 }

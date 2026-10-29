@@ -58,6 +58,11 @@ export function parseStreamFraming(
 
 // ─── Payload extraction helpers ────────────────────────────────────
 
+/** Whether an object the framing found carries a non-empty Object Properties block. */
+export function carriesObjectProperties(framing: ParsedStreamFraming): boolean {
+  return framing.objects.some((obj) => (obj.propertiesLength ?? 0) > 0)
+}
+
 /** Extract the first object's payload from a parsed stream. */
 export function extractFirstPayload(
   data: Uint8Array,

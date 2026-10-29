@@ -389,6 +389,7 @@ export function sessionFromTrace(
     stream.importedFraming = framed ? 'reconstructed' : 'unavailable'
     stream.byteCount = data.length
     Object.assign(stream, detectPayload(rec.payloads[0]))
+    if (carriesProperties(rec)) stream.objectProperties = true
     streamData.set(streamId, data)
   }
 
@@ -422,6 +423,8 @@ export function sessionFromTrace(
       datagramCount: datagrams.length,
       contentType: detected.contentType,
       mediaInfo: detected.mediaInfo,
+      codecString: detected.codecString,
+      ...(carriesProperties(rec) ? { objectProperties: true } : {}),
       importedFraming: framed ? 'reconstructed' : 'unavailable',
     }
     session.datagramGroups.set(gk, entry)
@@ -432,6 +435,11 @@ export function sessionFromTrace(
 }
 
 // ─── Content detection ────────────────────────────────────────────
+
+/** Whether an object the trace recorded carries a non-empty property block. */
+function carriesProperties(rec: RecordedStream): boolean {
+  return rec.objects.some((o) => (o.properties?.length ?? 0) > 0)
+}
 
 /** What the first payload looks like; imported payloads are raw object data. */
 function detectPayload(first: Uint8Array | undefined): {

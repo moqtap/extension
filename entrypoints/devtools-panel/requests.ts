@@ -30,6 +30,8 @@ export interface SessionProblem {
   detail: string | null
   severity: 'error' | 'warning'
   atMs: number | null
+  /** The message it is about: the error, the request left waiting, the bytes that did not decode */
+  message: MessageEntry
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -176,6 +178,7 @@ export function sessionProblems(
     detail: problemDetail(problem, wording),
     severity: problemSeverity(problem.kind),
     atMs: problem.atMs,
+    message: problem.event.entry,
   }))
 }
 

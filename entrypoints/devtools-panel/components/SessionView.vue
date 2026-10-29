@@ -1,11 +1,9 @@
 <script lang="ts" setup>
-import type { StreamContentType } from '@/src/detect/content-detect'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   formatBytes,
   formatClock,
   formatCount,
-  formatOffset,
   isoTitle,
   shortId,
 } from '../format'
@@ -17,10 +15,25 @@ import {
   sessionDraft,
   sessionProblems,
 } from '../requests'
-import { useSessionCatalogs } from '../catalogs'
-import type { SessionEntry } from '../use-inspector'
+import { registryTrackKey, useSessionCatalogs } from '../catalogs'
+import { useSessionCmaf } from '../cmaf'
+import { datagramSource, streamSource, trackForSource, useSessionLoc } from '../loc'
+import { templateOf, templateProblems } from '../timelines'
+import {
+  catalogConflictProblems,
+  catalogProblems,
+  consolidateProblems,
+  type PanelProblem,
+  type ProblemTarget,
+  protocolProblems,
+} from '../problems'
+import { sessionPins } from '../packaging'
+import type { StreamObject } from '../stream-framing'
+import { formatOfStream, type StreamFormat } from '../stream-format'
+import type { MessageEntry, SessionEntry, StreamEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
 import CopyButton from './CopyButton.vue'
+import ProblemList from './ProblemList.vue'
 import StreamDataViewer from './StreamDataViewer.vue'
 import StreamList from './StreamList.vue'
 import TrackList from './TrackList.vue'
@@ -94,7 +107,6 @@ function onTabKey(e: KeyboardEvent, index: number) {
 
 const selectedStreamId = ref<number | null>(null)
 const selectedStreamData = ref<Uint8Array | null>(null)
-const selectedContentType = ref<StreamContentType>('binary')
 const loadingStream = ref(false)
 const trackFilter = ref<string | null>(null)
 /** byteCount at the time we last loaded stream data — used to detect new arrivals */
@@ -124,6 +136,7 @@ const streamList = computed(() => {
       byteCount: dg.byteCount,
       contentType: dg.contentType,
       mediaInfo: dg.mediaInfo,
+      codecString: dg.codecString,
       firstDataAt: dg.firstDataAt,
       lastDataAt: dg.lastDataAt,
       chunkCount: dg.datagramCount,
@@ -166,6 +179,80 @@ const selectedCatalog = computed(() =>
     ? null
     : catalogs.catalogForStream(selectedStreamId.value),
 )
+/** The session's LOC tracks: the catalog's, and any the user pins. */
+const loc = useSessionLoc(
+  () => props.session,
+  () => catalogs.packaging.value,
+  props.getStreamData,
+  props.getDatagramGroupData,
+)
+const selectedLoc = computed(() => {
+  const id = selectedStreamId.value
+  if (id == null) return null
+  const groupKey = dgIdToGroupKey.get(id)
+  const source = groupKey ? datagramSource(groupKey) : streamSource(id)
+  const state = loc.sourceState(source)
+  if (!state) return null
+  return {
+    state,
+    objectView: (obj: StreamObject, groupId: number, data: Uint8Array) =>
+      loc.objectView(source, obj, groupId, data, state),
+  }
+})
+/** The session's CMAF and timeline tracks, as the catalogs say. */
+const cmaf = useSessionCmaf(
+  () => props.session,
+  () => catalogs.packaging.value,
+  props.getStreamData,
+  props.getDatagramGroupData,
+)
+const selectedSource = computed(() => {
+  const id = selectedStreamId.value
+  if (id == null) return null
+  const groupKey = dgIdToGroupKey.get(id)
+  return groupKey ? datagramSource(groupKey) : streamSource(id)
+})
+const selectedCmaf = computed(() => {
+  const source = selectedSource.value
+  const state = source ? cmaf.sourceState(source) : null
+  if (!source || !state) return null
+  return {
+    state,
+    objectView: (obj: StreamObject, data: Uint8Array) =>
+      cmaf.objectView(source, obj, data, state),
+  }
+})
+const selectedTimeline = computed(() => {
+  const source = selectedSource.value
+  const state = source ? cmaf.sourceTimeline(source) : null
+  if (!source || !state) return null
+  return {
+    state,
+    objectView: (obj: StreamObject, data: Uint8Array) =>
+      cmaf.timelineView(source, obj, data, state),
+  }
+})
+/** The media timeline template the catalogs give the selected stream's track. */
+const selectedTemplate = computed(() => {
+  const source = selectedSource.value
+  const track = source ? trackForSource(props.session, source) : null
+  if (!track) return null
+  return templateOf(catalogs.packaging.value.get(registryTrackKey(track)))?.template ?? null
+})
+
+const pins = computed(() => sessionPins(props.session))
+
+/** What a stream is read as: its track's packaging, or what its bytes prove. */
+function formatOf(stream: StreamEntry): StreamFormat {
+  void pins.value.revision.value
+  return formatOfStream(props.session, stream, catalogs.packaging.value, pins.value)
+}
+
+const selectedFormat = computed(
+  (): StreamFormat =>
+    selectedStream.value ? formatOf(selectedStream.value) : { from: 'bytes', contentType: 'binary' },
+)
+
 const events = computed(() => messageEvents(props.session.messages))
 const times = computed(() => requestTimes(events.value, draft.value))
 const errorLabels = computed(() => errorCodeLabels(events.value, draft.value))
@@ -191,23 +278,64 @@ const nowTimer = setInterval(() => {
 }, 1_000)
 onBeforeUnmount(() => clearInterval(nowTimer))
 
-const shownProblems = computed(() =>
-  sessionProblems(events.value, {
-    draft: draft.value,
-    tracks: props.session.tracks.values(),
-    endMs:
-      props.session.closed || props.session.imported ? undefined : now.value,
-  }),
+/** When a stream's first bytes came. */
+function streamTime(streamId: number): number | null {
+  return props.session.streams.get(streamId)?.firstDataAt ?? null
+}
+
+/** Every source's problems as one list; read only while the Details tab shows it. */
+const shownProblems = computed((): PanelProblem[] =>
+  consolidateProblems([
+    protocolProblems(
+      sessionProblems(events.value, {
+        draft: draft.value,
+        tracks: props.session.tracks.values(),
+        endMs:
+          props.session.closed || props.session.imported ? undefined : now.value,
+      }),
+    ),
+    catalogConflictProblems(props.session.tracks.values(), catalogs.packaging.value),
+    catalogProblems(catalogs.catalogs.value, streamTime),
+    templateProblems(props.session.tracks.values(), catalogs.packaging.value),
+    loc.problems.value,
+    cmaf.problems.value,
+  ]),
 )
+
+/** What a problem's link asked to open, for the view it opens in. */
+const streamFocus = ref<
+  | { kind: 'object'; offset: number; seq: number }
+  | { kind: 'catalog-object'; groupId: number; objectId: number; seq: number }
+  | null
+>(null)
+const messageFocus = ref<{ message: MessageEntry; seq: number } | null>(null)
+let focusSeq = 0
+
+async function openTarget(target: ProblemTarget) {
+  focusSeq++
+  if (target.kind === 'message') {
+    trackFilter.value = null
+    activeTab.value = 'messages'
+    messageFocus.value = { message: target.message, seq: focusSeq }
+    return
+  }
+  activeTab.value = 'streams'
+  if (target.kind === 'catalog-object') {
+    streamFocus.value = { ...target, seq: focusSeq }
+    await showStreamData(target.streamId)
+    return
+  }
+  const id = target.source.startsWith('d:')
+    ? getOrCreateDgId(target.source.slice(2))
+    : Number(target.source.slice(2))
+  streamFocus.value = { kind: 'object', offset: target.offset, seq: focusSeq }
+  await showStreamData(id)
+}
 
 function protocolLabel(session: SessionEntry): string {
   switch (session.protocol) {
     case 'moqt':
-      // A draft nothing named is a fallback, and saying so is the difference
-      // between a reading and a guess that looks like one.
-      return session.draftAssumed
-        ? `MoQT draft-${session.draft} (assumed)`
-        : `MoQT draft-${session.draft}`
+      return `MoQT draft-${session.draft}`
     case 'moqt-unknown-draft':
       return session.draftFromProtocol
         ? `MoQT ${session.draftFromProtocol} (draft not supported)`
@@ -224,10 +352,7 @@ function draftSourceLabel(session: SessionEntry): string | null {
   const isMoqt =
     session.protocol === 'moqt' || session.protocol === 'moqt-unknown-draft'
   if (!isMoqt) return null
-  if (session.draftAssumed) {
-    const why = session.draftAssumedReason ?? 'nothing named the draft'
-    return `assumed — ${why}`
-  }
+  if (session.draftAssumed) return null
   if (session.draftFromProtocol) {
     return `negotiated protocol "${session.draftFromProtocol}"`
   }
@@ -246,6 +371,12 @@ const totalBytes = computed(
     ),
 )
 
+/** A stream picked from the list opens with nothing in focus. */
+function inspectStream(streamId: number) {
+  streamFocus.value = null
+  void showStreamData(streamId)
+}
+
 async function showStreamData(streamId: number) {
   selectedStreamId.value = streamId
 
@@ -255,7 +386,6 @@ async function showStreamData(streamId: number) {
     ? streamList.value.find((s) => s.streamId === streamId)
     : props.session.streams.get(streamId)
 
-  selectedContentType.value = stream?.contentType ?? 'binary'
   loadingStream.value = true
   try {
     if (dgGroupKey) {
@@ -283,6 +413,7 @@ async function refreshStreamData() {
 }
 
 function closeStreamData() {
+  streamFocus.value = null
   selectedStreamId.value = null
   selectedStreamData.value = null
   loadedByteCount.value = 0
@@ -384,6 +515,7 @@ const collectorDetail = computed((): string | null => {
         :draft="draft"
         :response-times="times.byResponse"
         :error-labels="errorLabels"
+        :focus="messageFocus"
       />
       <div
         v-else-if="activeTab === 'streams'"
@@ -395,9 +527,10 @@ const collectorDetail = computed((): string | null => {
           :selected-id="selectedStreamId"
           :tracks="session.tracks"
           :messages="session.messages"
+          :format-of="formatOf"
           :compact="selectedStreamId != null"
           :recording="session.streamRecording !== false"
-          @inspect="showStreamData"
+          @inspect="inspectStream"
           @toggle-recording="
             props.setStreamRecording(session.sessionId, $event)
           "
@@ -472,15 +605,18 @@ const collectorDetail = computed((): string | null => {
           <StreamDataViewer
             v-else-if="selectedStreamData"
             :data="selectedStreamData"
-            :content-type="selectedContentType"
-            :codec-string="selectedStream?.codecString"
-            :media-info="selectedStream?.mediaInfo"
+            :format="selectedFormat"
             :is-moqt="session.protocol === 'moqt'"
             :draft="session.draft"
             :tracks="session.tracks"
             :is-datagram-group="!!selectedStream?.datagramGroupKey"
             :imported-framing="selectedStream?.importedFraming"
             :catalog="selectedCatalog"
+            :loc="selectedLoc"
+            :cmaf="selectedCmaf"
+            :timeline="selectedTimeline"
+            :template="selectedTemplate"
+            :focus="streamFocus"
             class="detail-viewer"
           />
           <p v-else class="pane-message">No data recorded for this stream.</p>
@@ -492,6 +628,8 @@ const collectorDetail = computed((): string | null => {
         :times="times"
         :catalogs="catalogs.catalogs.value"
         :packaging="catalogs.packaging.value"
+        :loc="loc"
+        :cmaf="cmaf"
       />
       <div v-else-if="activeTab === 'details'" class="details-panel">
         <dl class="mq-kv details-list">
@@ -561,38 +699,11 @@ const collectorDetail = computed((): string | null => {
           <template v-if="shownProblems.length > 0">
             <dt>Problems</dt>
             <dd>
-              <ul class="problem-list">
-                <li
-                  v-for="(p, i) in shownProblems"
-                  :key="i"
-                  class="problem"
-                  :class="`problem--${p.severity}`"
-                >
-                  <span class="problem__glyph"
-                    ><span aria-hidden="true">{{
-                      p.severity === 'error' ? '✕' : '▲'
-                    }}</span
-                    ><span class="mq-sr">{{
-                      p.severity === 'error' ? 'Error' : 'Warning'
-                    }}</span></span
-                  >
-                  <span
-                    class="problem__time"
-                    :title="p.atMs !== null ? isoTitle(p.atMs) : undefined"
-                    >{{
-                      p.atMs !== null
-                        ? formatOffset(p.atMs, session.createdAt)
-                        : ''
-                    }}</span
-                  >
-                  <span class="problem__text">
-                    <span class="problem__title">{{ p.title }}</span>
-                    <span v-if="p.detail" class="problem__detail">{{
-                      p.detail
-                    }}</span>
-                  </span>
-                </li>
-              </ul>
+              <ProblemList
+                :problems="shownProblems"
+                :started-at="session.createdAt"
+                @open="openTarget"
+              />
             </dd>
           </template>
           <template v-if="session.frameId">
@@ -756,47 +867,6 @@ const collectorDetail = computed((): string | null => {
 
 .details-list {
   max-width: 900px;
-}
-
-/* One line per problem: glyph, time from session start, title, detail. */
-.problem-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.problem {
-  display: grid;
-  grid-template-columns: 1em auto 1fr;
-  gap: var(--space-2);
-  align-items: baseline;
-}
-.problem__glyph {
-  text-align: center;
-}
-.problem--error .problem__glyph {
-  color: var(--danger);
-}
-.problem--warning .problem__glyph {
-  color: var(--warning);
-}
-.problem__time {
-  font-family: var(--font-mono);
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
-}
-.problem__text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.problem__title {
-  font-family: var(--font-mono);
-}
-.problem__detail {
-  display: block;
-  color: var(--ink-muted);
 }
 
 /* A value with its copy control beside it, the control on the first line. */

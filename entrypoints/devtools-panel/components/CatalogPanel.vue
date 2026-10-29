@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   type CatalogTrack,
   type CatalogView,
@@ -16,7 +16,26 @@ import JsonTree from './JsonTree.vue'
  */
 const props = defineProps<{
   catalog: CatalogView
+  /** An object to scroll to and mark */
+  focus?: { groupId: number; objectId: number; seq: number } | null
 }>()
+
+const root = ref<HTMLElement | null>(null)
+const focused = computed(() =>
+  props.focus ? `${props.focus.groupId}:${props.focus.objectId}` : null,
+)
+
+watch(
+  () => props.focus,
+  async (focus) => {
+    if (!focus) return
+    await nextTick()
+    root.value
+      ?.querySelector(`[data-object="${focus.groupId}:${focus.objectId}"]`)
+      ?.scrollIntoView({ block: 'nearest' })
+  },
+  { immediate: true },
+)
 
 const DRAFT_LABELS: Record<string, string> = {
   'msf-00': 'MSF-00',
@@ -31,17 +50,9 @@ const draftLabel = computed(() => {
   return drafts.length ? drafts.map((d) => DRAFT_LABELS[d] ?? d).join(' or ') : null
 })
 
-const problemCounts = computed(() => {
-  let errors = 0
-  let warnings = 0
-  for (const obj of props.catalog.objects) {
-    for (const p of obj.problems) {
-      if (p.severity === 'error') errors++
-      else warnings++
-    }
-  }
-  return { errors, warnings }
-})
+const errorCount = computed(() =>
+  props.catalog.objects.reduce((n, obj) => n + obj.problems.length, 0),
+)
 
 /** `tracks` always, and MSF-01 `publishTracks` when the catalog has any. */
 const trackLists = computed(() => {
@@ -62,14 +73,12 @@ const notableObjects = computed(() =>
 const OUTCOME_LABELS: Record<string, string> = {
   applied: 'applied',
   refused: 'refused',
-  compressed: 'compressed',
   skipped: 'not applied',
 }
 
 const OUTCOME_CLASSES: Record<string, string> = {
   applied: 'mq-badge--ok',
   refused: 'mq-badge--error',
-  compressed: 'mq-badge--note',
   skipped: 'mq-badge--check',
 }
 
@@ -109,7 +118,7 @@ function trackTitle(track: CatalogTrack): string {
 </script>
 
 <template>
-  <div class="catalog-panel">
+  <div ref="root" class="catalog-panel">
     <div class="catalog-summary">
       <span class="mq-badge mq-badge--mono" :title="catalog.namespace">{{
         catalog.namespace
@@ -125,9 +134,6 @@ function trackTitle(track: CatalogTrack): string {
         title="The catalog said isComplete: no track will be added"
         >complete</span
       >
-      <span v-if="catalog.compressed" class="mq-badge mq-badge--note"
-        >compressed</span
-      >
       <span
         v-if="catalog.incomplete.length > 0"
         class="mq-badge mq-badge--check"
@@ -137,14 +143,9 @@ function trackTitle(track: CatalogTrack): string {
       <span class="mq-badge mq-badge--mono">{{
         plural(catalog.objects.length, 'object')
       }}</span>
-      <span v-if="problemCounts.errors > 0" class="mq-badge mq-badge--error">{{
-        plural(problemCounts.errors, 'error')
+      <span v-if="errorCount > 0" class="mq-badge mq-badge--error">{{
+        plural(errorCount, 'error')
       }}</span>
-      <span
-        v-if="problemCounts.warnings > 0"
-        class="mq-badge mq-badge--check"
-        >{{ plural(problemCounts.warnings, 'warning') }}</span
-      >
     </div>
 
     <div
@@ -156,20 +157,6 @@ function trackTitle(track: CatalogTrack): string {
       <div>
         <p class="mq-notice__title">Not every catalog object was recorded</p>
         <p v-for="(reason, i) in catalog.incomplete" :key="i">{{ reason }}</p>
-      </div>
-    </div>
-    <div
-      v-if="catalog.compressed"
-      class="mq-notice mq-notice--info catalog-notice"
-      role="status"
-    >
-      <span class="mq-notice__icon" aria-hidden="true">i</span>
-      <div>
-        <p class="mq-notice__title">The newest catalog is compressed</p>
-        <p>
-          It is gzip (MSF-01 12.1) and is not decompressed here, so what the
-          catalog says now is not known.
-        </p>
       </div>
     </div>
 
@@ -235,6 +222,8 @@ function trackTitle(track: CatalogTrack): string {
         <li
           v-for="obj in notableObjects"
           :key="`${obj.groupId}:${obj.objectId}`"
+          :data-object="`${obj.groupId}:${obj.objectId}`"
+          :class="{ 'catalog-focused': focused === `${obj.groupId}:${obj.objectId}` }"
         >
           <div class="catalog-object">
             <span class="mono">g{{ obj.groupId }} · o{{ obj.objectId }}</span>
@@ -253,12 +242,8 @@ function trackTitle(track: CatalogTrack): string {
               :class="`problem--${p.severity}`"
             >
               <span class="problem__glyph"
-                ><span aria-hidden="true">{{
-                  p.severity === 'error' ? '✕' : '▲'
-                }}</span
-                ><span class="mq-sr">{{
-                  p.severity === 'error' ? 'Error' : 'Warning'
-                }}</span></span
+                ><span aria-hidden="true">✕</span
+                ><span class="mq-sr">Error</span></span
               >
               <span class="problem__text">
                 <span class="problem__title">{{ p.message }}</span>
@@ -349,6 +334,9 @@ summary.catalog-heading {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
+}
+.catalog-focused {
+  background: var(--surface-selected);
 }
 
 /* One line per problem, as the Details tab lists a session's. */
