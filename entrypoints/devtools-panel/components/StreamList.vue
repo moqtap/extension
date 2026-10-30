@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { computed } from 'vue'
 import { formatBytes, messageTypeName, plural } from '../format'
+import { streamBytes } from '../sizes'
 import type { GridColumn } from '../grid'
 import { byteLabel, byteTitle, type StreamFormat } from '../stream-format'
 import type { MessageEntry, StreamEntry, TrackEntry } from '../use-inspector'
@@ -110,7 +111,7 @@ const isFiltered = computed(
 function sumBytes(list: StreamEntry[], dir?: 'tx' | 'rx'): number {
   let total = 0
   for (const s of list) {
-    if (!dir || s.direction === dir) total += s.byteCount
+    if (!dir || s.direction === dir) total += streamBytes(s) ?? 0
   }
   return total
 }
@@ -145,7 +146,7 @@ const columns: GridColumn<StreamEntry>[] = [
     align: 'end',
     mono: true,
     showFrom: 360,
-    sort: (s) => s.byteCount,
+    sort: (s) => streamBytes(s) ?? -1,
   },
 ]
 
@@ -217,7 +218,9 @@ function transferParts(
           <span v-else class="muted">#{{ stream.streamId }}</span>
         </span>
         <span v-else-if="column.id === 'status'" class="muted">{{ statusText(stream) }}</span>
-        <template v-else-if="column.id === 'size'">{{ formatBytes(stream.byteCount) }}</template>
+        <template v-else-if="column.id === 'size' && streamBytes(stream) !== null">{{
+          formatBytes(streamBytes(stream)!)
+        }}</template>
       </template>
     </DataGrid>
 

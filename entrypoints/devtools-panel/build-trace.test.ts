@@ -220,6 +220,21 @@ describe('the exported trace carries what the stream header and object said', ()
     expect(opened).not.toHaveProperty('fetchRequestId')
   })
 
+  it('takes the alias from the stored bytes over the one the capture read', async () => {
+    const bytes = new Uint8Array([
+      0x14, 0x07, 0x03, 0x02, 0x80, 0x00, 0x02, 0xde, 0xad,
+    ])
+    const trace = await buildTrace(
+      session({
+        draft: '22',
+        streams: [stream(1, bytes, { trackAlias: 1042940161 })],
+      }),
+      async () => bytes,
+    )
+    const opened = trace.events.find((e) => e.type === 'stream-opened')
+    expect(opened).toMatchObject({ trackAlias: 7n })
+  })
+
   it('names the request of a fetch stream, and no alias', async () => {
     // draft-22 FETCH_HEADER: type 0x05, request id 9, then one object with
     // flags 0x1c (group, object, priority), group 4, object 0, priority 10,
@@ -344,5 +359,62 @@ describe('a stream that ends inside an object', () => {
         'SECRETKEY',
       )
     }
+  })
+})
+
+describe('a control message that did not decode', () => {
+  const bytes = new Uint8Array([0x03, 0x00, 0x02, 0x24, 0x01])
+  const marker = {
+    messageType: 'decode_error',
+    direction: 'tx',
+    timestamp: 1484,
+    streamId: 21,
+    decoded: {
+      code: 'INVALID_PARAMETER',
+      reason: 'Unknown Message Parameter type 0x24',
+      length: bytes.length,
+    },
+    raw: bytes,
+  }
+
+  it('is an error event with its stream and bytes', async () => {
+    const trace = await buildTrace(session({ messages: [marker] }), noData)
+    const error = trace.events.find((e) => e.type === 'error')
+    expect(error).toMatchObject({
+      errorCode: 0,
+      errorKind: 'decode',
+      reason: 'INVALID_PARAMETER: Unknown Message Parameter type 0x24',
+      streamId: 21n,
+      rawLength: 5,
+    })
+    expect(Array.from((error as { raw: Uint8Array }).raw)).toEqual(
+      Array.from(bytes),
+    )
+  })
+
+  it('keeps at most 4 KB of the bytes', async () => {
+    const big = new Uint8Array(10000).fill(7)
+    const trace = await buildTrace(
+      session({ messages: [{ ...marker, raw: big, decoded: { length: 10000 } }] }),
+      noData,
+    )
+    const error = trace.events.find((e) => e.type === 'error') as {
+      raw: Uint8Array
+      rawLength: number
+    }
+    expect(error.raw.length).toBe(4096)
+    expect(error.rawLength).toBe(10000)
+  })
+
+  it('drops its bytes from a share without credentials', async () => {
+    const trace = await buildTrace(session({ messages: [marker] }), noData)
+    const shared = await redactTrace(
+      trace,
+      { payloads: false, auth: false },
+      '14',
+    )
+    const error = shared.events.find((e) => e.type === 'error')
+    expect(error).toMatchObject({ streamId: 21n })
+    expect(error).not.toHaveProperty('raw')
   })
 })

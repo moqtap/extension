@@ -34,6 +34,7 @@ import {
 import type { SessionTab } from '../session-tabs'
 import { sessionPins } from '../packaging'
 import type { StreamObject } from '../stream-framing'
+import { sessionBytes } from '../sizes'
 import { formatOfStream, type StreamFormat } from '../stream-format'
 import type { MessageEntry, SessionEntry, StreamEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
@@ -343,17 +344,7 @@ function versionAgreedIn(session: SessionEntry): string | null {
   return session.draftFromProtocol ? 'WebTransport handshake' : 'SETUP messages'
 }
 
-const totalBytes = computed(
-  () =>
-    Array.from(props.session.streams.values()).reduce(
-      (s, st) => s + st.byteCount,
-      0,
-    ) +
-    Array.from(props.session.datagramGroups.values()).reduce(
-      (s, dg) => s + dg.byteCount,
-      0,
-    ),
-)
+const totalBytes = computed(() => sessionBytes(props.session))
 
 /** A track's row opens the streams that carry it: Streams, filtered by its name. */
 function openTrackStreams(trackName: string) {
@@ -630,8 +621,10 @@ const collectorDetail = computed((): string | null => {
           <dd class="mq-num">{{ formatCount(session.streams.size) }}</dd>
           <dt>Messages</dt>
           <dd class="mq-num">{{ formatCount(session.messages.length) }}</dd>
-          <dt>Total data</dt>
-          <dd class="mq-mono mq-num">{{ formatBytes(totalBytes) }}</dd>
+          <template v-if="totalBytes !== null">
+            <dt>Total data</dt>
+            <dd class="mq-mono mq-num">{{ formatBytes(totalBytes) }}</dd>
+          </template>
         </dl>
       </div>
     </div>

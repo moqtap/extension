@@ -78,6 +78,10 @@ export interface SessionEntry {
   datagramGroups: Map<string, DatagramGroupEntry>
   /** True when session was loaded from an imported .moqtrace file */
   imported?: boolean
+  /** Bytes an imported trace records sizes for that no stream or datagram group holds */
+  recordedBytes?: number
+  /** An imported trace records objects but neither their bytes nor their sizes */
+  sizeUnknown?: true
   /** Whether stream data recording is active (default true) */
   streamRecording?: boolean
   /**
@@ -150,6 +154,10 @@ export interface StreamEntry {
   direction: 'tx' | 'rx'
   closed: boolean
   byteCount: number
+  /** Payload bytes an imported trace records sizes for, when it holds none of them */
+  recordedBytes?: number
+  /** An imported trace records this stream's objects but neither their bytes nor their sizes */
+  sizeUnknown?: true
   /** Detected content type from first chunk */
   contentType: StreamContentType
   /** ISO BMFF media info (variant + box types) from first object payload */
@@ -236,7 +244,8 @@ export interface DatagramGroupEntry {
 
 export interface MessageEntry {
   timestamp: number
-  direction: 'tx' | 'rx'
+  /** Absent on a decode error read from a trace, which records none. */
+  direction?: 'tx' | 'rx'
   messageType: string
   /**
    * Stream the message arrived on. From draft-17 a request and its responses
@@ -973,7 +982,10 @@ export function useInspector() {
   }
 
   async function loadTraceAsSession(trace: Trace, filename: string) {
-    const sessionId = `imported-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    // Numbered in import order, #1 first, as the page numbers its connections.
+    let n = 1
+    for (const s of sessions.value.values()) if (s.imported) n++
+    const sessionId = `imported-${Date.now()}-${n}`
     const { session, streamData, datagramData } = sessionFromTrace(trace, {
       sessionId,
       filename,

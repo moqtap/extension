@@ -374,6 +374,12 @@ export async function redactTrace(
         !control.has(BigInt((e as { streamId: bigint }).streamId)),
     )
     events = events.map((e) => {
+      if (e.type === 'error') {
+        // A message that did not decode may still hold a token.
+        const { raw, ...rest } = e as TraceEvent & { raw?: Uint8Array }
+        const kept = redactRaw(raw, known)
+        return (kept ? { ...rest, raw: kept } : rest) as TraceEvent
+      }
       if (e.type !== 'control') return e
       const c = e as TraceEvent & { message: unknown; raw?: Uint8Array }
       const seen = { query: false }

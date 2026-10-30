@@ -56,3 +56,19 @@ export function decodeErrorReason(decoded: unknown): string {
   if (codeText && reasonText) return `${codeText}: ${reasonText}`
   return codeText ?? reasonText ?? fallback
 }
+
+/**
+ * Most bytes of an undecodable message a capture keeps. The trace format
+ * gates an error's `raw` at `full`; these are control bytes, carried at the
+ * level control messages carry theirs, and capped as the format caps it.
+ */
+export const MAX_DECODE_ERROR_RAW = 4096
+
+/** The undecodable message's full length, when the marker recorded it. */
+export function decodeErrorLength(decoded: unknown): number | null {
+  if (decoded == null || typeof decoded !== 'object') return null
+  const { length } = decoded as { length?: unknown }
+  return typeof length === 'number' && Number.isInteger(length) && length >= 0
+    ? length
+    : null
+}

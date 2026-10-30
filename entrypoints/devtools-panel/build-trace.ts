@@ -25,7 +25,9 @@ import { arrivalAt } from '@/src/trace/arrivals'
 import { fitDetail } from '@/src/trace/detail'
 import {
   DECODE_ERROR_CODE,
+  decodeErrorLength,
   decodeErrorReason,
+  MAX_DECODE_ERROR_RAW,
   isDecodeError,
 } from '@/src/trace/decode-error'
 import type { SessionEntry } from './use-inspector'
@@ -108,18 +110,21 @@ export async function buildTrace(
 
   // Control messages
   for (const msg of session.messages) {
-    // An undecodable run is the absence of a control message, not one of type
-    // zero. The format keeps a protocol violation in its error event, so that
-    // is where this goes. The offending bytes stay behind: Event 6 has no
-    // field to carry them, and Event 0's `raw` is not available to an event
-    // that is not a message.
+    // Not a message: the format keeps it as an error event, with its bytes.
     if (isDecodeError(msg.messageType)) {
+      const length = decodeErrorLength(msg.decoded)
       push(msg.timestamp, {
         type: 'error',
         seq: 0,
         timestamp: 0,
         errorCode: DECODE_ERROR_CODE,
         reason: decodeErrorReason(msg.decoded),
+        errorKind: 'decode',
+        ...(msg.streamId != null ? { streamId: BigInt(msg.streamId) } : {}),
+        ...(length !== null ? { rawLength: length } : {}),
+        ...(msg.raw.length > 0
+          ? { raw: toBytes(msg.raw).slice(0, MAX_DECODE_ERROR_RAW) }
+          : {}),
       })
       continue
     }

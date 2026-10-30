@@ -125,7 +125,7 @@ function pick(row: Row) {
             <span v-if="column.id === 'time'" :title="isoTitle(row.msg.timestamp)">{{
               formatOffset(row.msg.timestamp, startedAt)
             }}</span>
-            <DirMark v-else-if="column.id === 'dir'" :dir="row.msg.direction" />
+            <DirMark v-else-if="column.id === 'dir' && row.msg.direction" :dir="row.msg.direction" />
             <template v-else-if="column.id === 'message'"
               >{{ messageTypeName(row.msg.messageType)
               }}<span v-if="errorLabels.has(row.msg)" class="row-note">{{ errorLabels.get(row.msg) }}</span

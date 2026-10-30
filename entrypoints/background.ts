@@ -19,7 +19,10 @@ import {
   getCodec,
 } from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
-import { DECODE_ERROR_MESSAGE_TYPE } from '@/src/trace/decode-error'
+import {
+  DECODE_ERROR_MESSAGE_TYPE,
+  MAX_DECODE_ERROR_RAW,
+} from '@/src/trace/decode-error'
 import { TrackRegistry, type TrackFields } from '@moqtap/inspect'
 import { detectAnnexB } from '@moqtap/media/annexb'
 import type { PayloadMediaInfo } from '@moqtap/media/bmff'
@@ -547,8 +550,6 @@ function attemptDetection(
   return []
 }
 
-/** How much of an undecodable message to keep for display. */
-const MAX_UNDECODABLE_RAW = 4096
 
 /**
  * Record a control message that will not decode, beside the ones that did.
@@ -566,9 +567,9 @@ function reportUndecodable(
     streamId,
     direction,
     timestamp: Date.now(),
-    decoded: JSON.stringify({ code, reason }),
+    decoded: JSON.stringify({ code, reason, length: bytes.length }),
     messageType: DECODE_ERROR_MESSAGE_TYPE,
-    raw: bytesToBase64(bytes.subarray(0, MAX_UNDECODABLE_RAW)),
+    raw: bytesToBase64(bytes.subarray(0, MAX_DECODE_ERROR_RAW)),
   }
   session.controlMessages.push(record)
   return record

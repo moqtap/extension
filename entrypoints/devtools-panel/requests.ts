@@ -103,7 +103,7 @@ export interface RequestTimes {
 }
 
 /** A request as its sender and id name it: `tx|4`. */
-export function requestKey(direction: 'tx' | 'rx', id: string): string {
+export function requestKey(direction: 'tx' | 'rx' | undefined, id: string): string {
   return `${direction}|${id}`
 }
 

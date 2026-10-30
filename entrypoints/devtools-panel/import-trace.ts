@@ -23,12 +23,17 @@ import type {
   StreamClosedEvent,
   StreamOpenedEvent,
   Trace,
+  TraceErrorEvent,
 } from '@moqtap/trace'
 import { controlMessageFields } from '@moqtap/trace'
 import {
   detectContentType,
   type StreamContentType,
 } from '@/src/detect/content-detect'
+import {
+  DECODE_ERROR_CODE,
+  DECODE_ERROR_MESSAGE_TYPE,
+} from '@/src/trace/decode-error'
 import { controlMessageName, draftFromProtocol } from '@/src/trace/message-name'
 import { isSupportedDraft, type SupportedDraft } from '@/src/types/common'
 import {
@@ -40,6 +45,7 @@ import {
 import type {
   DatagramGroupEntry,
   SessionEntry,
+  StreamEntry,
   TrackEntry,
 } from './use-inspector'
 
@@ -101,6 +107,8 @@ interface RecordedStream {
   objects: RecordedObject[]
   /** Every payload that held bytes, in order: the fallback's whole content */
   payloads: Uint8Array[]
+  /** The payload sizes recorded, once a payload event names one */
+  sizes?: number
   /** False once an object turns up that the encoder cannot be given */
   framable: boolean
   /** Headers with no payload yet, by `group:object` */
@@ -117,6 +125,21 @@ interface RecordedDataStream extends RecordedStream {
 interface RecordedDatagramGroup extends RecordedStream {
   trackAlias?: bigint
   groupId: bigint
+  firstDataAt?: number
+  lastDataAt?: number
+  /** objectId to the time its header was recorded */
+  arrivals: Map<number, number>
+}
+
+/** Widen what is known of when something carried data to include `time`. */
+function dataAt(
+  entry: { firstDataAt?: number; lastDataAt?: number },
+  time: number,
+): void {
+  if (entry.firstDataAt === undefined || time < entry.firstDataAt)
+    entry.firstDataAt = time
+  if (entry.lastDataAt === undefined || time > entry.lastDataAt)
+    entry.lastDataAt = time
 }
 
 /**
@@ -150,6 +173,10 @@ export function sessionFromTrace(
     imported: true,
   }
 
+  // Event timestamps are microseconds from the header's start; the panel's
+  // times are epoch milliseconds.
+  const at = (timestamp: number) => header.startTime + timestamp / 1000
+
   const recorded = new Map<number, RecordedDataStream>()
   const datagramGroups = new Map<string, RecordedDatagramGroup>()
   // Every datagram stream shares stream id 0, and an object event names only
@@ -181,6 +208,7 @@ export function sessionFromTrace(
         payloads: [],
         framable: trackAlias !== undefined && !ambiguousGroups.has(groupId),
         unpaired: new Map(),
+        arrivals: new Map(),
         groupId,
         ...(trackAlias !== undefined ? { trackAlias } : {}),
       }
@@ -241,7 +269,7 @@ export function sessionFromTrace(
         const fields = controlMessageFields(ce.message)
         const msgType = controlMessageName(ce.messageType, draft, fields)
         session.messages.push({
-          timestamp: ce.timestamp,
+          timestamp: at(ce.timestamp),
           direction: ce.direction === 0 ? 'tx' : 'rx',
           messageType: msgType,
           ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
@@ -262,9 +290,23 @@ export function sessionFromTrace(
           trackRegistry.apply(msgType, fields, {
             direction: ce.direction === 0 ? 'tx' : 'rx',
             ...(ce.streamId != null ? { streamId: Number(ce.streamId) } : {}),
-            timestamp: ce.timestamp,
+            timestamp: at(ce.timestamp),
           })
         }
+        break
+      }
+
+      case 'error': {
+        const ee = event as TraceErrorEvent
+        if (!isDecodeErrorEvent(ee)) break
+        session.messages.push({
+          timestamp: at(ee.timestamp),
+          messageType: DECODE_ERROR_MESSAGE_TYPE,
+          ...(ee.streamId != null ? { streamId: Number(ee.streamId) } : {}),
+          decoded: decodeErrorFields(ee),
+          decodedPretty: decodeErrorFields(ee),
+          raw: ee.raw ?? new Uint8Array(0),
+        })
         break
       }
 
@@ -305,6 +347,7 @@ export function sessionFromTrace(
               : {}),
           })
         }
+        dataAt(session.streams.get(streamId)!, at(se.timestamp))
         const rec = recordedStream(streamId)
         rec.kind = isFetch ? 'fetch' : 'subgroup'
         if (isFetch) rec.fetchRequestId = se.fetchRequestId
@@ -319,9 +362,17 @@ export function sessionFromTrace(
         const oh = event as ObjectHeaderEvent
         const streamId = Number(oh.streamId)
         if (streamId === 0) datagramHeader(oh.groupId)
-        const rec =
-          streamId === 0 ? datagramGroup(oh.groupId) : recordedStream(streamId)
-        if (streamId !== 0) ensureStream(streamId)
+        const time = at(oh.timestamp)
+        let rec: RecordedStream
+        if (streamId === 0) {
+          const group = datagramGroup(oh.groupId)
+          dataAt(group, time)
+          group.arrivals.set(Number(oh.objectId), time)
+          rec = group
+        } else {
+          rec = recordedStream(streamId)
+          dataAt(ensureStream(streamId), time)
+        }
         const object: RecordedObject = {
           groupId: oh.groupId,
           objectId: oh.objectId,
@@ -343,9 +394,16 @@ export function sessionFromTrace(
         const streamId = Number(op.streamId)
 
         // Datagrams use stream id 0 by convention
-        const rec =
-          streamId === 0 ? datagramGroup(op.groupId) : recordedStream(streamId)
-        if (streamId !== 0) ensureStream(streamId)
+        const time = at(op.timestamp)
+        let rec: RecordedStream
+        if (streamId === 0) {
+          const group = datagramGroup(op.groupId)
+          dataAt(group, time)
+          rec = group
+        } else {
+          rec = recordedStream(streamId)
+          dataAt(ensureStream(streamId), time)
+        }
 
         const payload = op.payload
           ? toBytes(op.payload)
@@ -353,6 +411,7 @@ export function sessionFromTrace(
             ? new Uint8Array(0)
             : undefined
         if (payload && payload.length > 0) rec.payloads.push(payload)
+        rec.sizes = (rec.sizes ?? 0) + (payload?.length ?? op.size)
 
         // The waiting header with the same group and object; payloads may
         // follow their headers in any order. Without one, or without a
@@ -376,16 +435,33 @@ export function sessionFromTrace(
     }
   }
 
+  /** What the trace says about the size of a stream or group that holds no bytes. */
+  function unheld(rec: RecordedStream, entry?: StreamEntry): void {
+    if (rec.sizes !== undefined) {
+      session.recordedBytes = (session.recordedBytes ?? 0) + rec.sizes
+      if (entry) entry.recordedBytes = rec.sizes
+    } else if (rec.objects.length > 0) {
+      session.sizeUnknown = true
+      if (entry) entry.sizeUnknown = true
+    }
+  }
+
   const codecDraft = draft && isSupportedDraft(draft) ? draft : undefined
   const streamData = new Map<number, Uint8Array>()
   for (const [streamId, rec] of recorded) {
     const stream = session.streams.get(streamId)
     if (!stream) continue
-    if (rec.objects.length === 0 && rec.payloads.length === 0) continue
+    if (rec.objects.length === 0 && rec.payloads.length === 0) {
+      unheld(rec, stream)
+      continue
+    }
 
     const framed = codecDraft ? frameStream(rec, codecDraft) : null
     const data = framed ?? concat(rec.payloads)
-    if (data.length === 0) continue
+    if (data.length === 0) {
+      unheld(rec, stream)
+      continue
+    }
 
     stream.importedFraming = framed ? 'reconstructed' : 'unavailable'
     stream.byteCount = data.length
@@ -399,7 +475,10 @@ export function sessionFromTrace(
   for (const [gk, rec] of datagramGroups) {
     const framed = codecDraft ? frameDatagramGroup(rec, codecDraft) : null
     const datagrams = framed ?? rec.payloads
-    if (datagrams.length === 0) continue
+    if (datagrams.length === 0) {
+      unheld(rec)
+      continue
+    }
 
     // Build length-prefixed datagram group data (matching heap store format)
     let totalLen = 0
@@ -427,9 +506,19 @@ export function sessionFromTrace(
       codecString: detected.codecString,
       ...(carriesProperties(rec) ? { objectProperties: true } : {}),
       importedFraming: framed ? 'reconstructed' : 'unavailable',
+      ...(rec.firstDataAt !== undefined ? { firstDataAt: rec.firstDataAt } : {}),
+      ...(rec.lastDataAt !== undefined ? { lastDataAt: rec.lastDataAt } : {}),
+      ...(rec.arrivals.size > 0 ? { arrivals: rec.arrivals } : {}),
     }
     session.datagramGroups.set(gk, entry)
     datagramData.set(gk, merged)
+  }
+
+  // A trace that records no sizes says nothing of any stream's, empty ones included.
+  if (session.sizeUnknown) {
+    for (const stream of session.streams.values()) {
+      if (stream.byteCount === 0) stream.sizeUnknown = true
+    }
   }
 
   return { session, streamData, datagramData }
@@ -787,4 +876,24 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 
 function toBytes(data: Uint8Array | ArrayLike<number>): Uint8Array {
   return data instanceof Uint8Array ? data : new Uint8Array(data)
+}
+
+/**
+ * A decode error this panel or the CLI wrote: `errorKind: 'decode'`, or,
+ * from before the format had `errorKind`, code 0 with no kind.
+ */
+function isDecodeErrorEvent(e: TraceErrorEvent): boolean {
+  return (
+    e.errorKind === 'decode' ||
+    (e.errorKind === undefined && e.errorCode === DECODE_ERROR_CODE)
+  )
+}
+
+/** The `{ code, reason, length }` a live decode error carries. */
+function decodeErrorFields(e: TraceErrorEvent): Record<string, unknown> {
+  const m = /^([A-Z][A-Z0-9_]*): (.*)$/s.exec(e.reason)
+  return {
+    ...(m ? { code: m[1], reason: m[2] } : { reason: e.reason }),
+    ...(e.rawLength !== undefined ? { length: e.rawLength } : {}),
+  }
 }

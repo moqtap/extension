@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { connectionTitle } from '../connection-name'
 import { formatBitrate, formatBytes, shortSessionId } from '../format'
 import { sidebarShowsRate } from '../layout'
+import { sessionBytes } from '../sizes'
 import type { TabImpairment } from '@/src/cli/messages'
 import Icon from './Icon.vue'
 import { impairsSession, profileShortLabel, sessionProfile } from '../impair-choices'
@@ -47,7 +48,7 @@ onBeforeUnmount(() => ro?.disconnect())
 /** A row's tooltip; it carries the rate when the row has no room for it. */
 function rowTitle(session: SessionEntry): string {
   const st = sessionStats.value.get(session.sessionId)!
-  return showRate.value ? st.title : `${st.title}\n${st.rate}`
+  return showRate.value || st.rate === '' ? st.title : `${st.title}\n${st.rate}`
 }
 
 const NO_LABELS: ReadonlyMap<string, string> = new Map()
@@ -133,7 +134,7 @@ function notImpaired(session: SessionEntry): boolean {
 }
 
 interface SessionStats {
-  /** Bitrate while open, "0 bps" with no traffic; size once closed */
+  /** Bitrate while open, "0 bps" with no traffic; size once closed, empty when unknown */
   rate: string
   urlHost: string
   urlPath: string
@@ -146,11 +147,13 @@ const sessionStats = computed(() => {
   const map = new Map<string, SessionStats>()
   const now = Date.now()
   for (const session of props.sessions) {
-    let bytes = 0
-    for (const stream of session.streams.values()) bytes += stream.byteCount
-
     const live = !session.closed && !session.imported
-    const rate = live ? formatBitrate(computeRecentBitrate(session, now) ?? 0) : formatBytes(bytes)
+    const bytes = live ? null : sessionBytes(session)
+    const rate = live
+      ? formatBitrate(computeRecentBitrate(session, now) ?? 0)
+      : bytes === null
+        ? ''
+        : formatBytes(bytes)
 
     const { host: urlHost, path: urlPath } = formatUrl(session.url)
     map.set(session.sessionId, {
