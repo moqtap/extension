@@ -234,7 +234,7 @@ function formatOf(stream: StreamEntry): StreamFormat {
 
 /**
  * How the selected stream's track is viewed where Tracks offers the choice
- * (its packaging is known): with its reader, or as bytes.
+ * (its packaging is known): with its reader, or in Bytes.
  */
 const selectedTrackView = computed((): 'reader' | 'hex' | undefined => {
   void views.value.revision.value
