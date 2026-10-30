@@ -220,6 +220,43 @@ describe('the exported trace carries what the stream header and object said', ()
     expect(opened).not.toHaveProperty('fetchRequestId')
   })
 
+  it("carries each data stream's header bytes, from the type through the last field", async () => {
+    const sub = new Uint8Array([
+      0x14, 0x07, 0x03, 0x02, 0x80, 0x00, 0x02, 0xde, 0xad,
+    ])
+    const fetch = new Uint8Array([
+      0x05, 0x09, 0x1c, 0x04, 0x00, 0x0a, 0x01, 0xff,
+    ])
+    const data = new Map([
+      [1, sub],
+      [5, fetch],
+    ])
+    const trace = await buildTrace(
+      session({
+        draft: '22',
+        streams: [stream(1, sub), stream(5, fetch, { fetchRequestId: 9 })],
+      }),
+      async (_s, id) => data.get(id) ?? null,
+    )
+    const hdr = (id: bigint) => {
+      const e = trace.events.find((e) => e.type === 'stream-opened' && e.streamId === id)
+      return e?.type === 'stream-opened' ? Array.from(e.headerRaw ?? []) : null
+    }
+    expect(hdr(1n)).toEqual([0x14, 0x07, 0x03, 0x02, 0x80])
+    expect(hdr(5n)).toEqual([0x05, 0x09])
+  })
+
+  it('carries no header bytes for a stream that does not frame', async () => {
+    const bytes = new Uint8Array([0xff, 0xff, 0xff, 0xff])
+    const trace = await buildTrace(
+      session({ draft: '22', streams: [stream(1, bytes)] }),
+      async () => bytes,
+    )
+    const opened = trace.events.find((e) => e.type === 'stream-opened')
+    expect(opened).toBeDefined()
+    expect(opened).not.toHaveProperty('headerRaw')
+  })
+
   it('takes the alias from the stored bytes over the one the capture read', async () => {
     const bytes = new Uint8Array([
       0x14, 0x07, 0x03, 0x02, 0x80, 0x00, 0x02, 0xde, 0xad,

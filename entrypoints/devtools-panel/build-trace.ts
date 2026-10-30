@@ -16,6 +16,7 @@ import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
 import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import {
+  parseDatagramFraming,
   parseDatagramGroupFraming,
   parseStreamFraming,
   parseStreamPrefix,
@@ -30,6 +31,7 @@ import {
   MAX_DECODE_ERROR_RAW,
   isDecodeError,
 } from '@/src/trace/decode-error'
+import { holdsHeaderBytes } from './import-trace'
 import type { SessionEntry } from './use-inspector'
 
 /** Resolve a message type name (e.g. "subscribe") to its wire ID number. */
@@ -86,6 +88,29 @@ function propertiesOf(
   if (obj.propertiesOffset === undefined) return {}
   const end = obj.propertiesOffset + (obj.propertiesLength ?? 0)
   return { properties: data.slice(obj.propertiesOffset, end) }
+}
+
+/**
+ * Each datagram's bytes before its payload, in the order of the group buffer
+ * (4-byte little-endian length, then the datagram), for Event 1's `"hdr"`.
+ * Undefined for a datagram that does not frame under the session's draft.
+ */
+function datagramHeaders(
+  data: Uint8Array,
+  draft: string | undefined,
+): (Uint8Array | undefined)[] {
+  const out: (Uint8Array | undefined)[] = []
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  let offset = 0
+  while (offset + 4 <= data.length) {
+    const length = view.getUint32(offset, true)
+    if (length === 0 || offset + 4 + length > data.length) break
+    const datagram = data.subarray(offset + 4, offset + 4 + length)
+    const framing = parseDatagramFraming(datagram, draft)
+    out.push(framing ? datagram.slice(0, framing.headerEnd) : undefined)
+    offset += 4 + length
+  }
+  return out
 }
 
 /**
@@ -216,6 +241,11 @@ export async function buildTrace(
             ...optionalId('trackAlias', hf.trackAlias ?? stream.trackAlias),
             ...optionalId('subgroupId', hf.subgroupId),
           }),
+      // Only bytes the capture or the trace recorded; an import without them
+      // holds bytes rebuilt from the fields, which are not evidence.
+      ...(data && framing && holdsHeaderBytes(session, stream.streamId)
+        ? { headerRaw: data.slice(0, framing.headerEnd) }
+        : {}),
     })
 
     if (data) {
@@ -303,7 +333,13 @@ export async function buildTrace(
         if (data) {
           const framing = parseDatagramGroupFraming(data, session.draft)
           if (framing && framing.objects.length > 0) {
-            for (const obj of framing.objects) {
+            // One object per datagram, in buffer order.
+            const headers =
+              !session.imported || dg.importedFraming === 'recorded'
+                ? datagramHeaders(data, session.draft)
+                : []
+            for (const [i, obj] of framing.objects.entries()) {
+              const headerRaw = headers[i]
               const end = Math.min(
                 obj.payloadOffset + obj.payloadLength,
                 data.length,
@@ -326,6 +362,7 @@ export async function buildTrace(
                 // its alias right before it; interleaved tracks stay apart.
                 ...optionalId('trackAlias', framing.headerFields.trackAlias),
                 groupId: BigInt(dg.groupId),
+                ...(headerRaw ? { headerRaw } : {}),
               })
 
               push(objectAt, {

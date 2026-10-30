@@ -473,8 +473,8 @@ function catalogItem(view: CatalogView, document: Record<string, unknown> | null
 export function catalogProblems(
   views: readonly CatalogView[],
   streamTime: (streamId: number) => number | null,
-  /** The streams hold the bytes they carried (a live capture, not an import) */
-  headerBytes = false,
+  /** Whether a stream holds the header bytes it carried */
+  headerBytes: (streamId: number) => boolean = () => false,
 ): PanelProblem[] {
   const out: PanelProblem[] = []
   for (const view of views) {
@@ -531,7 +531,7 @@ export function catalogProblems(
         if (!row.evidence && header) {
           problem.header = {
             fields: headerFields(header.fields, mark!),
-            bytes: headerBytes ? hexBytes(header.bytes) : null,
+            bytes: headerBytes(obj.streamId) ? hexBytes(header.bytes) : null,
             target: { kind: 'catalog-object', streamId: obj.streamId, groupId: obj.groupId, objectId: obj.objectId },
           }
           problem.evidence = headerText(problem.header)

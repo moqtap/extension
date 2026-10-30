@@ -15,7 +15,12 @@ import { readMoqtrace, type Trace, writeMoqtrace } from '@moqtap/trace'
 import { describe, expect, it } from 'vitest'
 import { buildTrace } from './build-trace'
 import { locateCatalogStreams, SessionCatalogs } from './catalogs'
-import { type ImportedSession, sessionFromTrace } from './import-trace'
+import {
+  holdsHeaderBytes,
+  type ImportedSession,
+  sessionFromTrace,
+} from './import-trace'
+import { catalogProblems } from './problems'
 import {
   messageEvents,
   requestTimes,
@@ -250,7 +255,7 @@ function expectSameStream(f: Fixture, imported: ImportedSession, id: number) {
     objectsOf(before, framedBefore),
   )
   expect(imported.session.streams.get(id)?.importedFraming).toBe(
-    'reconstructed',
+    'recorded',
   )
   return { before: framedBefore!, after: framedAfter! }
 }
@@ -372,7 +377,7 @@ describe('datagram groups come back framed, on their own aliases', () => {
       expect(imported.session.datagramGroups.get(gk)).toMatchObject({
         trackAlias: Number(gk.split(':')[0]),
         groupId: 3,
-        importedFraming: 'reconstructed',
+        importedFraming: 'recorded',
       })
     }
     expect(imported.session.datagramGroups.get('9:3')?.datagramCount).toBe(2)
@@ -429,7 +434,7 @@ describe('datagram groups come back framed, on their own aliases', () => {
         Number(gk.split(':')[0]),
       )
       expect(imported.session.datagramGroups.get(gk)?.importedFraming).toBe(
-        'reconstructed',
+        'recorded',
       )
     }
   })
@@ -514,7 +519,7 @@ describe('datagram groups come back framed, on their own aliases', () => {
       objectsOf(bytes, before),
     )
     expect(imported.session.datagramGroups.get('4:2')?.importedFraming).toBe(
-      'reconstructed',
+      'recorded',
     )
   })
 })
@@ -560,7 +565,7 @@ describe('a draft-22 fetch End of Range marker is no object', () => {
       expect.objectContaining({ objectId: 0, groupId: 5, payload: '61' }),
     ])
     expect(imported.session.streams.get(6)?.importedFraming).toBe(
-      'reconstructed',
+      'recorded',
     )
   })
 
@@ -773,7 +778,7 @@ describe('a trace that does not say enough keeps its payloads', () => {
       ...trace,
       events: trace.events.map((e) => {
         if (e.type !== 'stream-opened') return e
-        const { trackAlias: _a, subgroupId: _s, ...rest } = e
+        const { trackAlias: _a, subgroupId: _s, headerRaw: _h, ...rest } = e
         return rest
       }),
     } as Trace
@@ -1016,5 +1021,196 @@ describe('a decode error in a trace', () => {
       trace({ errorCode: 3, errorKind: 'protocol', reason: 'x' }),
     )
     expect(session.messages).toHaveLength(0)
+  })
+})
+
+describe('header bytes in a trace', () => {
+  // draft-22 SUBGROUP_HEADER 0x10 (Subgroup ID 0, not written): alias 7,
+  // group 3, priority 0x80. Encoded again from the fields it reads 0x14, with
+  // the Subgroup ID written out.
+  const ZERO_SUBGROUP = new Uint8Array([
+    0x10, 0x07, 0x03, 0x80, 0x00, 0x02, 0xde, 0xad,
+  ])
+
+  async function exported(f: Fixture): Promise<Trace> {
+    const trace = await buildTrace(
+      f.session,
+      async (_s, id) => f.streams.get(id) ?? null,
+      async (_s, gk) => f.groups.get(gk) ?? null,
+    )
+    return readMoqtrace(writeMoqtrace(trace))
+  }
+
+  /** The trace as a writer before Event 1's "hdr" would have written it. */
+  function withoutHdr(trace: Trace): Trace {
+    return {
+      ...trace,
+      events: trace.events.map((e) => {
+        if (e.type !== 'stream-opened') return e
+        const { headerRaw: _h, ...rest } = e
+        return rest
+      }),
+    } as Trace
+  }
+
+  function editOpened(trace: Trace, edit: object): Trace {
+    return {
+      ...trace,
+      events: trace.events.map((e) =>
+        e.type === 'stream-opened' ? { ...e, ...edit } : e,
+      ),
+    } as Trace
+  }
+
+  it('come back as the stream header, byte for byte', async () => {
+    const f = fixture([[2, ZERO_SUBGROUP]])
+    const trace = await exported(f)
+    const opened = trace.events.find((e) => e.type === 'stream-opened')
+    expect(
+      opened?.type === 'stream-opened' && hex(opened.headerRaw!),
+    ).toBe('10070380')
+    const imported = importTrace(trace)
+    expect(hex(imported.streamData.get(2)!)).toBe(hex(ZERO_SUBGROUP))
+    expect(imported.session.streams.get(2)?.importedFraming).toBe('recorded')
+    expect(holdsHeaderBytes(imported.session, 2)).toBe(true)
+  })
+
+  it('win over the fields read from them', async () => {
+    const f = fixture([[2, ZERO_SUBGROUP]])
+    const trace = editOpened(await exported(f), {
+      trackAlias: 99n,
+      subgroupId: 5n,
+    })
+    const { session, streamData } = importTrace(trace)
+    expect(session.streams.get(2)?.trackAlias).toBe(7)
+    expect(parseStreamFraming(streamData.get(2)!, '22')?.headerFields).toMatchObject({
+      trackAlias: 7,
+      subgroupId: 0,
+    })
+  })
+
+  it('that are no header of the session draft frame nothing', async () => {
+    const f = fixture([[2, ZERO_SUBGROUP]])
+    const trace = editOpened(await exported(f), {
+      headerRaw: new Uint8Array([0x7f, 0xff, 0xff]),
+    })
+    const { session, streamData } = importTrace(trace)
+    expect(session.streams.get(2)?.importedFraming).toBe('unavailable')
+    expect(hex(streamData.get(2)!)).toBe('dead')
+  })
+
+  it('are not needed: a trace without them still imports, re-encoded', async () => {
+    const f = fixture([[2, ZERO_SUBGROUP]])
+    const imported = importTrace(withoutHdr(await exported(f)))
+    expect(imported.session.streams.get(2)?.importedFraming).toBe(
+      'reconstructed',
+    )
+    expect(hex(imported.streamData.get(2)!)).toBe('1407030080' + '0002dead')
+    expect(holdsHeaderBytes(imported.session, 2)).toBe(false)
+  })
+
+  it('are not invented when such a trace is exported again', async () => {
+    const f = fixture([[2, ZERO_SUBGROUP]])
+    const { session, streamData } = importTrace(withoutHdr(await exported(f)))
+    const again = await buildTrace(session, async (_s, id) => streamData.get(id) ?? null)
+    const opened = again.events.find((e) => e.type === 'stream-opened')
+    expect(opened?.type === 'stream-opened' && opened.headerRaw).toBeFalsy()
+  })
+
+  it('are kept when a trace that recorded them is exported again', async () => {
+    const f = fixture([[2, ZERO_SUBGROUP]])
+    const { session, streamData } = importTrace(await exported(f))
+    const again = await buildTrace(session, async (_s, id) => streamData.get(id) ?? null)
+    const opened = again.events.find((e) => e.type === 'stream-opened')
+    expect(opened?.type === 'stream-opened' && hex(opened.headerRaw!)).toBe('10070380')
+  })
+
+  it("come back as each datagram's bytes before its payload", async () => {
+    const group = datagramGroup(4, 1, [
+      { id: 0, body: 'a', properties: GAP },
+      { id: 1, body: 'b' },
+    ])
+    const f = fixture([], [[4, 1, group]])
+    const { session, datagramData } = importTrace(await exported(f))
+    expect(session.datagramGroups.get('4:1')?.importedFraming).toBe('recorded')
+    expect(hex(datagramData.get('4:1')!)).toBe(hex(group))
+  })
+
+  describe("show beside a catalog object's stream header in Problems", () => {
+    const catalog = {
+      version: '1',
+      tracks: [
+        {
+          name: 'video',
+          packaging: 'cmaf',
+          role: 'video',
+          codec: 'avc1.64001f',
+          width: 1280,
+          height: 720,
+          isLive: true,
+        },
+      ],
+    }
+    // The catalog object goes in subgroup 2, not 0.
+    const f = () =>
+      fixture(
+        [[3, subgroup(0x14, 5, 0, [{ id: 0, body: catalog }])]],
+        [],
+        [
+          {
+            messageType: 'subscribe',
+            direction: 'tx',
+            timestamp: 1001,
+            streamId: 4,
+            decoded: {
+              type: 'subscribe',
+              request_id: 4,
+              track_namespace: ['live', 'event'],
+              track_name: 'catalog',
+              parameters: {},
+            },
+            raw: EMPTY,
+          },
+          {
+            messageType: 'subscribe_ok',
+            direction: 'rx',
+            timestamp: 1002,
+            streamId: 4,
+            decoded: {
+              type: 'subscribe_ok',
+              track_alias: 5,
+              parameters: {},
+              track_properties: {},
+            },
+            raw: EMPTY,
+          },
+        ],
+      )
+
+    function subgroupRow({ session, streamData }: ImportedSession) {
+      const reader = new SessionCatalogs()
+      for (const ref of reader.sync(session)) {
+        reader.ingest(ref, streamData.get(ref.streamId) ?? null, session.draft)
+      }
+      return catalogProblems(reader.views(), () => null, (id) =>
+        holdsHeaderBytes(session, id),
+      ).find((p) => p.id === 'catalog.object.subgroup')
+    }
+
+    it('from a trace that recorded them', async () => {
+      const row = subgroupRow(importTrace(await exported(f())))
+      expect(row?.header?.bytes).toBe('14 05 00 02 80')
+      expect(row?.header?.fields.find((x) => x.marked)).toMatchObject({
+        label: 'subgroup',
+        value: '2',
+      })
+      expect(row?.evidence?.split('\n')[0]).toBe('14 05 00 02 80')
+    })
+
+    it('and not from one that did not', async () => {
+      const row = subgroupRow(importTrace(withoutHdr(await exported(f()))))
+      expect(row?.header).toBeDefined()
+      expect(row?.header?.bytes).toBeNull()
+    })
   })
 })

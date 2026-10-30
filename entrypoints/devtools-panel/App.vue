@@ -41,6 +41,7 @@ const {
   exportTrace,
   buildSessionTrace,
   importTrace,
+  imports,
   setStreamRecording,
   clearStreams,
   addWorkerExclusion,
@@ -98,6 +99,9 @@ function toggleRecording() {
 function reloadPage() {
   browser.devtools.inspectedWindow.reload({})
 }
+
+const shownImports = computed(() => imports.value.filter((i) => i.shown))
+const percent = (loaded: number, total: number) => (total > 0 ? Math.floor((loaded / total) * 100) : 0)
 
 function handleImportClick() {
   const input = document.createElement('input')
@@ -419,6 +423,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onSettingsKey))
     </div>
 
     <div class="infobars" :inert="settingsOpen">
+      <Infobar v-for="imp in shownImports" :key="imp.id" kind="info">
+        <span class="import-line">
+          <span class="import-name">Importing {{ imp.filename }}…</span>
+          <progress class="import-progress" :value="imp.loaded" :max="imp.total || 1" :aria-label="`Importing ${imp.filename}`" />
+          <span class="import-percent">{{ percent(imp.loaded, imp.total) }}%</span>
+        </span>
+        <template #actions>
+          <button class="mq-btn mq-btn--secondary" @click="imp.cancel()">Cancel</button>
+        </template>
+      </Infobar>
       <Infobar v-if="impairmentNotice" kind="warning" :dismissible="pickNotice" @dismiss="dismissRefusal">
         {{ impairmentIssue }}
         <template v-if="refusal" #actions>
@@ -942,6 +956,42 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onSettingsKey))
 
 .infobars {
   flex-shrink: 0;
+}
+.import-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.import-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-percent {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.import-progress {
+  flex: 0 1 160px;
+  min-width: 48px;
+  height: 4px;
+  appearance: none;
+  border: none;
+  border-radius: 2px;
+  background: var(--line);
+  color: var(--info);
+  overflow: hidden;
+}
+.import-progress::-webkit-progress-bar {
+  background: var(--line);
+}
+.import-progress::-webkit-progress-value {
+  background: var(--info);
+}
+.import-progress::-moz-progress-bar {
+  background: var(--info);
 }
 
 .tab-row {

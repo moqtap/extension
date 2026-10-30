@@ -35,6 +35,7 @@ import {
 import type { SessionTab } from '../session-tabs'
 import { sessionViews } from '../packaging'
 import type { StreamObject } from '../stream-framing'
+import { holdsHeaderBytes } from '../import-trace'
 import { sessionBytes } from '../sizes'
 import { undefinedParameter } from '../undecodable'
 import { shownTracks } from '../alias-tracks'
@@ -233,7 +234,7 @@ function formatOf(stream: StreamEntry): StreamFormat {
 
 /**
  * How the selected stream's track is viewed where Tracks offers the choice
- * (its packaging is known): with its reader, or as Hex.
+ * (its packaging is known): with its reader, or as bytes.
  */
 const selectedTrackView = computed((): 'reader' | 'hex' | undefined => {
   void views.value.revision.value
@@ -308,7 +309,7 @@ const shownProblems = computed((): PanelProblem[] =>
           : null,
     ),
     catalogConflictProblems(props.session.tracks.values(), catalogs.packaging.value),
-    catalogProblems(catalogs.catalogs.value, streamTime, !props.session.imported),
+    catalogProblems(catalogs.catalogs.value, streamTime, (id) => holdsHeaderBytes(props.session, id)),
     templateProblems(props.session.tracks.values(), catalogs.packaging.value),
     loc.problems.value,
     cmaf.problems.value,

@@ -26,11 +26,11 @@ import { onMounted, onUnmounted, ref, triggerRef } from 'vue'
 // The panel does not touch IDB directly — data requests go through the background worker.
 import type { PayloadMediaInfo } from '@moqtap/media/bmff'
 import type { StreamContentType } from '@/src/detect/content-detect'
-import type { Trace } from '@moqtap/trace'
-import { readMoqtrace, writeMoqtrace } from '@moqtap/trace'
+import { writeMoqtrace } from '@moqtap/trace'
 import { buildTrace } from './build-trace'
 import { reviveTagged, untagDecoded } from './decoded'
-import { applySetupImplementation, sessionFromTrace } from './import-trace'
+import { type ImportResult, startImport } from './import-job'
+import { applySetupImplementation } from './import-trace'
 
 export interface SessionEntry {
   sessionId: string
@@ -211,15 +211,16 @@ export interface StreamEntry {
   /** MoQT group ID (for datagram groups) */
   groupId?: number
   /**
-   * How an imported stream's framing came about: 'reconstructed' when encoded
-   * again from its events, 'unavailable' when the bytes are the payloads
-   * alone. Absent for live streams.
+   * How an imported stream's framing came about: 'recorded' when the trace
+   * gave its header bytes and the objects were encoded again under them,
+   * 'reconstructed' when encoded again from its events, 'unavailable' when
+   * the bytes are the payloads alone. Absent for live streams.
    */
   importedFraming?: ImportedFraming
 }
 
 /** See {@link StreamEntry.importedFraming}. */
-export type ImportedFraming = 'reconstructed' | 'unavailable'
+export type ImportedFraming = 'recorded' | 'reconstructed' | 'unavailable'
 
 export interface DatagramGroupEntry {
   /** Unique key: "trackAlias:groupId" */
@@ -277,6 +278,18 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null
 }
 
+/** A .moqtrace import in progress */
+export interface TraceImport {
+  id: number
+  filename: string
+  /** Bytes decoded, of `total` */
+  loaded: number
+  total: number
+  /** False until it has run long enough to show */
+  shown: boolean
+  cancel: () => void
+}
+
 export function useInspector() {
   const sessions = ref<Map<string, SessionEntry>>(new Map())
   const selectedSessionId = ref<string | null>(null)
@@ -302,6 +315,9 @@ export function useInspector() {
 
   /** Imported trace data stored locally (not in IDB) — keyed by "sessionId:streamId" */
   const importedStreamData = new Map<string, Uint8Array>()
+  /** Imports still running, in the order they started */
+  const imports = ref<TraceImport[]>([])
+  let nextImportId = 1
 
   function getOrCreateSession(sessionId: string): SessionEntry {
     let session = sessions.value.get(sessionId)
@@ -974,29 +990,54 @@ export function useInspector() {
 
   /** Import a .moqtrace file and create a synthetic session from it */
   function importTrace(file: File) {
-    const reader = new FileReader()
-    reader.onload = async () => {
-      try {
-        const bytes = new Uint8Array(reader.result as ArrayBuffer)
-        const trace = readMoqtrace(bytes)
-        await loadTraceAsSession(trace, file.name)
-      } catch (err) {
-        console.error('[moqtap] Failed to read .moqtrace file:', err)
-      }
+    const entry: TraceImport = {
+      id: nextImportId++,
+      filename: file.name,
+      loaded: 0,
+      total: file.size,
+      shown: false,
+      cancel: () => {},
     }
-    reader.readAsArrayBuffer(file)
+    imports.value.push(entry)
+    const live = () => imports.value.find((i) => i.id === entry.id)
+    // A quick import never shows its progress.
+    const reveal = setTimeout(() => {
+      const i = live()
+      if (i) i.shown = true
+    }, 300)
+    const job = startImport(file, (loaded, total) => {
+      const i = live()
+      if (i) Object.assign(i, { loaded, total })
+    })
+    entry.cancel = job.cancel
+    job.done
+      .then((result) => {
+        if (result) addImportedSession(result)
+      })
+      .catch((err) => {
+        console.error('[moqtap] Failed to read .moqtrace file:', err)
+      })
+      .finally(() => {
+        clearTimeout(reveal)
+        imports.value = imports.value.filter((i) => i.id !== entry.id)
+      })
   }
 
-  async function loadTraceAsSession(trace: Trace, filename: string) {
+  function addImportedSession({
+    session,
+    streamData,
+    datagramData,
+    colors,
+  }: ImportResult) {
     // Numbered in import order, #1 first, as the page numbers its connections.
     let n = 1
     for (const s of sessions.value.values()) if (s.imported) n++
     const sessionId = `imported-${Date.now()}-${n}`
-    const { session, streamData, datagramData } = sessionFromTrace(trace, {
-      sessionId,
-      filename,
-      nextColorIndex: () => nextColorIndex++,
-    })
+    session.sessionId = sessionId
+    // The worker numbers the session's track colours from 0.
+    for (const track of session.tracks.values())
+      track.colorIndex += nextColorIndex
+    nextColorIndex += colors
 
     // Imports don't use IDB: their bytes are kept here
     for (const [streamId, data] of streamData) {
@@ -1042,6 +1083,7 @@ export function useInspector() {
     exportTrace,
     buildSessionTrace,
     importTrace,
+    imports,
     setStreamRecording,
     clearStreams,
     addWorkerExclusion,

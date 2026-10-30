@@ -22,8 +22,9 @@ import type {
   ObjectPayloadEvent,
   StreamClosedEvent,
   StreamOpenedEvent,
-  Trace,
   TraceErrorEvent,
+  TraceEvent,
+  TraceHeader,
 } from '@moqtap/trace'
 import { controlMessageFields } from '@moqtap/trace'
 import {
@@ -41,6 +42,7 @@ import {
   type ParsedStreamFraming,
   parseDatagramFraming,
   parseStreamFraming,
+  readStreamHeader,
 } from './stream-framing'
 import type {
   DatagramGroupEntry,
@@ -67,6 +69,20 @@ export function applySetupImplementation(
   if (found.side === 'client')
     session.clientImplementation = found.implementation
   else session.serverImplementation = found.implementation
+}
+
+/**
+ * Whether a stream's bytes start with the header it carried: always live, and
+ * on import when the trace recorded the header bytes.
+ */
+export function holdsHeaderBytes(
+  session: Pick<SessionEntry, 'imported' | 'streams'>,
+  streamId: number,
+): boolean {
+  return (
+    !session.imported ||
+    session.streams.get(streamId)?.importedFraming === 'recorded'
+  )
 }
 
 /** A trace rebuilt as a session, with the bytes its streams carried. */
@@ -99,6 +115,8 @@ interface RecordedObject {
   properties?: Uint8Array
   /** Undefined until its payload event, and after one that held no bytes */
   payload?: Uint8Array
+  /** A datagram's bytes before its payload, as Event 1's `"hdr"` gave them */
+  headerRaw?: Uint8Array
   paired: boolean
 }
 
@@ -120,6 +138,11 @@ interface RecordedDataStream extends RecordedStream {
   trackAlias?: bigint
   subgroupId?: bigint
   fetchRequestId?: bigint
+  /**
+   * The header bytes Event 1's `"hdr"` gave, read with the session's draft;
+   * `framing` null when they are no header of it.
+   */
+  header?: { bytes: Uint8Array; framing: ParsedStreamFraming | null }
 }
 
 interface RecordedDatagramGroup extends RecordedStream {
@@ -148,7 +171,7 @@ function dataAt(
  * trace says enough to.
  */
 export function sessionFromTrace(
-  trace: Trace,
+  trace: { header: TraceHeader; events: Iterable<TraceEvent> },
   options: ImportOptions,
 ): ImportedSession {
   const { sessionId } = options
@@ -156,6 +179,7 @@ export function sessionFromTrace(
 
   // Determine draft from protocol string (e.g. "moq-transport-14")
   const draft = draftFromProtocol(header.protocol)
+  const codecDraft = draft && isSupportedDraft(draft) ? draft : undefined
 
   const session: SessionEntry = {
     sessionId,
@@ -187,6 +211,9 @@ export function sessionFromTrace(
   const datagramAliases = new Map<bigint, Set<bigint>>()
   const datagramOpened = new Set<bigint>()
   const ambiguousGroups = new Set<bigint>()
+  // The `"hdr"` of a datagram stream-opened, for the group's next datagram;
+  // null when it is no datagram header of the session's draft.
+  const datagramHdr = new Map<bigint, Uint8Array | null>()
 
   function recordedStream(streamId: number): RecordedDataStream {
     let rec = recorded.get(streamId)
@@ -315,20 +342,34 @@ export function sessionFromTrace(
         // A datagram "stream" is no stream: it says which alias the group's
         // datagrams that follow it are on.
         if (se.streamType === 1) {
-          if (se.groupId != null && se.trackAlias != null) {
-            datagramAlias.set(se.groupId, se.trackAlias)
-            let aliases = datagramAliases.get(se.groupId)
+          // The header bytes win over the fields read from them.
+          const hdr = se.headerRaw ? toBytes(se.headerRaw) : undefined
+          const read = hdr ? datagramHeaderOf(hdr, codecDraft) : null
+          const groupId =
+            se.groupId ?? (read ? BigInt(read.headerFields.groupId) : undefined)
+          const trackAlias = read
+            ? BigInt(read.headerFields.trackAlias)
+            : se.trackAlias
+          if (groupId != null && hdr) datagramHdr.set(groupId, read ? hdr : null)
+          if (groupId != null && trackAlias != null) {
+            datagramAlias.set(groupId, trackAlias)
+            let aliases = datagramAliases.get(groupId)
             if (!aliases) {
               aliases = new Set()
-              datagramAliases.set(se.groupId, aliases)
+              datagramAliases.set(groupId, aliases)
             }
-            aliases.add(se.trackAlias)
-            datagramOpened.add(se.groupId)
+            aliases.add(trackAlias)
+            datagramOpened.add(groupId)
           }
           break
         }
         const streamId = Number(se.streamId)
-        const isFetch = se.streamType === 2
+        const hdr = se.headerRaw ? toBytes(se.headerRaw) : undefined
+        const read = hdr ? streamHeaderOf(hdr, codecDraft) : null
+        const hf = read?.headerFields
+        const isFetch = read ? read.streamType === 'fetch' : se.streamType === 2
+        const trackAlias = hf ? hf.trackAlias : se.trackAlias
+        const fetchRequestId = hf ? hf.requestId : se.fetchRequestId
         if (!session.streams.has(streamId)) {
           session.streams.set(streamId, {
             streamId,
@@ -339,21 +380,22 @@ export function sessionFromTrace(
             contentType: 'binary',
             // What the stream's header said: the alias on a subgroup stream,
             // the request on a fetch stream (type 2).
-            ...(!isFetch && se.trackAlias != null
-              ? { trackAlias: Number(se.trackAlias) }
+            ...(!isFetch && trackAlias != null
+              ? { trackAlias: Number(trackAlias) }
               : {}),
-            ...(isFetch && se.fetchRequestId != null
-              ? { fetchRequestId: Number(se.fetchRequestId) }
+            ...(isFetch && fetchRequestId != null
+              ? { fetchRequestId: Number(fetchRequestId) }
               : {}),
           })
         }
         dataAt(session.streams.get(streamId)!, at(se.timestamp))
         const rec = recordedStream(streamId)
         rec.kind = isFetch ? 'fetch' : 'subgroup'
-        if (isFetch) rec.fetchRequestId = se.fetchRequestId
+        if (hdr) rec.header = { bytes: hdr, framing: read }
+        if (isFetch) rec.fetchRequestId = optionalBig(fetchRequestId)
         else {
-          rec.trackAlias = se.trackAlias
-          rec.subgroupId = se.subgroupId
+          rec.trackAlias = optionalBig(trackAlias)
+          rec.subgroupId = hf ? optionalBig(hf.subgroupId) : se.subgroupId
         }
         break
       }
@@ -373,12 +415,20 @@ export function sessionFromTrace(
           rec = recordedStream(streamId)
           dataAt(ensureStream(streamId), time)
         }
+        let headerRaw: Uint8Array | undefined
+        if (streamId === 0 && datagramHdr.has(oh.groupId)) {
+          const hdr = datagramHdr.get(oh.groupId)
+          datagramHdr.delete(oh.groupId)
+          if (hdr) headerRaw = hdr
+          else rec.framable = false
+        }
         const object: RecordedObject = {
           groupId: oh.groupId,
           objectId: oh.objectId,
           priority: oh.publisherPriority,
           status: oh.objectStatus,
           ...(oh.properties ? { properties: toBytes(oh.properties) } : {}),
+          ...(headerRaw ? { headerRaw } : {}),
           paired: false,
         }
         rec.objects.push(object)
@@ -446,7 +496,6 @@ export function sessionFromTrace(
     }
   }
 
-  const codecDraft = draft && isSupportedDraft(draft) ? draft : undefined
   const streamData = new Map<number, Uint8Array>()
   for (const [streamId, rec] of recorded) {
     const stream = session.streams.get(streamId)
@@ -463,7 +512,11 @@ export function sessionFromTrace(
       continue
     }
 
-    stream.importedFraming = framed ? 'reconstructed' : 'unavailable'
+    stream.importedFraming = framed
+      ? rec.header
+        ? 'recorded'
+        : 'reconstructed'
+      : 'unavailable'
     stream.byteCount = data.length
     Object.assign(stream, detectPayload(rec.payloads[0]))
     if (carriesProperties(rec)) stream.objectProperties = true
@@ -505,7 +558,11 @@ export function sessionFromTrace(
       mediaInfo: detected.mediaInfo,
       codecString: detected.codecString,
       ...(carriesProperties(rec) ? { objectProperties: true } : {}),
-      importedFraming: framed ? 'reconstructed' : 'unavailable',
+      importedFraming: framed
+        ? rec.objects.every((o) => o.headerRaw)
+          ? 'recorded'
+          : 'reconstructed'
+        : 'unavailable',
       ...(rec.firstDataAt !== undefined ? { firstDataAt: rec.firstDataAt } : {}),
       ...(rec.lastDataAt !== undefined ? { lastDataAt: rec.lastDataAt } : {}),
       ...(rec.arrivals.size > 0 ? { arrivals: rec.arrivals } : {}),
@@ -582,6 +639,8 @@ function frameStream(
 ): Uint8Array | null {
   if (!rec.framable || rec.objects.length === 0) return null
   if (rec.objects.some((o) => !o.paired)) return null
+  // Header bytes that are no header of this draft frame nothing.
+  if (rec.header && !rec.header.framing) return null
   try {
     if (rec.kind === 'subgroup') return frameSubgroup(rec, draft)
     if (rec.kind === 'fetch') return frameFetch(rec, draft)
@@ -596,26 +655,34 @@ function frameStream(
  * A subgroup stream: the header names one group and one priority, so every
  * object has to agree on both. The type carries PROPERTIES when any object had
  * a properties field, and an explicit Subgroup ID when the trace gave one;
- * without one the stream is in subgroup 0.
+ * without one the stream is in subgroup 0. With the header's own bytes, they
+ * are the header, and the objects are encoded under its type.
  */
 function frameSubgroup(
   rec: RecordedDataStream,
   draft: SupportedDraft,
 ): Uint8Array | null {
-  if (rec.trackAlias === undefined) return null
+  const recorded = rec.header?.framing?.headerFields
+  const trackAlias = recorded ? BigInt(recorded.trackAlias) : rec.trackAlias
+  if (trackAlias === undefined) return null
   const first = rec.objects[0]
-  for (const o of rec.objects) {
-    if (o.groupId !== first.groupId || o.priority !== first.priority)
-      return null
+  if (!recorded) {
+    for (const o of rec.objects) {
+      if (o.groupId !== first.groupId || o.priority !== first.priority)
+        return null
+    }
   }
   const withProperties = rec.objects.some((o) => o.properties !== undefined)
   const explicitSubgroup = rec.subgroupId !== undefined
   // Draft-11's subgroup types start at 0x08; 0x10 from draft-12. Through
   // draft-10 there is one type and the encoder writes it whatever this says.
   const type =
+    recorded?.streamType ??
     (draft === '11' ? 0x08 : 0x10) |
-    (withProperties ? 0x01 : 0) |
-    (explicitSubgroup ? 0x04 : 0)
+      (withProperties ? 0x01 : 0) |
+      (explicitSubgroup ? 0x04 : 0)
+  const groupId = recorded ? BigInt(recorded.groupId) : first.groupId
+  const priority = recorded?.publisherPriority ?? first.priority
 
   const objects = []
   for (const o of rec.objects) {
@@ -623,30 +690,81 @@ function frameSubgroup(
     if (!obj) return null
     objects.push(obj)
   }
-  const data = encoderFor(draft).encodeSubgroupStream({
+  const encoded = encoderFor(draft).encodeSubgroupStream({
     type: 'subgroup',
     // `streamTypeId` up to draft-13, `headerType` from draft-14
     streamTypeId: type,
     headerType: type,
-    trackAlias: rec.trackAlias,
-    groupId: first.groupId,
+    trackAlias,
+    groupId,
     subgroupId: rec.subgroupId ?? 0n,
-    publisherPriority: first.priority,
+    publisherPriority: priority,
     objects,
   })
+  const data = rec.header ? withHeader(rec.header.bytes, encoded, draft) : encoded
+  if (!data) return null
 
   const framing = parseStreamFraming(data, draft)
   if (framing?.streamType !== 'subgroup') return null
   const hf = framing.headerFields
   if (
-    hf.trackAlias !== Number(rec.trackAlias) ||
-    hf.groupId !== Number(first.groupId) ||
-    (explicitSubgroup && hf.subgroupId !== Number(rec.subgroupId)) ||
-    (hf.publisherPriority !== undefined &&
-      hf.publisherPriority !== first.priority)
+    hf.trackAlias !== Number(trackAlias) ||
+    hf.groupId !== Number(groupId) ||
+    (!recorded &&
+      explicitSubgroup &&
+      hf.subgroupId !== Number(rec.subgroupId)) ||
+    (hf.publisherPriority !== undefined && hf.publisherPriority !== priority)
   )
     return null
   return sameObjects(framing, data, rec.objects, false) ? data : null
+}
+
+/**
+ * `header` in place of the header `encoded` starts with, or null when the
+ * encoding does not frame.
+ */
+function withHeader(
+  header: Uint8Array,
+  encoded: Uint8Array,
+  draft: SupportedDraft,
+): Uint8Array | null {
+  const framing = parseStreamFraming(encoded, draft)
+  if (!framing || framing.objects.length === 0) return null
+  return concat([header, encoded.subarray(framing.headerEnd)])
+}
+
+/**
+ * Event 1's `"hdr"` read as a whole data stream header of the session's draft
+ * and nothing more, or null.
+ */
+function streamHeaderOf(
+  bytes: Uint8Array,
+  draft: SupportedDraft | undefined,
+): ParsedStreamFraming | null {
+  if (!draft) return null
+  const read = readStreamHeader(bytes, draft)
+  if (read.state !== 'done') return null
+  const { framing } = read
+  if (framing.objects.length > 0 || framing.headerEnd !== bytes.length)
+    return null
+  return framing
+}
+
+/** A datagram's `"hdr"` read as its bytes before an empty payload, or null. */
+function datagramHeaderOf(
+  bytes: Uint8Array,
+  draft: SupportedDraft | undefined,
+): ParsedStreamFraming | null {
+  const framing = parseDatagramFraming(bytes, draft)
+  if (framing?.streamType !== 'datagram' || framing.headerEnd !== bytes.length)
+    return null
+  return framing
+}
+
+/** A header field as a bigint; undefined when the header does not carry it. */
+function optionalBig(n: number | bigint | undefined): bigint | undefined {
+  if (typeof n === 'number' && !Number.isSafeInteger(n)) return undefined
+  return n === undefined ? undefined : BigInt(n)
 }
 
 /**
@@ -684,13 +802,15 @@ function frameFetch(
     // Serialization Flags from draft-15; earlier drafts send every field
     objects.push({ ...obj, serializationFlags: flags })
   }
-  const data = encoderFor(draft).encodeFetchStream({
+  const encoded = encoderFor(draft).encodeFetchStream({
     type: 'fetch',
     // `subscribeId` through draft-10, `requestId` after it
     requestId: rec.fetchRequestId,
     subscribeId: rec.fetchRequestId,
     objects,
   })
+  const data = rec.header ? withHeader(rec.header.bytes, encoded, draft) : encoded
+  if (!data) return null
 
   const framing = parseStreamFraming(data, draft)
   if (framing?.streamType !== 'fetch') return null
@@ -742,8 +862,9 @@ function frameDatagramGroup(
         trackAlias: rec.trackAlias,
         objectStatus: BigInt(o.status),
       }
-      const data =
-        status && (n === 9 || n === 10) && encoder.encodeDatagramStatus
+      const data = o.headerRaw
+        ? concat([o.headerRaw, o.payload ?? EMPTY])
+        : status && (n === 9 || n === 10) && encoder.encodeDatagramStatus
           ? encoder.encodeDatagramStatus({
               ...fields,
               type: 'datagram_status',
@@ -757,8 +878,10 @@ function frameDatagramGroup(
       const hf = framing.headerFields
       if (
         hf.trackAlias !== Number(rec.trackAlias) ||
-        hf.groupId !== Number(o.groupId) ||
-        hf.publisherPriority !== o.priority
+        // Recorded header bytes win over Event 3's copy of these.
+        (!o.headerRaw &&
+          (hf.groupId !== Number(o.groupId) ||
+            hf.publisherPriority !== o.priority))
       )
         return null
       if (!sameObjects(framing, data, [o], false)) return null

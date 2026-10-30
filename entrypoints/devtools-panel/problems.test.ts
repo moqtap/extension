@@ -279,7 +279,7 @@ describe('catalog problems', () => {
       bytes: Uint8Array.of(0x15, 0, 0, 1, 1),
     }
     ;(v as { headers: Map<number, typeof header> }).headers = new Map([[3, header]])
-    const live = catalogProblems([v], () => null, true).find((r) => r.id === 'catalog.object.subgroup')!
+    const live = catalogProblems([v], () => null, (id) => id === 3).find((r) => r.id === 'catalog.object.subgroup')!
     expect(live.header).toEqual({
       fields: [
         { label: 'type', value: '0x15', marked: false },

@@ -8,7 +8,7 @@
         "@moqtap/codec": "^0.14.0",
         "@moqtap/inspect": "^0.3.0",
         "@moqtap/media": "^0.3.0",
-        "@moqtap/trace": "^0.5.0",
+        "@moqtap/trace": "^0.6.0",
         "lucide-static": "1.50.0",
         "vue": "^3.5.42",
       },
@@ -128,7 +128,7 @@
 
     "@moqtap/test-vectors": ["@moqtap/test-vectors@0.19.0", "", {}, "sha512-hLKYC/C/ck/eMrv703BlAtx9lQIFyedfU9V5udGxwTATPVoz3SSZm1S42TguERJ7X0ipoafmV+rnrdGAYoG+3Q=="],
 
-    "@moqtap/trace": ["@moqtap/trace@0.5.0", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": ">=0.11.0" } }, "sha512-KsolUs2Cr1+1A913LYH1OB7rzTbTI9T49e8VGZQfTO7s8e56th97wvKfgofKEXBv4LvhXR1/u4svLedWcVXSmA=="],
+    "@moqtap/trace": ["@moqtap/trace@0.6.0", "", { "dependencies": { "cbor-x": "^1.6.0" }, "peerDependencies": { "@moqtap/codec": ">=0.11.0" } }, "sha512-ukHCQjuNXndYfaYlSN/6VLveBjd7Fr5JAdvq4XwV5L+8c62gZFd2sNIAtal7yoTky29/eQ9RMUzo8z10q4ATMQ=="],
 
     "@pnpm/config.env-replace": ["@pnpm/config.env-replace@1.1.0", "", {}, "sha512-htyl8TWnKL7K/ESFa1oW2UB5lVDxuF5DpM7tBi6Hu2LNL3mWkIzNLG6N4zoCUP1lCKNxWy/3iu8mS8MvToGd6w=="],
 
