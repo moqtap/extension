@@ -83,6 +83,7 @@ import {
   type ExclusionSender,
   readExclusions,
   withExclusion,
+  withoutExclusion,
 } from '@/src/storage/worker-exclusions'
 import { createExtensionRecorder } from '@/src/trace/index'
 import type { SupportedDraft } from '@/src/types/common'
@@ -1534,9 +1535,7 @@ async function persistExclusion(
 }
 
 async function removeExclusion(origin: string): Promise<void> {
-  const exclusions = await loadExclusions()
-  delete exclusions[origin]
-  await saveExclusions(exclusions)
+  await saveExclusions(withoutExclusion(await loadExclusions(), origin))
 }
 
 /**

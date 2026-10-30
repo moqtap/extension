@@ -452,8 +452,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onSettingsKey))
         <button class="mq-btn--link inline-btn" @click="reloadPage">Reload the page</button> to impair them.
       </Infobar>
       <Infobar v-if="cliConfirm" kind="info">
-        Let moqtap send this tab's connections through this moqtap CLI? Identity
-        <span class="mq-mono">{{ shortFingerprint(cliConfirm.fingerprint) }}</span>, as the moqtap CLI prints it.
+        Send this tab's connections through the moqtap CLI with pairing code
+        <span class="mq-mono">{{ shortFingerprint(cliConfirm.fingerprint) }}</span>? The CLI prints its code when it starts.
         <template #actions>
           <button class="mq-btn mq-btn--primary" @click="cli.allow(cliConfirm.identity)">Allow</button>
           <button class="mq-btn mq-btn--secondary" @click="cli.decline(cliConfirm.identity)">Not now</button>
@@ -471,8 +471,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onSettingsKey))
         to capture them.
       </Infobar>
       <Infobar v-if="cspBlockedWorkers.length > 0" kind="warning">
-        This site's security policy keeps moqtap out of its workers. They run normally, but the
-        connections they open aren't captured or impaired.
+        This site's security policy doesn't allow the extension to start its workers, so they start as the
+        site wrote them. The connections they open aren't captured or impaired.
       </Infobar>
     </div>
 

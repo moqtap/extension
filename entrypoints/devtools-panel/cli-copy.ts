@@ -84,7 +84,7 @@ export function impairmentProblem(tab: TabImpairment | null, view: CliView | nul
     case 'local-network':
       return 'Allow this site to access local network devices, then reload.'
     case 'worker-uninstrumented':
-      return "A worker on this page runs without moqtap, so its connections aren't impaired. Allow blob: in the page's worker-src and remove the site from the worker exclusions, then reload."
+      return "A worker on this page started without the extension, so its connections aren't impaired. Allow blob: in the page's worker-src, remove the site from Worker exclusions in Settings, then reload."
     case 'blocked-by-page':
       return "This page's Content Security Policy blocks connections to the moqtap CLI. Add https://127.0.0.1:* to its connect-src, then reload."
     case 'cli-session':

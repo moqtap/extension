@@ -129,6 +129,13 @@ export function withExclusion(
   return list
 }
 
+/** The list without `origin`, as Settings' Remove leaves it. */
+export function withoutExclusion(stored: unknown, origin: string): Record<string, ExclusionEntry> {
+  const list = readExclusions(stored)
+  delete list[origin]
+  return list
+}
+
 /**
  * The origin a `worker:csp-recovered` message may write, or null to ignore
  * it: the sender frame's own origin, when the message is well formed and

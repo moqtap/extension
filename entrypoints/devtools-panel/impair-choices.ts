@@ -78,7 +78,7 @@ export function holds(node: MenuNode, profile: Profile): boolean {
   return node.kind === 'item' ? sameProfile(node.choice.profile, profile) : node.children.some((n) => holds(n, profile))
 }
 
-/** The CLI as the impairment menu's first line names it: its version and the identity's first two groups. */
+/** The CLI as the impairment menu's first line names it: its version and pairing code. */
 export function cliHeader(view: CliView | null): string {
   switch (view?.state) {
     case 'connected':

@@ -73,19 +73,18 @@ function addOrigin() {
         <h3 id="settings-cli" class="settings-heading">moqtap CLI</h3>
         <template v-if="found">
           <p>
-            Version {{ found.cliVersion }}, identity <span class="mq-mono">{{ shortFingerprint(found.fingerprint) }}</span>
+            Version {{ found.cliVersion }}, pairing code <span class="mq-mono">{{ shortFingerprint(found.fingerprint) }}</span>
           </p>
-          <p v-if="connected" class="mq-muted">This browser sends impaired tabs' connections through it.</p>
-          <template v-else-if="notAllowed">
+          <template v-if="!connected && notAllowed">
             <p class="mq-muted">It doesn't accept this build of the extension. Restart it with:</p>
             <div class="settings-command">
               <code class="mq-mono">{{ allowCommand }}</code>
               <CopyButton :value="allowCommand" what="setting" />
             </div>
           </template>
-          <template v-else>
+          <template v-else-if="!connected">
             <p class="mq-muted">
-              Check that the identity matches what <code>moqtap cert</code> prints, then allow it to impair
+              Check that the pairing code matches what <code>moqtap cert</code> prints, then allow it to impair
               this browser's tabs.
             </p>
             <div>
@@ -104,8 +103,8 @@ function addOrigin() {
       </section>
 
       <section class="settings-section" aria-labelledby="settings-allowed">
-        <h3 id="settings-allowed" class="settings-heading">Allowed CLI identities</h3>
-        <p class="mq-muted">These moqtap CLIs can impair this browser's tabs. One you remove has to be allowed again.</p>
+        <h3 id="settings-allowed" class="settings-heading">Allowed CLIs</h3>
+        <p class="mq-muted">These moqtap CLIs can impair this browser's tabs. Remove one and you'll be asked to allow it again.</p>
         <ul v-if="trusted.length > 0" class="settings-list">
           <li v-for="t in trusted" :key="t.identity" class="settings-entry">
             <span class="mq-mono entry-main">{{ shortFingerprint(t.fingerprint) }}</span>
@@ -119,8 +118,10 @@ function addOrigin() {
       <section class="settings-section" aria-labelledby="settings-workers">
         <h3 id="settings-workers" class="settings-heading">Worker exclusions</h3>
         <p class="mq-muted">
-          Workers on these sites run untouched: the connections they open aren't captured or impaired. A site
-          is added here when its security policy keeps moqtap out of its workers.
+          The extension starts a page's workers from its own copy of their script, so it can see their
+          connections. Some sites' security policy doesn't allow workers started that way, and the site would
+          fail to load. Those sites are added here, and their workers start as the site wrote them; their
+          connections aren't captured or impaired. Remove one to try again on its next load.
         </p>
         <ul v-if="origins.length > 0" class="settings-list">
           <li v-for="origin in origins" :key="origin" class="settings-entry">

@@ -12,10 +12,12 @@
  * recovery system handles CSP failures transparently: if the blob worker
  * fails (sync or async), the Proxy terminates it and creates the original
  * uninstrumented worker, replaying any buffered operations. The origin is
- * then auto-excluded so future page loads skip wrapping entirely.
+ * then added to the extension's exclusion list, so later loads skip
+ * wrapping once the bridge's verdict arrives.
  */
 
 import { CaptureBuffer } from '@/src/intercept/capture-buffer'
+import { PageExclusion } from '@/src/intercept/page-exclusion'
 import { classifyConnection } from '@/src/intercept/collector-presence'
 import { installWebTransportHook } from '@/src/intercept/webtransport-hook'
 import { deferWebTransport } from '@/src/intercept/deferred-webtransport'
@@ -27,13 +29,6 @@ import { checkUrl, decide, routeThroughCli, snapshotOptions } from '@/src/impair
 import { sessionOpened } from '@/src/messaging/session-opened'
 import type { ContentToBackgroundMsg } from '@/src/messaging/types'
 
-/**
- * Origins where worker wrapping is known to fail (CSP, etc.).
- * Seeded synchronously from localStorage, then merged with the global
- * exclusion list relayed by the bridge from browser.storage.local.
- */
-const excludedOrigins = new Set<string>()
-
 let currentOrigin = ''
 try {
   currentOrigin = location.origin
@@ -41,25 +36,15 @@ try {
   /* opaque origin */
 }
 
-// Seed from localStorage for instant synchronous check
-try {
-  const raw = localStorage.getItem('__moqtap_excluded_origins')
-  if (raw) {
-    const arr = JSON.parse(raw) as string[]
-    for (const o of arr) excludedOrigins.add(o)
+/** Whether this frame's workers are left alone: the bridge's verdict, or a failure this load. */
+const exclusion = new PageExclusion(currentOrigin, safeLocalStorage())
+
+function safeLocalStorage(): Storage | null {
+  try {
+    return localStorage
+  } catch {
+    return null
   }
-  // Also check legacy single-origin flag
-  const legacy = localStorage.getItem('__moqtap_csp_blocked')
-  if (legacy && currentOrigin) {
-    const ts = Number(legacy)
-    if (Date.now() - ts < 24 * 60 * 60 * 1000) {
-      excludedOrigins.add(currentOrigin)
-    } else {
-      localStorage.removeItem('__moqtap_csp_blocked')
-    }
-  }
-} catch {
-  /* localStorage may be disabled */
 }
 
 let activated = false
@@ -78,14 +63,11 @@ export default defineContentScript({
   world: 'MAIN',
 
   main() {
-    // The bridge's verdict for this origin (from browser.storage.local).
-    // This arrives async but merges into the set used by the fast-path check.
-    // Workers created before it arrives still go through the Proxy safety net.
+    // The bridge's verdict for this origin, from the extension's list. It
+    // arrives async; workers created before it go through the Proxy safety net.
     window.addEventListener('message', (event) => {
       if (event.source !== window) return
-      if (event.data?.source === 'moqtap-exclusions' && event.data.excluded === true) {
-        if (currentOrigin) excludedOrigins.add(currentOrigin)
-      }
+      exclusion.onMessage(event.data)
     })
 
     // Listen for activation signal from bridge (ISOLATED world)
@@ -195,29 +177,10 @@ function bootstrap() {
 
 // ─── Exclusion persistence ────────────────────────────────────────────
 
-/** Persist a new auto-exclusion to localStorage + notify bridge for global storage */
-function addExclusion(origin: string, workerUrl: string, error: string) {
-  excludedOrigins.add(origin)
-  // Persist to localStorage for fast synchronous check on future loads
-  try {
-    const raw = localStorage.getItem('__moqtap_excluded_origins')
-    const arr: string[] = raw ? JSON.parse(raw) : []
-    if (!arr.includes(origin)) {
-      arr.push(origin)
-      localStorage.setItem('__moqtap_excluded_origins', JSON.stringify(arr))
-    }
-    // Clean up legacy key
-    localStorage.removeItem('__moqtap_csp_blocked')
-  } catch {
-    /* localStorage may be disabled */
-  }
-  // Notify bridge → background for global persistence
-  send({
-    type: 'worker:csp-recovered',
-    origin,
-    workerUrl,
-    error,
-  } as ContentToBackgroundMsg)
+/** A worker this frame could not instrument: ask the extension to list the origin. */
+function addExclusion(workerUrl: string, error: string) {
+  const msg = exclusion.record(workerUrl, error)
+  if (msg) send(msg)
 }
 
 // ─── Worker Proxy with recovery ──────────────────────────────────────
@@ -314,11 +277,7 @@ function createWorkerProxy(
     onUninstrumented()
     flush(worker)
     // Record exclusion
-    addExclusion(
-      currentOrigin,
-      new URL(String(originalUrl), location.href).href,
-      errMsg,
-    )
+    addExclusion(new URL(String(originalUrl), location.href).href, errMsg)
   }
 
   // Heartbeat: hook sends {source:"moqtap-hook-ready"} on successful load
@@ -429,7 +388,7 @@ function patchWorkerConstructor(hookSource: string) {
       url: string | URL,
       options?: WorkerOptions,
     ): Worker {
-      if (blocked || excludedOrigins.has(currentOrigin)) {
+      if (blocked || exclusion.excluded) {
         pageRoute.report('worker-uninstrumented', workerHref(url))
         return new OriginalWorker(url, options)
       }
@@ -460,11 +419,7 @@ function patchWorkerConstructor(hookSource: string) {
         // Synchronous CSP failure — blob: worker creation blocked
         blocked = true
         revokeIfBlob(wrappedUrl.url)
-        addExclusion(
-          currentOrigin,
-          new URL(String(url), location.href).href,
-          String(err),
-        )
+        addExclusion(new URL(String(url), location.href).href, String(err))
         if (!cspWarned) {
           cspWarned = true
           send({
@@ -500,7 +455,7 @@ function patchWorkerConstructor(hookSource: string) {
       const opts: WorkerOptions | undefined =
         typeof options === 'string' ? { name: options } : options
 
-      if (sharedBlocked || excludedOrigins.has(currentOrigin)) {
+      if (sharedBlocked || exclusion.excluded) {
         pageRoute.report('worker-uninstrumented', workerHref(url))
         const origOpts: string | WorkerOptions | undefined =
           typeof options === 'string' ? options : opts
@@ -525,11 +480,7 @@ function patchWorkerConstructor(hookSource: string) {
           () => {
             if (!sharedBlocked) {
               sharedBlocked = true
-              addExclusion(
-                currentOrigin,
-                new URL(String(url), location.href).href,
-                'SharedWorker async CSP failure',
-              )
+              addExclusion(new URL(String(url), location.href).href, 'SharedWorker async CSP failure')
             }
           },
           { once: true },
@@ -539,11 +490,7 @@ function patchWorkerConstructor(hookSource: string) {
         pageRoute.removeWorker(link)
         sharedBlocked = true
         revokeIfBlob(wrappedUrl.url)
-        addExclusion(
-          currentOrigin,
-          new URL(String(url), location.href).href,
-          String(err),
-        )
+        addExclusion(new URL(String(url), location.href).href, String(err))
         if (!cspWarned) {
           cspWarned = true
           send({
