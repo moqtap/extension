@@ -7,7 +7,17 @@ import Icon from './Icon.vue'
 import PopupMenu from './PopupMenu.vue'
 
 defineProps<{ sessions: SessionEntry[]; selected: SessionEntry | null }>()
-const emit = defineEmits<{ select: [id: string] }>()
+const emit = defineEmits<{
+  select: [id: string]
+  /** The selected connection's context menu, at the pointer or under the picker. */
+  context: [anchor: HTMLElement, at: { x: number; y: number } | null]
+}>()
+
+function onKey(e: KeyboardEvent) {
+  if (e.key !== 'ContextMenu' && !(e.key === 'F10' && e.shiftKey)) return
+  e.preventDefault()
+  emit('context', e.currentTarget as HTMLElement, null)
+}
 
 const open = ref(false)
 const btn = ref<HTMLButtonElement | null>(null)
@@ -22,6 +32,8 @@ const btn = ref<HTMLButtonElement | null>(null)
     :title="selected?.url"
     :aria-label="selected ? `Connection: ${connectionName(selected)}` : 'Connection'"
     @click="open = !open"
+    @contextmenu.prevent="emit('context', $event.currentTarget as HTMLElement, { x: $event.clientX, y: $event.clientY })"
+    @keydown="onKey"
   >
     <span v-if="selected && !selected.closed && !selected.imported" class="mq-dot picker-dot" aria-hidden="true" />
     <template v-if="selected">

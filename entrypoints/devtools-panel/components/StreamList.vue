@@ -5,7 +5,6 @@ import { streamBytes } from '../sizes'
 import type { GridColumn } from '../grid'
 import { byteLabel, byteTitle, type StreamFormat } from '../stream-format'
 import type { MessageEntry, StreamEntry, TrackEntry } from '../use-inspector'
-import BrandLink from './BrandLink.vue'
 import DataGrid from './DataGrid.vue'
 import DirMark from './DirMark.vue'
 import Icon from './Icon.vue'
@@ -21,8 +20,8 @@ const props = defineProps<{
   messages?: MessageEntry[]
   /** What each stream is read as; without it, what its bytes prove */
   formatOf?: (stream: StreamEntry) => StreamFormat
-  /** The logo at the footer's end */
-  brand?: boolean
+  /** The panel has a status footer: the counts go there */
+  appFooter?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -224,19 +223,20 @@ function transferParts(
       </template>
     </DataGrid>
 
-    <div v-if="streams.length > 0" class="stream-footer">
-      <span class="footer-value">{{
-        plural(isFiltered ? filteredStreams.length : streams.length, 'stream')
-      }}</span>
-      <span
-        v-for="part in transferParts(isFiltered ? filteredStreams : streams)"
-        :key="part.dir"
-        class="footer-transfer"
-        ><DirMark :dir="part.dir" />
-        {{ part.bytes }}</span
-      >
-      <BrandLink v-if="brand" class="footer-brand" />
-    </div>
+    <Teleport to="#status-slot" defer :disabled="!appFooter">
+      <div v-if="streams.length > 0" class="stream-footer" :class="{ 'stream-footer--app': appFooter }">
+        <span class="footer-value">{{
+          plural(isFiltered ? filteredStreams.length : streams.length, 'stream')
+        }}</span>
+        <span
+          v-for="part in transferParts(isFiltered ? filteredStreams : streams)"
+          :key="part.dir"
+          class="footer-transfer"
+          ><DirMark :dir="part.dir" />
+          {{ part.bytes }}</span
+        >
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -285,8 +285,10 @@ function transferParts(
 .footer-transfer {
   font-family: var(--font-mono);
 }
-.footer-brand {
-  margin: -2px 0 -2px auto;
+.stream-footer--app {
+  padding: 0;
+  border-top: 0;
+  background: none;
 }
 .footer-transfer .dir :deep(svg) {
   width: 12px;
@@ -295,7 +297,7 @@ function transferParts(
 }
 
 @media (max-height: 349px) {
-  .stream-footer {
+  .stream-footer:not(.stream-footer--app) {
     display: none;
   }
 }

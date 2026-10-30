@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AccountMenu from './components/AccountMenu.vue'
 import BrandLink from './components/BrandLink.vue'
 import ConnectionList from './components/ConnectionList.vue'
@@ -212,12 +212,37 @@ function share() {
 function exportSelected() {
   if (selectedSession.value) exportTrace(selectedSession.value.sessionId)
 }
-function clearSelectedStreams() {
-  if (live.value) clearStreams(selectedSession.value!.sessionId)
+// ── Connection context menu ───────────────────────────────────────
+const rowMenu = ref<{ id: string; anchor: HTMLElement; at: { x: number; y: number } | null } | null>(null)
+/** Clear stream data is for a live connection, which keeps going without the streams it had. */
+const rowMenuSession = computed(() => {
+  const s = rowMenu.value ? sessions.value.get(rowMenu.value.id) : undefined
+  return s && !s.imported ? s : null
+})
+function openRowMenu(id: string, anchor: HTMLElement, at: { x: number; y: number } | null) {
+  const s = sessions.value.get(id)
+  if (s && !s.imported) rowMenu.value = { id, anchor, at }
+}
+function openPickerMenu(anchor: HTMLElement, at: { x: number; y: number } | null) {
+  if (selectedSession.value) openRowMenu(selectedSession.value.sessionId, anchor, at)
+}
+function clearRowStreams() {
+  const s = rowMenuSession.value
+  if (s && s.streams.size > 0) clearStreams(s.sessionId)
 }
 function openSettings() {
   settingsOpen.value = true
 }
+/** As DevTools' own Settings: closing gives the focus back to the gear. */
+function closeSettings() {
+  settingsOpen.value = false
+  void nextTick(() => moreBtn.value?.focus())
+}
+function onSettingsKey(e: KeyboardEvent) {
+  if (e.key === 'Escape' && settingsOpen.value) closeSettings()
+}
+onMounted(() => window.addEventListener('keydown', onSettingsKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onSettingsKey))
 </script>
 
 <template>
@@ -227,7 +252,7 @@ function openSettings() {
     :class="{ 'is-narrow': layout.narrow, 'has-side': sideHead, 'has-filter-row': layout.narrow && filterSlot }"
     :style="sideStyle"
   >
-    <div class="tool-bar toolbar" role="toolbar" aria-label="WebTransport">
+    <div class="tool-bar toolbar" role="toolbar" aria-label="WebTransport" :inert="settingsOpen">
       <div class="side-head">
       <button
         class="mq-btn mq-btn--quiet mq-btn--icon record-btn"
@@ -249,6 +274,16 @@ function openSettings() {
       >
         <Icon name="ban" />
       </button>
+      <!-- Import acts on the connection list, so it sits with the list's buttons. -->
+      <button
+        v-if="!layout.narrow"
+        class="mq-btn mq-btn--quiet mq-btn--icon"
+        aria-label="Import .moqtrace"
+        title="Import .moqtrace"
+        @click="handleImportClick"
+      >
+        <Icon name="import" />
+      </button>
       <BrandLink v-if="logoAt === 'head'" class="head-brand" />
       <button
         v-if="sideHead"
@@ -268,7 +303,17 @@ function openSettings() {
         :sessions="sessionList"
         :selected="selectedSession"
         @select="selectConnection"
+        @context="openPickerMenu"
       />
+      <button
+        v-if="layout.narrow"
+        class="mq-btn mq-btn--quiet mq-btn--icon"
+        aria-label="Import .moqtrace"
+        title="Import .moqtrace"
+        @click="handleImportClick"
+      >
+        <Icon name="import" />
+      </button>
       <TabStrip
         v-if="layout.tabsInline && selectedSession && !settingsOpen"
         class="toolbar-tabs"
@@ -334,17 +379,9 @@ function openSettings() {
           >
         </button>
       </template>
-      <div id="tab-tools" class="tab-tools" :class="{ 'is-idle': settingsOpen }" />
+      <div v-show="filterSlot" id="tab-tools" class="tab-tools" :class="{ 'is-idle': settingsOpen }" />
       <span v-if="layout.narrow && filterSlot" class="row-break" aria-hidden="true" />
       <span class="toolbar-spacer" />
-      <button
-        class="mq-btn mq-btn--quiet mq-btn--icon io-btn"
-        aria-label="Import .moqtrace"
-        title="Import .moqtrace"
-        @click="handleImportClick"
-      >
-        <Icon name="import" />
-      </button>
       <button
         v-if="exportable"
         class="mq-btn mq-btn--quiet mq-btn--icon io-btn"
@@ -352,11 +389,11 @@ function openSettings() {
         title="Export .moqtrace"
         @click="exportSelected"
       >
-        <Icon name="download" />
+        <Icon name="export" />
       </button>
       <button
         v-if="exportable"
-        class="mq-btn mq-btn--quiet mq-btn--icon io-btn"
+        class="mq-btn mq-btn--quiet mq-btn--icon io-btn share-btn"
         aria-label="Upload to moqtap and share"
         title="Upload to moqtap and share"
         @click="share"
@@ -381,7 +418,7 @@ function openSettings() {
       </div>
     </div>
 
-    <div class="infobars">
+    <div class="infobars" :inert="settingsOpen">
       <Infobar v-if="impairmentNotice" kind="warning" :dismissible="pickNotice" @dismiss="dismissRefusal">
         {{ impairmentIssue }}
         <template v-if="refusal" #actions>
@@ -465,6 +502,23 @@ function openSettings() {
         @set-session-profile="(c) => cli.setSessionProfile(sessionMenu!.id, c)"
       />
     </PopupMenu>
+    <PopupMenu
+      v-if="rowMenu && rowMenuSession"
+      :anchor="rowMenu.anchor"
+      :at="rowMenu.at"
+      label="Connection"
+      @close="rowMenu = null"
+    >
+      <button
+        class="mq-menu__item"
+        role="menuitem"
+        :aria-disabled="rowMenuSession.streams.size === 0 ? 'true' : undefined"
+        title="Remove the recorded streams; messages and new streams stay"
+        @click="clearRowStreams"
+      >
+        Clear stream data
+      </button>
+    </PopupMenu>
     <PopupMenu v-if="moreOpen" :anchor="moreBtn" label="More options" @close="moreOpen = false">
       <button class="mq-menu__item" role="menuitem" @click="openSettings">Settings</button>
       <hr role="separator" />
@@ -476,16 +530,17 @@ function openSettings() {
 
     <SettingsView
       v-if="settingsOpen"
-      class="workspace"
+      class="settings-overlay"
       :view="cliView"
       :trusted="cli.trusted.value"
       :exclusions="workerExclusions"
-      @close="settingsOpen = false"
+      @close="closeSettings"
       @allow="cli.allow"
       @forget="cli.forget"
       @add-exclusion="addWorkerExclusion"
       @remove-exclusion="removeWorkerExclusion"
     />
+    <!-- The sidebar is never narrower than its toolbar segment: record, clear, import, logo, toggle. -->
     <SplitView
       v-show="!settingsOpen"
       class="workspace"
@@ -494,7 +549,7 @@ function openSettings() {
       :first="sidebarShown"
       :initial="240"
       unit="px"
-      :min-first="160"
+      :min-first="176"
       :min-second="320"
       :stack-below="0"
       :fixed="collapsed ? SIDEBAR_COLLAPSED_WIDTH : undefined"
@@ -511,8 +566,9 @@ function openSettings() {
             :collapsed="collapsed"
             @select="selectConnection"
             @impair="(id, anchor) => (sessionMenu = { id, anchor })"
+            @context="openRowMenu"
           />
-          <div v-if="logoAt === 'side'" class="side-foot"><BrandLink mark /></div>
+          <div v-if="logoAt === 'side'" class="side-foot"><BrandLink /></div>
         </aside>
       </template>
       <template #second>
@@ -524,11 +580,10 @@ function openSettings() {
             v-model:tab="viewTab"
             v-model:filter="filter"
             :session="selectedSession"
-            :brand="logoAt === 'footer'"
+            :app-footer="logoAt === 'footer'"
             :get-stream-data="getStreamData"
             :get-datagram-group-data="getDatagramGroupData"
             @problems="problemCounts = $event"
-            @clear-streams="clearSelectedStreams"
           />
         </template>
         <div v-else-if="sessionList.length > 0" class="empty-state">
@@ -541,6 +596,11 @@ function openSettings() {
             <button class="mq-btn mq-btn--secondary" @click="reloadPage">Reload page</button>
             <button class="mq-btn mq-btn--secondary" @click="handleImportClick">Import .moqtrace</button>
           </div>
+        </div>
+        <!-- Kept mounted: the stream counts teleport into its slot. -->
+        <div v-show="logoAt === 'footer'" class="status-footer">
+          <div id="status-slot" class="status-slot" />
+          <BrandLink class="status-footer-brand" />
         </div>
       </main>
       </template>
@@ -562,10 +622,17 @@ function openSettings() {
 
 <style scoped>
 .panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   background: var(--bg);
+}
+/* Settings cover the whole panel, toolbar included, as DevTools' own do. */
+.settings-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
 }
 
 /* ── Toolbar ───────────────────────────────────────────────────── */
@@ -659,8 +726,9 @@ function openSettings() {
   background: transparent;
   border-color: transparent;
 }
+/* Pills: room at the round ends for the label. */
 .toolbar .mq-btn--quiet {
-  padding: 0 var(--space-1);
+  padding: 0 6px;
 }
 .toolbar .mq-btn--icon {
   padding: 0;
@@ -669,14 +737,15 @@ function openSettings() {
   background: transparent;
 }
 
-/* Wraps at its least width, grows to 200 px when the row has room. */
+/* As Network's, it takes the row's free room, here up to 480 px, and is the
+   first to give way when there is none, down to 120 px. */
 .filter-field {
   position: relative;
   display: flex;
   align-items: center;
-  flex: 1 1 120px;
+  flex: 100 1000 200px;
   min-width: 120px;
-  max-width: 200px;
+  max-width: 480px;
 }
 .filter-icon {
   position: absolute;
@@ -691,12 +760,15 @@ function openSettings() {
 .filter-field.is-idle {
   visibility: hidden;
 }
-/* As Network's filter: no border until focused. Chrome: a 20 px pill, 3 px
-   clear of the bar, ringed when focused. Firefox: the bar's full height, a
-   1 px focus border. */
+/* As Network's filter. Chrome: a filled 20 px pill, 3 px clear of the bar,
+   darker on hover, ringed when focused. Firefox: no fill, the bar's full
+   height, a 1 px focus border. */
 .panel .filter-input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   height: var(--filter-h);
-  padding: 0 22px;
+  padding: 0 24px 0 22px;
   border-color: transparent;
   background: transparent;
 }
@@ -708,12 +780,13 @@ function openSettings() {
 }
 :global(html.host--chrome .panel .filter-input) {
   border-radius: var(--radius-full);
+  background: var(--filter-bg);
 }
 :global(html.host--chrome .panel .filter-input:hover) {
-  background: var(--surface-hover);
+  background: var(--filter-hover);
 }
 :global(html.host--chrome .panel .filter-input:focus) {
-  background: transparent;
+  background: var(--filter-bg);
   box-shadow: inset 0 0 0 2px var(--focus-ring);
 }
 :global(html.host--firefox) {
@@ -728,11 +801,22 @@ function openSettings() {
 .filter-input::-webkit-search-cancel-button {
   display: none;
 }
-.filter-clear {
+/* As Network's clear button: a 16 px round target inside the field, 4 px clear
+   of the text and the edge. Outranks the tool bar's icon button rule, which
+   would put it back in the row. */
+.filter-field .filter-clear.mq-btn--icon {
   position: absolute;
-  right: 0;
-  height: var(--filter-h);
-  width: 22px;
+  top: 50%;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin-top: -8px;
+  --icon-hit: 16px;
+}
+.filter-clear :deep(svg) {
+  width: 12px;
+  height: 12px;
 }
 /* Narrow: the first row keeps its controls (the picker gives way); the
    filter, the view's own tools and import/export take the second, which is
@@ -753,14 +837,17 @@ function openSettings() {
    they wrap the row: the filter's least width and import/export stay. */
 .is-narrow .tab-tools {
   order: 11;
-  flex: 0 1 auto;
+  flex: 0 1 var(--tab-tools-w);
   max-width: calc(100% - 140px);
-  overflow: hidden;
   margin-bottom: 2px;
 }
 .has-filter-row .io-btn {
   order: 12;
   margin-bottom: 2px;
+}
+/* Last on its row: its centre 18 px from the edge, as the gear's. */
+.has-filter-row .share-btn {
+  margin-right: 2px;
 }
 .is-narrow .io-sep {
   display: none;
@@ -770,6 +857,15 @@ function openSettings() {
 .bar-main > :deep(.picker-btn) {
   flex: 100 1 72px;
   max-width: max-content;
+}
+/* Narrow, the profile name gives way too, so the first row keeps the gear. */
+.is-narrow .impair-btn {
+  flex: 100 1 64px;
+  min-width: 0;
+  max-width: max-content;
+}
+.is-narrow .impair-name {
+  max-width: 140px;
 }
 
 .impair-btn {
@@ -798,13 +894,17 @@ function openSettings() {
   height: 12px;
 }
 
+/* A slot as wide on every view, empty or not, so no view moves the filter. */
+/* Holds a control's height while empty, so switching tabs doesn't move the panel. */
 .tab-tools {
   display: flex;
   align-items: center;
+  flex: 0 0 var(--tab-tools-w);
+  width: var(--tab-tools-w);
   min-width: 0;
-}
-.tab-tools:empty {
-  display: none;
+  min-height: var(--control-tool);
+  overflow: hidden;
+  --tab-tools-w: 200px;
 }
 .tab-tools.is-idle {
   visibility: hidden;
@@ -881,6 +981,25 @@ function openSettings() {
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+
+/* With no sidebar the panel has a status footer on every tab: the stream counts on Streams, the logo always. */
+.status-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.status-slot {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.status-footer-brand {
+  margin: -2px 0;
 }
 
 /* As Network's empty state: centred both ways, a title over a line of text and the actions. */

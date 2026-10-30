@@ -66,47 +66,6 @@ select {
   border-color: var(--line-strong);
 }
 
-/* The main toolbar's icon buttons as DevTools': a round tint on hover, press
-   and an open menu, a round ring on keyboard focus; the hit box stays the
-   button's. Text buttons keep their shape and take the same tint. */
-.toolbar .mq-btn--icon {
-  position: relative;
-  isolation: isolate;
-}
-.toolbar .mq-btn--icon,
-.toolbar .mq-btn--icon:is(:hover, :active, [aria-expanded='true']) {
-  background: transparent;
-}
-.toolbar .mq-btn--icon::before {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  left: 50%;
-  top: 50%;
-  width: 24px;
-  height: 24px;
-  margin: -12px 0 0 -12px;
-  border-radius: 50%;
-}
-.toolbar .mq-btn--icon:not(:disabled):hover::before {
-  background: var(--bar-hover);
-}
-.toolbar .mq-btn--icon:not(:disabled):is(:active, [aria-expanded='true'])::before {
-  background: var(--bar-active);
-}
-.toolbar .mq-btn--icon:focus-visible {
-  outline: none;
-}
-.toolbar .mq-btn--icon:focus-visible::before {
-  box-shadow: inset 0 0 0 2px var(--focus-ring);
-}
-.toolbar .mq-btn--quiet:not(.mq-btn--icon):not(:disabled):hover {
-  background: var(--bar-hover);
-}
-.toolbar .mq-btn--quiet:not(.mq-btn--icon):not(:disabled):is(:active, [aria-expanded='true']) {
-  background: var(--bar-active);
-}
-
 .bar-sep {
   width: 1px;
   height: 16px;

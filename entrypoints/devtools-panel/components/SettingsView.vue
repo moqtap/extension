@@ -60,7 +60,7 @@ function addOrigin() {
       <h2 id="settings-title" class="settings-title">Settings</h2>
       <button
         ref="closeBtn"
-        class="mq-btn mq-btn--quiet mq-btn--icon"
+        class="mq-btn mq-btn--quiet mq-btn--icon close-btn"
         aria-label="Close settings"
         title="Close settings"
         @click="emit('close')"
@@ -158,6 +158,10 @@ function addOrigin() {
 .settings-bar {
   justify-content: space-between;
   padding-left: var(--space-3);
+}
+/* Its centre 18 px from the edge, as the gear's. */
+.close-btn {
+  margin-right: 2px;
 }
 .settings-title {
   margin: 0;

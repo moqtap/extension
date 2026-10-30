@@ -127,8 +127,8 @@ describe('tabMenuHasConnection', () => {
 })
 
 describe('SIDEBAR_COLLAPSED_WIDTH', () => {
-  it('is the three 24 px buttons with their gaps and the bar padding', () => {
-    expect(SIDEBAR_COLLAPSED_WIDTH).toBe(84)
+  it('is the four 24 px buttons with their gaps and the bar padding', () => {
+    expect(SIDEBAR_COLLAPSED_WIDTH).toBe(110)
   })
 })
 

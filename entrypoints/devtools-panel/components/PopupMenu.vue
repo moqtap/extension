@@ -16,6 +16,8 @@ const props = withDefaults(
     side?: boolean
     /** Focus an item on opening: off for a submenu opened by hovering. */
     focusOnOpen?: boolean
+    /** Open at this point, as a context menu does, rather than under the anchor. */
+    at?: { x: number; y: number } | null
   }>(),
   { side: false, focusOnOpen: true },
 )
@@ -44,7 +46,9 @@ function place() {
   if (!menu || !a) return
   const size = { width: menu.offsetWidth, height: menu.scrollHeight }
   const view = { width: window.innerWidth, height: window.innerHeight }
-  pos.value = (props.side ? placeSubmenu : placeMenu)(a.getBoundingClientRect(), size, view)
+  const p = props.at
+  const rect = p ? { left: p.x, right: p.x, top: p.y, bottom: p.y, width: 0, height: 0 } : a.getBoundingClientRect()
+  pos.value = (props.side ? placeSubmenu : placeMenu)(rect, size, view)
 }
 
 function close(refocus = true) {

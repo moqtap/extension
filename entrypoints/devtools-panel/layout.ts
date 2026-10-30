@@ -45,14 +45,14 @@ export const BAR_BUTTON = 24
 export const BAR_GAP = 2
 export const BAR_PAD = 4
 
-/** The compact sidebar: exactly the record, clear and compact buttons above it. */
-export const SIDEBAR_COLLAPSED_WIDTH = BAR_PAD * 2 + BAR_BUTTON * 3 + BAR_GAP * 2
+/** The compact sidebar: exactly the record, clear, import and compact buttons above it. */
+export const SIDEBAR_COLLAPSED_WIDTH = BAR_PAD * 2 + BAR_BUTTON * 4 + BAR_GAP * 3
 
 /**
  * Where the logo goes: in the sidebar's part of the toolbar, between its
- * buttons and the compact toggle (`head`); the T mark at the foot of a
- * compact sidebar, whose buttons fill its width (`side`); with no sidebar,
- * the status footer.
+ * buttons and the compact toggle (`head`); at the foot of a compact sidebar,
+ * whose buttons fill its width (`side`); with no sidebar,
+ * the status footer, which with no connection open holds just the logo.
  */
 export type LogoPlace = 'head' | 'side' | 'footer'
 

@@ -28,13 +28,14 @@ const props = defineProps<{
   tab?: TabImpairment | null
   /** Scenario short labels, by scenario name. */
   shortLabels?: ReadonlyMap<string, string>
-  /** Down to the state and #id; the rest goes to the tooltip. */
+  /** Down to the state, #id and rate; the rest goes to the tooltip. */
   collapsed?: boolean
 }>()
 
 const listEl = ref<HTMLElement | null>(null)
 const listWidth = ref(0)
-const showRate = computed(() => !props.collapsed && sidebarShowsRate(listWidth.value))
+/** Compact rows keep the rate: the state and #id leave room for it. */
+const showRate = computed(() => props.collapsed || sidebarShowsRate(listWidth.value))
 let ro: ResizeObserver | null = null
 onMounted(() => {
   const el = listEl.value
@@ -59,7 +60,14 @@ const emit = defineEmits<{
   select: [id: string]
   /** Pick the profile of the session with this CLI id, in a menu at `anchor`. */
   impair: [cliSession: string, anchor: HTMLElement]
+  /** The row's context menu: at the pointer, or with no point under the row (keyboard). */
+  context: [id: string, anchor: HTMLElement, at: { x: number; y: number } | null]
 }>()
+
+/** The context menu key, or Shift+F10, as DevTools takes them. */
+function isMenuKey(e: KeyboardEvent): boolean {
+  return e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)
+}
 
 /** The profile of an open session through the CLI, or null when it has none to pick. */
 function cliProfile(session: SessionEntry) {
@@ -190,6 +198,16 @@ const sessionStats = computed(() => {
         :aria-current="session.sessionId === selectedId ? 'true' : undefined"
         :title="rowTitle(session)"
         @click="emit('select', session.sessionId)"
+        @contextmenu.prevent="
+          emit('context', session.sessionId, $event.currentTarget as HTMLElement, { x: $event.clientX, y: $event.clientY })
+        "
+        @keydown="
+          (e: KeyboardEvent) => {
+            if (!isMenuKey(e)) return
+            e.preventDefault()
+            emit('context', session.sessionId, e.currentTarget as HTMLElement, null)
+          }
+        "
       >
         <span
           class="state-dot"
@@ -368,5 +386,17 @@ html.host--firefox .row-selected .impair-btn.is-active {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
+}
+/* Compact: the system font's narrower figures fit "12.3 Mbps" beside a #id. */
+.is-collapsed .connection-item {
+  flex: 1 0 auto;
+}
+.is-collapsed .data-stat {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
 }
 </style>

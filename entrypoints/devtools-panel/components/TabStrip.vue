@@ -31,7 +31,7 @@ const fit = computed(() =>
     ? fitTabs(widths.value, available.value, MORE, activeIndex.value)
     : { shown: props.tabs.map((_, i) => i), overflow: [] as number[] },
 )
-/** Every tab's width together: the strip grows no wider, so what follows it keeps its place. */
+/** Every tab's width together: the strip asks for it and grows no wider, so what follows it keeps its place. */
 const natural = computed(() => widths.value.reduce((a, b) => a + b, 0))
 const shownTabs = computed(() => fit.value.shown.map((i) => props.tabs[i]))
 const overflowTabs = computed(() => fit.value.overflow.map((i) => props.tabs[i]))
@@ -75,7 +75,7 @@ function onKey(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div ref="strip" class="tab-strip" :style="natural > 0 ? { maxWidth: `${natural}px` } : undefined">
+  <div ref="strip" class="tab-strip" :style="natural > 0 ? { maxWidth: `${natural}px`, flexBasis: `${natural}px` } : undefined">
     <div class="mq-tabs tab-strip__tabs" role="tablist" aria-label="Views">
       <button
         v-for="tab in shownTabs"

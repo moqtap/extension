@@ -60,14 +60,13 @@ const props = defineProps<{
     sessionId: string,
     groupKey: string,
   ) => Promise<Uint8Array | null>
-  /** The logo goes at the end of the status footer */
-  brand?: boolean
+  /** The panel has a status footer: the stream counts go there */
+  appFooter?: boolean
 }>()
 
 const emit = defineEmits<{
   problems: [counts: Record<ProblemSeverity, number>]
   /** Drop the recorded streams, keeping the control stream and the messages. */
-  clearStreams: []
 }>()
 
 /** The view shown; a problem's link moves it. */
@@ -488,16 +487,6 @@ const collectorDetail = computed((): string | null => {
       role="tabpanel"
       :aria-labelledby="`tab-${activeTab}`"
     >
-      <Teleport v-if="activeTab === 'streams' && !session.imported" to="#tab-tools" defer>
-        <button
-          class="mq-btn mq-btn--quiet"
-          :disabled="streamList.length === 0"
-          title="Remove the recorded streams; messages and new streams stay"
-          @click="emit('clearStreams')"
-        >
-          Clear stream data
-        </button>
-      </Teleport>
       <ControlMessageLog
         v-if="activeTab === 'messages'"
         :messages="session.messages"
@@ -526,7 +515,7 @@ const collectorDetail = computed((): string | null => {
             :messages="session.messages"
             :format-of="formatOf"
             :filter="filter"
-            :brand="brand"
+            :app-footer="appFooter"
             @inspect="inspectStream"
           />
         </template>
