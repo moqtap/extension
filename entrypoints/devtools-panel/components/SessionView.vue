@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { streamSummary } from '../detail-text'
 import {
   formatBytes,
@@ -24,18 +24,21 @@ import {
   catalogConflictProblems,
   catalogProblems,
   consolidateProblems,
-  groupProblems,
+  joinInitProblems,
   type PanelProblem,
   type ProblemSeverity,
   type ProblemTarget,
   protocolProblems,
+  SESSION_PROBLEMS,
   severityCounts,
 } from '../problems'
 import type { SessionTab } from '../session-tabs'
-import { sessionPins } from '../packaging'
+import { sessionViews } from '../packaging'
 import type { StreamObject } from '../stream-framing'
 import { sessionBytes } from '../sizes'
-import { formatOfStream, type StreamFormat } from '../stream-format'
+import { undefinedParameter } from '../undecodable'
+import { shownTracks } from '../alias-tracks'
+import { formatOfStream, type StreamFormat, trackByteLabels } from '../stream-format'
 import type { MessageEntry, SessionEntry, StreamEntry } from '../use-inspector'
 import ControlMessageLog from './ControlMessageLog.vue'
 import CopyButton from './CopyButton.vue'
@@ -135,6 +138,8 @@ const hasNewData = computed(() => {
 })
 
 const draft = computed(() => sessionDraft(props.session))
+/** Every track that carried data, the ones known only by alias included. */
+const tracks = computed(() => shownTracks(props.session))
 
 /** The session's MSF / CMSF catalogs, read as their streams grow. */
 const catalogs = useSessionCatalogs(() => props.session, props.getStreamData)
@@ -143,7 +148,7 @@ const selectedCatalog = computed(() =>
     ? null
     : catalogs.catalogForStream(selectedStreamId.value),
 )
-/** The session's LOC tracks: the catalog's, and any the user pins. */
+/** The session's LOC tracks, as the catalogs say. */
 const loc = useSessionLoc(
   () => props.session,
   () => catalogs.packaging.value,
@@ -220,13 +225,31 @@ const detailSummary = computed(() => {
   })
 })
 
-const pins = computed(() => sessionPins(props.session))
+const views = computed(() => sessionViews(props.session))
 
 /** What a stream is read as: its track's packaging, or what its bytes prove. */
 function formatOf(stream: StreamEntry): StreamFormat {
-  void pins.value.revision.value
-  return formatOfStream(props.session, stream, catalogs.packaging.value, pins.value)
+  return formatOfStream(props.session, stream, catalogs.packaging.value)
 }
+
+/**
+ * How the selected stream's track is viewed where Tracks offers the choice
+ * (its packaging is known): with its reader, or as Hex.
+ */
+const selectedTrackView = computed((): 'reader' | 'hex' | undefined => {
+  void views.value.revision.value
+  const source = selectedSource.value
+  const track = source ? trackForSource(props.session, source) : null
+  if (!track) return undefined
+  const key = registryTrackKey(track)
+  const known =
+    selectedFormat.value.from === 'packaging' ||
+    catalogs.catalogs.value.some((c) => c.key === key) ||
+    byteLabels.value.get(key) != null
+  if (!known) return undefined
+  return views.value.isHex(key) ? 'hex' : 'reader'
+})
+const byteLabels = computed(() => trackByteLabels(props.session, catalogs.packaging.value))
 
 const selectedFormat = computed(
   (): StreamFormat =>
@@ -268,7 +291,7 @@ function streamTime(streamId: number): number | null {
 
 /** Every source's problems as one list. */
 const shownProblems = computed((): PanelProblem[] =>
-  consolidateProblems([
+  joinInitProblems(consolidateProblems([
     protocolProblems(
       sessionProblems(events.value, {
         draft: draft.value,
@@ -276,17 +299,25 @@ const shownProblems = computed((): PanelProblem[] =>
         endMs:
           props.session.closed || props.session.imported ? undefined : now.value,
       }),
+      (p) =>
+        p.id === 'session.undecodable'
+          ? undefinedParameter(p.message, {
+              draft: props.session.draft,
+              streams: props.session.streams,
+              messages: props.session.messages,
+            })
+          : null,
     ),
     catalogConflictProblems(props.session.tracks.values(), catalogs.packaging.value),
-    catalogProblems(catalogs.catalogs.value, streamTime),
+    catalogProblems(catalogs.catalogs.value, streamTime, !props.session.imported),
     templateProblems(props.session.tracks.values(), catalogs.packaging.value),
     loc.problems.value,
     cmaf.problems.value,
-  ]),
+  ])),
 )
 
 watch(
-  () => severityCounts(groupProblems(shownProblems.value)),
+  () => severityCounts(shownProblems.value),
   (counts) => emit('problems', counts),
   { immediate: true, deep: true },
 )
@@ -322,6 +353,29 @@ async function openTarget(target: ProblemTarget) {
   await showStreamData(id)
 }
 
+/** The session in a line, for copied problems: host, protocol, start in UTC. */
+const sessionLine = computed(() => {
+  let host = props.session.url
+  try {
+    host = new URL(props.session.url).host
+  } catch {
+    // Not a URL: shown as recorded.
+  }
+  const start = new Date(props.session.createdAt).toISOString().replace('T', ' ').slice(0, 19)
+  return `${host}, ${protocolLabel(props.session)}, ${start} UTC`
+})
+
+provide(SESSION_PROBLEMS, {
+  problems: shownProblems,
+  startedAt: () => props.session.createdAt,
+  session: sessionLine,
+  stateKey: () => props.session.sessionId,
+  open: (target) => void openTarget(target),
+})
+
+/** Media tracks in the Tracks tab's order, which problem groups follow. */
+const trackOrder = computed(() => Array.from(tracks.value.values(), registryTrackKey))
+
 function protocolLabel(session: SessionEntry): string {
   switch (session.protocol) {
     case 'moqt':
@@ -346,7 +400,7 @@ function versionAgreedIn(session: SessionEntry): string | null {
 
 const totalBytes = computed(() => sessionBytes(props.session))
 
-/** A track's row opens the streams that carry it: Streams, filtered by its name. */
+/** A track's Show streams: Streams, filtered by its name. */
 function openTrackStreams(trackName: string) {
   filter.value = trackName
   activeTab.value = 'streams'
@@ -468,7 +522,7 @@ const collectorDetail = computed((): string | null => {
           <StreamList
             :streams="streamList"
             :selected-id="selectedStreamId"
-            :tracks="session.tracks"
+            :tracks="tracks"
             :messages="session.messages"
             :format-of="formatOf"
             :filter="filter"
@@ -521,6 +575,7 @@ const collectorDetail = computed((): string | null => {
               :timeline="selectedTimeline"
               :template="selectedTemplate"
               :focus="streamFocus"
+              :track-view="selectedTrackView"
               class="detail-viewer"
             />
             <p v-else class="pane-message">No data recorded for this stream.</p>
@@ -545,6 +600,9 @@ const collectorDetail = computed((): string | null => {
           :problems="shownProblems"
           :started-at="session.createdAt"
           :filter="filter"
+          :session="sessionLine"
+          :state-key="session.sessionId"
+          :track-order="trackOrder"
           @open="openTarget"
         />
       </div>
@@ -717,7 +775,8 @@ const collectorDetail = computed((): string | null => {
 /* ── Problems and details ───────────────────────────────────────── */
 
 .problems-panel {
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
 }

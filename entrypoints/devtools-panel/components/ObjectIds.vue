@@ -1,9 +1,20 @@
 <script lang="ts" setup>
-/** An object's group and object numbers as badges, the same in every object list. */
-defineProps<{ group: number | bigint; object: number | bigint }>()
+/**
+ * An object's numbers as plain text, the same in every object list. The group
+ * only where the object carries its own (a fetch stream); a subgroup stream's
+ * one group is in the stream's meta line.
+ */
+defineProps<{ group?: number | bigint; object: number | bigint }>()
 </script>
 
 <template>
-  <span class="mq-badge mq-badge--mono">group {{ group }}</span>
-  <span class="mq-badge mq-badge--mono">object {{ object }}</span>
+  <span v-if="group !== undefined" class="object-id">group {{ group }}</span>
+  <span class="object-id">object {{ object }}</span>
 </template>
+
+<style scoped>
+.object-id {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+</style>

@@ -9,7 +9,6 @@
 
 import type { CatalogDraft } from '@moqtap/media/catalog'
 import type { CmsfDraft } from '@moqtap/media/cmaf'
-import type { LocProfile } from '@moqtap/media/loc'
 import {
   type EventRecord,
   type MediaTimelineRecord,
@@ -22,6 +21,12 @@ import {
   type SapTimelineEntry,
   type TimelineDraft,
   type TimelineProblem,
+  severityOf,
+  type SpecRef,
+  timelineProblemExpected,
+  timelineProblemFound,
+  timelineProblemRemedy,
+  timelineProblemTitle,
 } from '@moqtap/media/timeline'
 import {
   agreedValue,
@@ -32,7 +37,7 @@ import {
   type TrackPackaging,
 } from './catalogs'
 import { timelinePackaging } from './packaging'
-import type { PanelProblem } from './problems'
+import { makeProblem, mediaSpec, type PanelProblem, trackSubject } from './problems'
 import type { TrackEntry } from './use-inspector'
 
 export { SAP_TIMELINE_EVENT_TYPE }
@@ -69,6 +74,17 @@ function timelineDraftOf(described: TrackPackaging | undefined): TimelineDraft |
 function timelineSectionOf(described: TrackPackaging | undefined): string {
   const sections = new Set([...catalogDrafts(described)].map((d) => TIMELINE_BASIS[d].section))
   return sections.size > 0 ? [...sections].join('; ') : 'MSF-00 8.1, MSF-01 8.1'
+}
+
+/** `MSF-00 8.1; CMSF-00 3.6.1` as rule references; the sentences are not known here. */
+function sectionRefs(text: string, keyword: SpecRef['keyword']): SpecRef[] {
+  return [...text.matchAll(/\b(CMSF|MSF)-(\d\d) ([\d.]+)/g)].map((m) => ({
+    draft: m[1] === 'CMSF' ? 'cmsf' : 'msf',
+    revision: m[2]!,
+    section: m[3]!,
+    keyword,
+    quote: '',
+  }))
 }
 
 /** Only msf-01 5.2.15 defines `template`, and cmsf-01 builds on msf-01. */
@@ -110,9 +126,8 @@ export function timelineStateOf(
   track: TrackEntry,
   key: TrackKey,
   described: TrackPackaging | undefined,
-  pin: LocProfile | undefined,
 ): Omit<TimelineState, 'objectCount'> | null {
-  const packaging = timelinePackaging(described, pin)
+  const packaging = timelinePackaging(described)
   if (!packaging) return null
   const eventType = agreedValue(described, (t) => t.eventType) ?? null
   const kind: TimelineKind =
@@ -171,7 +186,10 @@ export function readTimelineObject(payload: Uint8Array, state: TimelineState): T
   // Without one MSF draft, cite the rules the catalogs' drafts build on.
   const problems = state.timelineDraft
     ? parsed.problems
-    : parsed.problems.map((p) => ({ ...p, section: state.timelineSection }))
+    : parsed.problems.map((p) => {
+        const [spec, ...also] = sectionRefs(state.timelineSection, p.spec.keyword)
+        return { ...p, section: state.timelineSection, ...(spec ? { spec, also } : {}) }
+      })
   if (parsed.kind !== 'records') return { kind: 'invalid', problems }
   const sap = readSapTimeline(parsed.records, state.draft ? { draft: state.draft } : {})
   return {
@@ -189,39 +207,6 @@ export const TIMELINE_LABELS: Record<TimelineKind, string> = {
   sap: 'SAP timeline',
 }
 
-/** How the Problems list titles a timeline problem, by its category. */
-export function timelineProblemTitle(
-  kind: TimelineKind,
-  category: TimelineProblem['category'],
-): string {
-  const label = TIMELINE_LABELS[kind]
-  switch (category) {
-    case 'invalid_json':
-      return `${label} objects that are not JSON`
-    case 'missing_field':
-      return kind === 'media'
-        ? `${label} records with items missing`
-        : `${label} records without data`
-    case 'invalid_index':
-      return kind === 'sap'
-        ? `${label} records not indexed by Location`
-        : `${label} records without one index reference`
-    case 'invalid_value':
-      return `${label} records with invalid values`
-    case 'mixed_index':
-      return `${label} objects mixing index types`
-    case 'conflicting_records':
-      return `${label} records that disagree`
-  }
-}
-
-/** How the Problems list titles a problem with a media timeline template. */
-export function templateProblemTitle(category: TimelineProblem['category']): string {
-  return category === 'missing_field'
-    ? 'Media timeline template with values missing'
-    : 'Media timeline template with invalid values'
-}
-
 /** The templates that do not read, once for each track and kind of problem (msf-01 7.4.1). */
 export function templateProblems(
   tracks: Iterable<TrackEntry>,
@@ -235,22 +220,28 @@ export function templateProblems(
     seen.add(key)
     const template = templateOf(packaging.get(key))
     if (!template) continue
-    const byCategory = new Map<string, TimelineProblem[]>()
+    const byFamily = new Map<string, TimelineProblem[]>()
     for (const p of template.problems) {
-      const k = `${p.severity}:${p.category}:${p.section}`
-      byCategory.set(k, [...(byCategory.get(k) ?? []), p])
+      const k = JSON.stringify([p.family, severityOf(p)])
+      byFamily.set(k, [...(byFamily.get(k) ?? []), p])
     }
-    for (const problems of byCategory.values()) {
+    for (const problems of byFamily.values()) {
       const first = problems[0]!
-      out.push({
-        source: 'catalog',
-        severity: first.severity,
-        title: `${templateProblemTitle(first.category)}: ${track.fullName}`,
-        detail: `${problems.map((p) => (p.path ? `${p.path}: ${p.message}` : p.message)).join('; ')}.`,
-        section: first.section,
-        places: [],
-        atMs: null,
-      })
+      out.push(
+        makeProblem({
+          source: 'catalog',
+          id: first.id,
+          family: first.family,
+          severity: severityOf(first),
+          subject: trackSubject(track),
+          title: timelineProblemTitle(problems),
+          found: timelineProblemFound(problems) || null,
+          expected: timelineProblemExpected(problems) || null,
+          remedy: timelineProblemRemedy(problems) || null,
+          spec: mediaSpec(first.spec),
+          also: first.also.map(mediaSpec),
+        }),
+      )
     }
   }
   return out

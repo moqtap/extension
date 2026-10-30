@@ -17,6 +17,7 @@ import {
   type TrackPackaging,
 } from './catalogs'
 import {
+  copiesSpec,
   decodeTimeText,
   eptText,
   initText,
@@ -26,7 +27,6 @@ import {
   syncText,
 } from './cmaf'
 import { SessionLoc } from './loc'
-import { PackagingPins } from './packaging'
 import type { PanelProblem } from './problems'
 import { templateOf, templateProblems } from './timelines'
 import type { SessionEntry, StreamEntry, TrackEntry } from './use-inspector'
@@ -244,23 +244,6 @@ describe('which tracks are CMAF', () => {
     expect(state?.init).toMatchObject({ status: 'known', size: HEADER.length })
   })
 
-  it('shares pins with the LOC reader: one pin decides between them', () => {
-    const video = track('1', 'video', 1)
-    const key = registryTrackKey(video)
-    const pins = new PackagingPins()
-    const cmaf = new SessionCmaf(pins)
-    const loc = new SessionLoc(pins)
-    const asCmaf = described([[video, CMAF]])
-    const asLoc = described([[video, { packaging: 'loc' }]])
-
-    pins.set(key, 'ietf-04')
-    expect(cmaf.trackState(video, asCmaf)).toBeNull()
-    expect(loc.trackState(video, asCmaf, '22')).toMatchObject({ via: 'pin', pinned: 'ietf-04' })
-
-    pins.set(key, undefined)
-    expect(cmaf.trackState(video, asCmaf)).not.toBeNull()
-    expect(cmaf.trackState(video, asLoc)).toBeNull()
-  })
 })
 
 describe('the CMAF header', () => {
@@ -286,8 +269,8 @@ describe('the CMAF header', () => {
     })
     const [problem] = reader.problems([video], packaging)
     expect(problem).toMatchObject({
-      title: 'Catalogs disagree on the CMAF header of live / video',
-      detail: `live / catalog: ${HEADER.length} bytes; live / other: none.`,
+      title: 'Catalogs give this track different CMAF headers',
+      found: `live / catalog: ${HEADER.length} B · live / other: none`,
       severity: 'info',
     })
   })
@@ -297,15 +280,15 @@ describe('the CMAF header', () => {
     const t = session([video])
     t.put(10, subgroup(1, 0, [SYNC]), 1)
     for (const [initData, title] of [
-      [null, 'No CMAF header in the catalog for live / video'],
-      [HEADER.subarray(0, 24), 'CMAF header does not parse: live / video'],
+      [null, 'CMAF track has no header in the catalog'],
+      [HEADER.subarray(0, 24), 'CMAF header does not parse'],
     ] as const) {
       const packaging = described([[video, { packaging: 'cmaf', initRef: 'v', initData }]])
       const reader = new SessionCmaf()
       pump(reader, t, packaging)
       const problems = reader.problems([video], packaging)
       expect(titles(problems)).toEqual([title])
-      expect(problems[0]).toMatchObject({ severity: 'error', section: 'CMSF-01 3.1' })
+      expect(problems[0]).toMatchObject({ severity: 'error', spec: { label: 'CMSF-01 3.1' } })
     }
   })
 
@@ -428,15 +411,15 @@ describe('problems', () => {
     const [problem, ...rest] = read([TRACK_2, TRACK_2, TRACK_2, TRACK_2])
     expect(rest).toEqual([])
     expect(problem).toMatchObject({
-      title: 'CMAF track_ID not in the CMAF header: live / video',
+      title: 'Objects name a track_ID the CMAF header does not have',
       severity: 'error',
-      section: 'CMSF-01 3.3',
+      spec: { label: 'CMSF-01 3.3' },
       atMs: 1010,
     })
     expect(problem!.places.map((p) => [p.label, p.note])).toEqual(
       [0, 1, 2, 3].map((o) => [
         `group 0, object ${o}`,
-        'track_ID 2 matches no trak of the CMAF header',
+        'The track_ID 2 matches no trak of the CMAF header',
       ]),
     )
     expect(problem!.places[0]!.target).toMatchObject({ kind: 'object', source: 's:10' })
@@ -444,14 +427,14 @@ describe('problems', () => {
 
   it('reports an object with no moof followed by an mdat', () => {
     expect(read([MDAT_ONLY], CMAF, 1)).toMatchObject([
-      { title: 'CMAF objects without a moof followed by an mdat: live / video', severity: 'error' },
+      { title: 'Objects have no moof followed by an mdat', severity: 'error' },
     ])
   })
 
   it('reports a group that starts with a signalled SAP type other than 1 or 2', () => {
     expect(read([SAP_3])).toMatchObject([
       {
-        title: 'CMAF group starts with a SAP type other than 1 or 2: live / video',
+        title: 'Groups start with a SAP type other than 1 or 2',
         severity: 'error',
       },
     ])
@@ -466,9 +449,9 @@ describe('problems', () => {
   it('reports a group start above maxGrpSapStartingType when the SAP type is signalled', () => {
     expect(read([LEADING], { ...CMAF, maxGrpSapStartingType: 1 })).toMatchObject([
       {
-        title: 'CMAF group starts above maxGrpSapStartingType: live / video',
-        detail: 'The catalog gives maxGrpSapStartingType 1.',
-        section: 'CMSF-01 3.5.2.1',
+        title: "Groups start above the catalog's maxGrpSapStartingType",
+        found: 'maxGrpSapStartingType 1',
+        spec: { label: 'CMSF-01 3.5.2.1' },
         places: [{ label: 'group 0, object 0', note: 'starts with SAP type 2' }],
         severity: 'warning',
       },
@@ -485,7 +468,7 @@ describe('problems', () => {
     const reader = new SessionCmaf()
     pump(reader, t, packaging)
     expect(reader.problems([video], packaging)[0]!.places).toMatchObject([
-      { label: 'group 0, object 0', note: 'track_ID 2 matches no trak of the CMAF header' },
+      { label: 'group 0, object 0', note: 'The track_ID 2 matches no trak of the CMAF header' },
     ])
   })
 })
@@ -504,16 +487,26 @@ describe('copies of one object', () => {
       const packaging = described([[video, CMAF]])
       const reader = new SessionCmaf()
       pump(reader, t, packaging)
-      const problems = reader.problems([video], packaging)
+      const problems = reader.problems([video], packaging, '22')
       expect(problems).toMatchObject([
         {
-          title: 'CMAF objects whose copies differ: live / video',
+          title: 'Copies of an object read differently',
           severity: 'error',
-          section: 'draft-ietf-moq-transport 2.1',
+          spec: {
+            label: 'MoQT-22 2.1',
+            url: 'https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-22#section-2.1',
+            quote: expect.stringContaining('must be an identical sequence of bytes regardless of how or where it is retrieved'),
+          },
           places: [{ label: 'group 0, object 0', target: { source: 's:10' } }],
         },
       ])
     }
+  })
+
+  it('cites the rule in the session draft, and nothing without one', () => {
+    expect(copiesSpec('07')!.url).toBe('https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-07#section-2.1')
+    expect(copiesSpec(undefined)).toBeNull()
+    expect(copiesSpec('23')).toBeNull()
   })
 })
 
@@ -612,7 +605,7 @@ describe('SAP type timelines', () => {
   it('reports records that do not read', () => {
     const { problems } = read([json([{ l: [0, 1], data: [4, 0] }])])
     expect(problems).toMatchObject([
-      { title: 'SAP timeline records with invalid values: live / sap', severity: 'error' },
+      { title: 'SAP timeline record 0 has SAP type 4, not 0 to 3', id: 'timeline.sap.type.value' },
     ])
   })
 
@@ -625,8 +618,8 @@ describe('SAP type timelines', () => {
     const { problems } = read([json([{ l: [0, 0], data: [1, 40] }])], [LEADING])
     expect(problems).toMatchObject([
       {
-        title: 'SAP timeline disagrees with live / video',
-        section: 'CMSF-01 3.6.1',
+        title: 'SAP timeline disagrees with the media of video',
+        spec: { label: 'CMSF-01 3.6.1' },
         places: [
           {
             label: 'group 0, object 0',
@@ -643,7 +636,7 @@ describe('SAP type timelines', () => {
     const { problems } = read([json([{ l: [0, 1], data: [1, 33] }])], [SYNC, REORDERED])
     expect(problems).toMatchObject([
       {
-        title: 'SAP timeline disagrees with live / video',
+        title: 'SAP timeline disagrees with the media of video',
         places: [
           { label: 'group 0, object 1', note: 'the timeline says SAP type 1, the media 2 or 3' },
         ],
@@ -665,18 +658,18 @@ describe('SAP type timelines', () => {
     const cmsf00: Described = { ...TIMELINE, drafts: ['cmsf-00'] }
     const first = read([json([{ l: [0, 0], data: [0, 0] }])], [], cmsf00).problems
     expect(first).toMatchObject([
-      { title: 'SAP timeline records with invalid values: live / sap', severity: 'error' },
+      { title: 'Group 0 starts with SAP type 0, not 1 or 2', severity: 'error' },
     ])
-    expect(first[0]!.section).toBe('CMSF-00 3.6.1, draft-ietf-moq-transport-10 9.1.1')
+    expect(first[0]!.spec?.label).toBe('CMSF-00 3.6.1')
     const shape = read([json({ l: [0, 0] })], [], cmsf00).problems
     expect(shape).toHaveLength(1)
-    expect(shape[0]!.section).toBe('CMSF-00 3.6.1')
+    expect(shape[0]!.spec?.label).toBe('CMSF-00 3.6.1')
   })
 
   it('reports gzip bytes as an object that is not JSON', () => {
     const { problems } = read([new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0x00])])
     expect(problems).toMatchObject([
-      { title: 'SAP timeline objects that are not JSON: live / sap', severity: 'error' },
+      { title: 'Timeline payload is not UTF-8', severity: 'error' },
     ])
   })
 
@@ -702,7 +695,7 @@ describe('SAP type timelines', () => {
     )
     expect(problems).toMatchObject([
       {
-        title: 'SAP timeline objects disagree on a record: live / sap',
+        title: 'SAP timeline objects disagree on a record',
         severity: 'warning',
       },
     ])
@@ -762,13 +755,6 @@ describe('media and event timelines', () => {
     expect(reader.timelineState(times, new Map())).toBeNull()
   })
 
-  it('reads a track pinned as LOC as no timeline', () => {
-    const pins = new PackagingPins()
-    pins.set(registryTrackKey(times), 'ietf-04')
-    const packaging = described([[times, MEDIA]])
-    expect(new SessionCmaf(pins).timelineState(times, packaging)).toBeNull()
-    expect(new SessionLoc(pins).trackState(times, packaging, '22')).toMatchObject({ via: 'pin' })
-  })
 
   it('reads the records of a media timeline object', () => {
     const records = [
@@ -792,18 +778,17 @@ describe('media and event timelines', () => {
     expect(problems).toMatchObject([
       {
         source: 'timeline',
-        title: 'Media timeline records with invalid values: live / times',
+        title: 'Media timeline record 1 has media time 33.3, not whole milliseconds',
+        found: 'mediaTime 33.3',
         severity: 'error',
-        section: 'MSF-01 7.1.1',
-        places: [
-          {
-            label: 'group 0, object 0',
-            note: '[1][0]: media presentation time 33.3 is not a whole number of milliseconds',
-            target: { kind: 'object', source: 's:30' },
-          },
-          { label: 'group 0, object 0', note: '[2]: a record is an Array of three items' },
-        ],
+        spec: { label: 'MSF-01 7.1.1' },
+        places: [{ label: 'group 0, object 0', target: { kind: 'object', source: 's:30' } }],
         atMs: 1030,
+      },
+      {
+        title: 'Media timeline record 2 is not an Array of three items',
+        severity: 'error',
+        spec: { label: 'MSF-01 7.1.1' },
       },
     ])
   })
@@ -827,9 +812,9 @@ describe('media and event timelines', () => {
     expect(v.records.map((r) => r.index)).toEqual(['t', 'l', 'm'])
     expect(problems).toMatchObject([
       {
-        title: 'Event timeline objects mixing index types: live / times',
+        title: 'Event records mix index references t, l, m',
         severity: 'warning',
-        section: 'MSF-01 8.1',
+        spec: { label: 'MSF-01 8.1' },
       },
     ])
   })
@@ -837,7 +822,7 @@ describe('media and event timelines', () => {
   it('reports an event timeline object that is not JSON, and reads nothing from it', () => {
     const { view, problems } = read([new Uint8Array([0x1f, 0x8b, 0x08])], EVENTS)
     expect(problems).toMatchObject([
-      { title: 'Event timeline objects that are not JSON: live / times', severity: 'error' },
+      { title: 'Timeline payload is not UTF-8', severity: 'error' },
     ])
     expect(view().kind).toBe('invalid')
   })
@@ -875,10 +860,9 @@ describe('media and event timelines', () => {
     expect(templateProblems([video], packaging)).toMatchObject([
       {
         source: 'catalog',
-        title: 'Media timeline template with values missing: live / video',
-        detail: '[4]: a media timeline template has six mandatory values.',
+        title: 'Media timeline template has fewer than six values',
         severity: 'error',
-        section: 'MSF-01 7.4.1',
+        spec: { label: 'MSF-01 7.4.1' },
         places: [],
       },
     ])
@@ -901,9 +885,8 @@ describe('media and event timelines', () => {
     pump(again, t, packaging)
     expect(again.problems([times], packaging)).toMatchObject([
       {
-        title: 'Media timeline objects whose copies differ: live / times',
+        title: 'Copies of a media timeline object read differently',
         severity: 'error',
-        section: 'draft-ietf-moq-transport 2.1',
       },
     ])
   })

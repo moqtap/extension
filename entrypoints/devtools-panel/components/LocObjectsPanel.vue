@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import { formatBytes } from '../format'
+import { objectContentText } from '../object-status'
 import {
   decodedLines,
   hexBytes,
@@ -13,6 +14,7 @@ import {
   trackTimescaleText,
 } from '../loc'
 import type { ParsedStreamFraming, StreamObject } from '../stream-framing'
+import Icon from './Icon.vue'
 import ObjectIds from './ObjectIds.vue'
 
 /**
@@ -28,6 +30,8 @@ const props = defineProps<{
     groupId: number,
     data: Uint8Array,
   ) => LocObjectView
+  /** The session's draft, which names an object's status */
+  draft?: string
   /** An object to open and scroll to, by its offset in the stream */
   focus?: { offset: number; seq: number } | null
 }>()
@@ -83,7 +87,7 @@ const items = computed(() =>
 
 const profileText = computed(() => {
   const r = props.state.resolution
-  if ('profile' in r) return { text: props.state.pinned ? `${r.profile} (pinned)` : r.profile, tone: null }
+  if ('profile' in r) return { text: r.profile, tone: null }
   return { text: resolutionLabel(r), tone: r.candidates.length === 0 ? 'bad' : 'warn' }
 })
 
@@ -131,13 +135,11 @@ function statusNote(view: LocObjectView['properties'][number]): string | null {
           :open="open.has(obj.offset)"
           @toggle="toggle(obj.offset, $event)"
         >
-          <summary class="loc-object">
-            <ObjectIds :group="groupOf(obj)" :object="obj.objectId" />
+          <summary class="loc-object object-row">
+            <Icon name="chevronRight" class="object-row__chevron" />
+            <ObjectIds :group="obj.groupId" :object="obj.objectId" />
             <span class="muted"
-              >{{ formatBytes(obj.payloadLength)
-              }}<template v-if="obj.status !== undefined">
-                · status {{ obj.status }}</template
-              ><template v-if="obj.propertiesLength">
+              >{{ objectContentText(obj, draft, formatBytes) }}<template v-if="obj.propertiesLength">
                 · properties {{ formatBytes(obj.propertiesLength) }} at
                 <span class="mono">{{
                   offsetText(obj.propertiesOffset ?? 0)

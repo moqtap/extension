@@ -9,6 +9,8 @@ import {
   groupItems,
   nextSort,
   followsTail,
+  itemAt,
+  offsetsOf,
   revealTop,
   rowInView,
   rowKeyTarget,
@@ -157,25 +159,38 @@ describe('rowInView and revealTop', () => {
   // 21 px rows, a 210 px viewport: the header takes one row, nine rows show.
   it('counts a row under the sticky header as in view', () => {
     expect(rowInView(0, 21, 0, 210)).toBe(true)
-    expect(rowInView(8, 21, 0, 210)).toBe(true)
-    expect(rowInView(9, 21, 0, 210)).toBe(false)
-    expect(rowInView(4, 21, 5 * 21, 210)).toBe(false)
+    expect(rowInView(8 * 21, 21, 0, 210)).toBe(true)
+    expect(rowInView(9 * 21, 21, 0, 210)).toBe(false)
+    expect(rowInView(4 * 21, 21, 5 * 21, 210)).toBe(false)
   })
 
   it('scrolls the shortest way, and not at all when the row shows', () => {
-    expect(revealTop(3, 21, 0, 210)).toBeNull()
-    expect(revealTop(20, 21, 0, 210)).toBe(22 * 21 - 210)
-    expect(revealTop(2, 21, 10 * 21, 210)).toBe(2 * 21)
+    expect(revealTop(3 * 21, 21, 0, 210)).toBeNull()
+    expect(revealTop(20 * 21, 21, 0, 210)).toBe(22 * 21 - 210)
+    expect(revealTop(2 * 21, 21, 10 * 21, 210)).toBe(2 * 21)
     expect(revealTop(-1, 21, 0, 210)).toBeNull()
   })
 
   it('brings a row back after the viewport shrinks under it', () => {
     // A row at the bottom of a tall list, then the list shrinks to 230 px.
     const top = 0
-    expect(rowInView(16, 21, top, 400)).toBe(true)
-    const next = revealTop(16, 21, top, 230)
+    expect(rowInView(16 * 21, 21, top, 400)).toBe(true)
+    const next = revealTop(16 * 21, 21, top, 230)
     expect(next).not.toBeNull()
-    expect(rowInView(16, 21, next!, 230)).toBe(true)
+    expect(rowInView(16 * 21, 21, next!, 230)).toBe(true)
+  })
+})
+
+describe('offsets of rows that open', () => {
+  it('places each item after the ones before it and finds the item at a point', () => {
+    const offsets = offsetsOf([21, 21 + 67, 21])
+    expect(offsets).toEqual([0, 21, 109, 130])
+    expect(itemAt(offsets, 0)).toBe(0)
+    expect(itemAt(offsets, 20)).toBe(0)
+    expect(itemAt(offsets, 21)).toBe(1)
+    expect(itemAt(offsets, 108)).toBe(1)
+    expect(itemAt(offsets, 129)).toBe(2)
+    expect(itemAt(offsets, 500)).toBe(3)
   })
 })
 

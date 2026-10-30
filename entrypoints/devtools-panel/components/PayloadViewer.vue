@@ -45,7 +45,7 @@ watch(viewMode, (mode) => {
         :aria-pressed="viewMode === 'hex'"
         @click="viewMode = 'hex'"
       >
-        Hex
+        Bytes
       </button>
       <button
         v-if="stack"
@@ -60,7 +60,7 @@ watch(viewMode, (mode) => {
       <template v-if="viewMode === 'decoded'">
         <JsonTree v-if="data" :data="data" :initial-expanded="true" />
         <p v-else class="mq-muted">
-          This message didn't decode. Switch to Hex to see its bytes.
+          This message didn't decode. Bytes shows what it carried.
         </p>
       </template>
       <StackViewer v-else-if="viewMode === 'stack' && stack" :stack="stack" />

@@ -1,8 +1,7 @@
 /**
  * CMAF tracks and timeline tracks, read in the panel. A track is CMAF when
- * the session's catalogs agree on packaging "cmaf" (cmsf 3.5.1), unless the
- * user pins it as LOC. Its CMAF header comes from the catalogs,
- * in the field their draft defines: cmsf-00 3.1 initData, cmsf-01 3.1
+ * the session's catalogs agree on packaging "cmaf" (cmsf 3.5.1). Its CMAF
+ * header comes from the catalogs, in the field their draft defines: cmsf-00 3.1 initData, cmsf-01 3.1
  * initDataList and initRef.
  * Timeline tracks are read as timelines.ts says; a SAP type timeline is
  * compared with the CMAF track it describes (cmsf 3.6.1).
@@ -21,7 +20,14 @@ import {
   parseCmafObject,
   type SapReading,
 } from '@moqtap/media/cmaf'
-import type { SapTimelineEntry } from '@moqtap/media/timeline'
+import {
+  type SapTimelineEntry,
+  severityOf,
+  timelineProblemExpected,
+  timelineProblemFound,
+  timelineProblemRemedy,
+  timelineProblemTitle,
+} from '@moqtap/media/timeline'
 import {
   computed,
   type ComputedRef,
@@ -44,8 +50,21 @@ import {
   listSources,
   trackForSource,
 } from './loc'
-import { mediaPackaging, PackagingPins, sessionPins } from './packaging'
-import { objectLabel, type PanelProblem, type ProblemPlace } from './problems'
+import { type ObjectFrames, objectFrames } from './frames'
+import { mediaPackaging } from './packaging'
+import {
+  makeProblem,
+  mediaSpec,
+  moqtSpec,
+  objectLabel,
+  type PanelProblem,
+  type PanelSpec,
+  type ProblemPlace,
+  type ProblemSeverity,
+  type ProblemSource,
+  specsFromSection,
+  trackSubject,
+} from './problems'
 import type { StreamObject } from './stream-framing'
 import {
   cmsfDraftOf,
@@ -55,7 +74,6 @@ import {
   TIMELINE_LABELS,
   type TimelineObjectView,
   type TimelineState,
-  timelineProblemTitle,
   timelineSignature,
   timelineStateOf,
 } from './timelines'
@@ -156,6 +174,8 @@ export interface CmafObjectRecord {
   sap: SapReading
   sync: boolean | null
   eptMs: number[] | null
+  /** The samples whose sync flag their frame contradicts; null when none do */
+  frameMismatch: string | null
   /** Another copy of the object, from another source, reads differently */
   conflicting: boolean
 }
@@ -189,6 +209,7 @@ export interface CmafObjectView {
   headerTrackIds: number[] | null
   /** The header's timescale for each track_ID it has */
   timescales: Map<number, number | null>
+  frames: ObjectFrames
 }
 
 interface SourceProgress {
@@ -236,10 +257,51 @@ function place(
   }
 }
 
-/** Where every copy of an object is the same bytes (draft-ietf-moq-transport 2.1). */
-const COPIES_SECTION = 'draft-ietf-moq-transport 2.1'
-const COPIES_DETAIL =
-  'Copies from different streams or fetches read differently, though an Object is the same bytes however it is retrieved.'
+/** An Object is the same bytes however it is retrieved. */
+const COPIES_WORDS = {
+  found: 'Copies from different streams or fetches read differently',
+  expected: 'The same bytes however an object is retrieved',
+  remedy: 'Send each object with the same bytes on every stream and fetch',
+}
+
+/** Drafts 07 to 22 all state it in 2.1, Objects, in these words. */
+const COPIES_QUOTE =
+  'An object is uniquely identified by its track namespace, track name, group ID, and object ID, and must be an identical sequence of bytes regardless of how or where it is retrieved.'
+
+/** The rule {@link COPIES_WORDS} states, in the session's MoQT draft. */
+export function copiesSpec(draft: string | undefined): PanelSpec | null {
+  const n = Number(draft)
+  if (!Number.isInteger(n) || n < 7 || n > 22) return null
+  return moqtSpec({ revision: String(n).padStart(2, '0'), section: '2.1', quote: COPIES_QUOTE })
+}
+
+/** What a CMAF or timeline check gives, its rule as section text. */
+interface TrackFinding {
+  id: string
+  title: string
+  severity: ProblemSeverity
+  section?: string | null
+  /** A MoQT rule's section, which a section text cannot name */
+  spec?: PanelSpec | null
+  found?: string | null
+  expected?: string | null
+  remedy?: string | null
+  places?: ProblemPlace[]
+  atMs?: number | null
+  examined?: number | null
+}
+
+function trackProblem(source: ProblemSource, track: TrackEntry, f: TrackFinding): PanelProblem {
+  const specs = specsFromSection(f.section ?? null)
+  const { section: _s, spec, ...rest } = f
+  return makeProblem({
+    ...rest,
+    source,
+    subject: trackSubject(track),
+    spec: spec ?? specs[0] ?? null,
+    also: specs.slice(1),
+  })
+}
 
 /** The codes {@link violations} can return */
 type ViolationCode = Exclude<
@@ -247,15 +309,36 @@ type ViolationCode = Exclude<
   'track-id-unchecked' | 'group-start-sap-not-signalled'
 >
 
-const FINDING_TITLES: Record<ViolationCode, string> = {
-  'malformed-box': 'CMAF objects with malformed boxes',
-  'no-moof-mdat': 'CMAF objects without a moof followed by an mdat',
-  'no-mfhd': 'CMAF objects with a moof that has no mfhd',
-  'no-traf': 'CMAF objects with a moof that names no track_ID',
-  'no-tfhd': 'CMAF objects with a moof that names no track_ID',
-  'multiple-tracks': 'CMAF objects carrying more than one track',
-  'track-id-not-in-init': 'CMAF track_ID not in the CMAF header',
-  'group-start-sap-type': 'CMAF group starts with a SAP type other than 1 or 2',
+const FINDING_WORDS: Record<ViolationCode, { title: string; remedy: string }> = {
+  'malformed-box': {
+    title: 'Objects have malformed boxes',
+    remedy: 'Give each box a size that fits its container',
+  },
+  'no-moof-mdat': {
+    title: 'Objects have no moof followed by an mdat',
+    remedy: 'Carry a moof followed by its mdat in each object',
+  },
+  'no-mfhd': { title: 'Objects have a moof with no mfhd', remedy: 'Give each moof an mfhd' },
+  'no-traf': {
+    title: 'Objects have a moof that names no track_ID',
+    remedy: 'Give each moof a traf with a tfhd',
+  },
+  'no-tfhd': {
+    title: 'Objects have a moof that names no track_ID',
+    remedy: 'Give each moof a traf with a tfhd',
+  },
+  'multiple-tracks': {
+    title: 'Objects carry more than one track_ID',
+    remedy: 'Carry the samples of one track_ID in each object',
+  },
+  'track-id-not-in-init': {
+    title: 'Objects name a track_ID the CMAF header does not have',
+    remedy: "Use the track_ID of the CMAF header's trak",
+  },
+  'group-start-sap-type': {
+    title: 'Groups start with a SAP type other than 1 or 2',
+    remedy: 'Start each group with a SAP type 1 or 2 sample',
+  },
 }
 
 /** The object's cmsf 3.3 and 3.4 violations. */
@@ -294,8 +377,6 @@ export class SessionCmaf {
   /** Bumped whenever what the reader reports may have changed */
   revision = 0
 
-  /** `pins` are the session's, which the LOC reader shares. */
-  constructor(private readonly pins: PackagingPins = new PackagingPins()) {}
 
   private initOf(described: TrackPackaging): CmafInit {
     const given = described.claims.map((c) => ({ c, init: claimInit(c) }))
@@ -350,7 +431,7 @@ export class SessionCmaf {
   ): CmafTrackState | null {
     const key = registryTrackKey(track)
     const described = packaging.get(key)
-    if (!described || mediaPackaging(described, this.pins.get(key))?.packaging !== 'cmaf') {
+    if (!described || mediaPackaging(described)?.packaging !== 'cmaf') {
       return null
     }
     const maxGrp = agreedValue(described, (t) => t.maxGrpSapStartingType)
@@ -371,7 +452,7 @@ export class SessionCmaf {
     packaging: ReadonlyMap<TrackKey, TrackPackaging>,
   ): TimelineState | null {
     const key = registryTrackKey(track)
-    const state = timelineStateOf(track, key, packaging.get(key), this.pins.get(key))
+    const state = timelineStateOf(track, key, packaging.get(key))
     if (!state) return null
     return { ...state, objectCount: this.timelineLogs.get(key)?.objectCount ?? 0 }
   }
@@ -508,6 +589,7 @@ export class SessionCmaf {
       sap: object.sap,
       sync: object.firstSample.sync,
       eptMs: object.timing.eptMs,
+      frameMismatch: objectFrames(payload, init).mismatches.join('; ') || null,
       conflicting: false,
     }
     const reading = readingOf(record)
@@ -568,8 +650,10 @@ export class SessionCmaf {
     if (cached && cached.signature === signature) return cached.view
     const end = Math.min(obj.payloadOffset + obj.payloadLength, data.length)
     const init = state.init.status === 'known' ? state.init.segment : null
-    const object = parseCmafObject(data.subarray(obj.payloadOffset, end), init)
+    const payload = data.subarray(obj.payloadOffset, end)
+    const object = parseCmafObject(payload, init)
     const view: CmafObjectView = {
+      frames: objectFrames(payload, init),
       object,
       findings: violations(object, init, state.draft, obj.objectId === 0),
       headerTrackIds: init
@@ -613,7 +697,9 @@ export class SessionCmaf {
   problems(
     tracks: Iterable<TrackEntry>,
     packaging: ReadonlyMap<TrackKey, TrackPackaging>,
+    draft?: string,
   ): PanelProblem[] {
+    this.copiesRule = copiesSpec(draft)
     const out: PanelProblem[] = []
     const done = new Set<TrackKey>()
     const list = [...tracks]
@@ -632,56 +718,76 @@ export class SessionCmaf {
     return out
   }
 
+  /** The session draft's rule that copies of an object are the same bytes */
+  private copiesRule: PanelSpec | null = null
+
   private atMs(source: LocSource): number | null {
     return this.progress.get(source)?.firstDataAt ?? null
   }
 
   private cmafProblems(track: TrackEntry, state: CmafTrackState, out: PanelProblem[]): void {
-    const name = track.fullName
     const section = (s: string) =>
       state.draft ? `${state.draft.toUpperCase()} ${s}` : `CMSF-00 ${s}, CMSF-01 ${s}`
-    const push = (p: Omit<PanelProblem, 'source' | 'places' | 'atMs'> & Partial<PanelProblem>) =>
-      out.push({ source: 'cmaf', places: [], atMs: null, ...p })
+    const push = (f: TrackFinding) => out.push(trackProblem('cmaf', track, f))
     const { init } = state
     if (init.status === 'conflict') {
       push({
-        title: `Catalogs disagree on the CMAF header of ${name}`,
-        detail: `${init.values
-          .map((v) => `${v.catalogName}: ${v.size === null ? 'none' : `${v.size} bytes`}`)
-          .join('; ')}.`,
+        id: 'cmaf.init.conflict',
+        title: 'Catalogs give this track different CMAF headers',
+        found: init.values
+          .map((v) => `${v.catalogName}: ${v.size === null ? 'none' : `${v.size} B`}`)
+          .join(' · '),
+        expected: 'One CMAF header in every catalog that describes the track',
+        remedy: 'Give the track the same CMAF header in every catalog',
         severity: 'info',
-        section: null,
       })
     }
     if (init.status === 'ambiguous') {
       push({
-        title: `CMAF header ambiguous: ${name}`,
-        detail: `${init.values
+        id: 'cmaf.init.ambiguous',
+        title: "CMAF header is in a field only some of the catalog's drafts define",
+        found: init.values
           .map(
             (v) =>
-              `${v.catalogName} gives it in ${v.field}, and may be ${v.drafts.map((d) => d.toUpperCase()).join(' or ')}`,
+              `${v.catalogName}: ${v.field}, read as ${v.drafts.map((d) => d.toUpperCase()).join(' or ')}`,
           )
-          .join('; ')}. Only CMSF-00 3.1 defines initData, only CMSF-01 3.1 initRef.`,
+          .join(' · '),
+        expected: 'CMSF-00: initData on the track · CMSF-01: initRef to an initDataList entry',
+        remedy: "Set the catalog's version to the draft its header field belongs to",
         severity: 'info',
         section: 'CMSF-00 3.1; CMSF-01 3.1',
       })
     }
     const log = this.cmafLogs.get(state.key)
     if (!log || log.objectCount === 0) return
+    const examined = log.byLocation.size
     if (init.status === 'none') {
+      const other = init.reason === 'other-draft-field'
       push({
-        title: `No CMAF header in the catalog for ${name}`,
-        detail:
-          init.reason === 'other-draft-field'
-            ? `${init.catalogName} (${init.drafts.map((d) => d.toUpperCase()).join(' or ')}) gives it in ${init.field}, not in the field its draft defines.`
-            : 'The catalog gives the track no CMAF header.',
+        id: 'cmaf.init.none',
+        title: other
+          ? `CMAF header is in ${init.field}, which the catalog's draft does not define`
+          : 'CMAF track has no header in the catalog',
+        found: other
+          ? `${init.catalogName} (${init.drafts.map((d) => d.toUpperCase()).join(' or ')}): ${init.field}`
+          : 'No initData, initRef or initDataList entry for the track',
+        expected:
+          state.draft === 'cmsf-00'
+            ? 'initData on the track'
+            : state.draft === 'cmsf-01'
+              ? 'initRef to an initDataList entry'
+              : "The CMAF header in the field the catalog's draft defines",
+        remedy: "Give the track's CMAF header in the field the catalog's draft defines",
         severity: 'error',
         section: section('3.1'),
       })
     } else if (init.status === 'unparsed') {
       push({
-        title: `CMAF header does not parse: ${name}`,
-        detail: `The ${init.size}-byte header the catalog gives is not an init segment with a moov.`,
+        id: 'cmaf.init.unparsed',
+        title: 'CMAF header does not parse',
+        found: `${init.size} B header with no moov`,
+        expected: 'An init segment: ftyp and moov',
+        remedy: 'Give a CMAF header with an ftyp and a moov',
         severity: 'error',
         section: section('3.1'),
       })
@@ -693,11 +799,17 @@ export class SessionCmaf {
     let aboveAt: number | null = null
     const conflicting: ProblemPlace[] = []
     let conflictingAt: number | null = null
+    const frames: ProblemPlace[] = []
+    let framesAt: number | null = null
     for (const record of log.byLocation.values()) {
       if (record.conflicting) {
         conflicting.push(place(record))
         conflictingAt ??= this.atMs(record.source)
         continue
+      }
+      if (record.frameMismatch) {
+        frames.push(place(record, record.frameMismatch))
+        framesAt ??= this.atMs(record.source)
       }
       for (const f of record.findings) {
         const code = f.code as ViolationCode
@@ -723,42 +835,67 @@ export class SessionCmaf {
     }
     if (conflicting.length > 0) {
       push({
-        title: `CMAF objects whose copies differ: ${name}`,
-        detail: COPIES_DETAIL,
+        id: 'cmaf.copies.differ',
+        title: 'Copies of an object read differently',
+        ...COPIES_WORDS,
+        spec: this.copiesRule,
         severity: 'error',
-        section: COPIES_SECTION,
         places: conflicting,
         atMs: conflictingAt,
+        examined,
       })
     }
     for (const [code, { section: s, places, atMs }] of byCode) {
       push({
-        title: `${FINDING_TITLES[code]}: ${name}`,
-        detail: null,
+        id: `cmaf.${code}`,
+        title: FINDING_WORDS[code].title,
+        remedy: FINDING_WORDS[code].remedy,
         severity: 'error',
         section: s,
         places,
         atMs,
+        examined,
       })
     }
     if (aboveGrp.length > 0) {
       push({
-        title: `CMAF group starts above maxGrpSapStartingType: ${name}`,
-        detail: `The catalog gives maxGrpSapStartingType ${state.maxGrpSapStartingType}.`,
+        id: 'cmaf.sap.above-max-grp',
+        title: "Groups start above the catalog's maxGrpSapStartingType",
+        found: `maxGrpSapStartingType ${state.maxGrpSapStartingType}`,
+        expected: 'Each group starts at or below maxGrpSapStartingType',
+        remedy: 'Start groups at a lower SAP type, or raise maxGrpSapStartingType',
         severity: 'warning',
         section: section('3.5.2.1'),
         places: aboveGrp,
         atMs: aboveAt,
+        examined,
       })
     }
     if (aboveObj.length > 0) {
       push({
-        title: `CMAF object starts above maxObjSapStartingType: ${name}`,
-        detail: `The catalog gives maxObjSapStartingType ${state.maxObjSapStartingType}.`,
+        id: 'cmaf.sap.above-max-obj',
+        title: "Objects start above the catalog's maxObjSapStartingType",
+        found: `maxObjSapStartingType ${state.maxObjSapStartingType}`,
+        expected: 'Each object starts at or below maxObjSapStartingType',
+        remedy: 'Start objects at a lower SAP type, or raise maxObjSapStartingType',
         severity: 'warning',
         section: section('3.5.2.2'),
         places: aboveObj,
         atMs: aboveAt,
+        examined,
+      })
+    }
+    if (frames.length > 0) {
+      push({
+        id: 'cmaf.frames.sync-mismatch',
+        title: 'Sample flags disagree with the frames on random access',
+        expected:
+          'Sync samples are exactly the IDR (H.264), IRAP (H.265) or shown key frames (AV1)',
+        remedy: "Set each sample's sync flag to match its frame",
+        severity: 'warning',
+        places: frames,
+        atMs: framesAt,
+        examined,
       })
     }
   }
@@ -770,51 +907,68 @@ export class SessionCmaf {
     packaging: ReadonlyMap<TrackKey, TrackPackaging>,
     out: PanelProblem[],
   ): void {
-    const name = track.fullName
-    const push = (p: Omit<PanelProblem, 'source' | 'places' | 'atMs'> & Partial<PanelProblem>) =>
-      out.push({ source: 'timeline', places: [], atMs: null, ...p })
+    const push = (f: TrackFinding) => out.push(trackProblem('timeline', track, f))
 
     const log = this.timelineLogs.get(state.key)
     if (!log || log.objectCount === 0) return
     const label = TIMELINE_LABELS[state.kind]
+    const examined = log.byLocation.size
 
     const conflicting = [...log.byLocation.values()].filter((o) => o.conflicting)
     if (conflicting.length > 0) {
       push({
-        title: `${label} objects whose copies differ: ${name}`,
-        detail: COPIES_DETAIL,
+        id: 'timeline.copies.differ',
+        title: `Copies of a ${label.toLowerCase()} object read differently`,
+        ...COPIES_WORDS,
+        spec: this.copiesRule,
         severity: 'error',
-        section: COPIES_SECTION,
         places: conflicting.map((o) => place(o)),
         atMs: this.atMs(conflicting[0]!.source),
+        examined,
       })
     }
 
-    const byCategory = new Map<
+    const byFamily = new Map<
       string,
-      { problem: TimelineProblem; places: ProblemPlace[]; atMs: number | null }
+      { all: TimelineProblem[]; places: ProblemPlace[]; atMs: number | null }
     >()
     for (const object of log.byLocation.values()) {
       if (object.conflicting) continue
       for (const p of object.problems) {
-        const k = `${p.severity}:${p.category}:${p.section}`
-        let entry = byCategory.get(k)
+        const k = JSON.stringify([p.family, severityOf(p)])
+        let entry = byFamily.get(k)
         if (!entry) {
-          entry = { problem: p, places: [], atMs: this.atMs(object.source) }
-          byCategory.set(k, entry)
+          entry = { all: [], places: [], atMs: this.atMs(object.source) }
+          byFamily.set(k, entry)
         }
-        entry.places.push(place(object, p.path ? `${p.path}: ${p.message}` : p.message))
+        entry.all.push(p)
+        const last = entry.places[entry.places.length - 1]?.target
+        if (last?.kind === 'object' && last.source === object.source && last.offset === object.offset) {
+          continue
+        }
+        entry.places.push(place(object))
       }
     }
-    for (const { problem, places, atMs } of byCategory.values()) {
-      push({
-        title: `${timelineProblemTitle(state.kind, problem.category)}: ${name}`,
-        detail: null,
-        severity: problem.severity,
-        section: problem.section,
-        places,
-        atMs,
-      })
+    for (const { all, places, atMs } of byFamily.values()) {
+      const first = all[0]!
+      out.push(
+        makeProblem({
+          source: 'timeline',
+          subject: trackSubject(track),
+          id: first.id,
+          family: first.family,
+          severity: severityOf(first),
+          title: timelineProblemTitle(all),
+          found: timelineProblemFound(all) || null,
+          expected: timelineProblemExpected(all) || null,
+          remedy: timelineProblemRemedy(all) || null,
+          spec: mediaSpec(first.spec),
+          also: first.also.map(mediaSpec),
+          places,
+          atMs,
+          examined,
+        }),
+      )
     }
     if (state.kind !== 'sap') return
 
@@ -855,8 +1009,10 @@ export class SessionCmaf {
         }
       }
       push({
-        title: `SAP timeline objects disagree on a record: ${name}`,
-        detail: null,
+        id: 'timeline.sap.objects-disagree',
+        title: 'SAP timeline objects disagree on a record',
+        expected: 'One SAP record for a Location in every timeline object',
+        remedy: 'Give each Location the same SAP record in every timeline object',
         severity: 'warning',
         section: section('3.6.1'),
         places,
@@ -903,8 +1059,10 @@ export class SessionCmaf {
     }
     if (mismatches.length > 0) {
       push({
-        title: `SAP timeline disagrees with ${media.fullName}`,
-        detail: null,
+        id: 'timeline.sap.media-mismatch',
+        title: `SAP timeline disagrees with the media of ${media.trackName}`,
+        expected: 'The SAP type and earliest presentation time the media carries',
+        remedy: 'Write the SAP type and time the media carries into the timeline',
         severity: 'warning',
         section: section('3.6.1'),
         places: mismatches,
@@ -920,7 +1078,7 @@ function signatureOf(state: CmafTrackState): string {
 
 /** What the track's problems take from one copy of an object. */
 function readingOf(r: CmafObjectRecord): string {
-  return JSON.stringify([r.payloadLength, r.trackIds, r.findings, r.sap, r.sync, r.eptMs])
+  return JSON.stringify([r.payloadLength, r.trackIds, r.findings, r.sap, r.sync, r.eptMs, r.frameMismatch])
 }
 
 const hexes = new WeakMap<Uint8Array, string>()
@@ -1007,7 +1165,7 @@ function readerFor(session: SessionEntry): SessionCmaf {
   const raw = toRaw(session)
   let reader = readers.get(raw)
   if (!reader) {
-    reader = new SessionCmaf(sessionPins(raw))
+    reader = new SessionCmaf()
     readers.set(raw, reader)
   }
   return reader
@@ -1045,11 +1203,9 @@ export function useSessionCmaf(
 ): SessionCmafView {
   const revision = shallowRef(0)
   const reader = computed(() => readerFor(session()))
-  const pins = computed(() => sessionPins(session()))
 
   const due = computed(() => {
     void revision.value
-    void pins.value.revision.value
     return reader.value
       .sync(session(), packaging())
       .map((r) => `${r.source}:${r.closed}:${r.target}`)
@@ -1101,12 +1257,10 @@ export function useSessionCmaf(
 
   const trackState = (track: TrackEntry) => {
     void revision.value
-    void pins.value.revision.value
     return reader.value.trackState(track, packaging())
   }
   const timelineState = (track: TrackEntry) => {
     void revision.value
-    void pins.value.revision.value
     return reader.value.timelineState(track, packaging())
   }
 
@@ -1123,8 +1277,7 @@ export function useSessionCmaf(
     },
     problems: computed(() => {
       void revision.value
-      void pins.value.revision.value
-      return reader.value.problems(session().tracks.values(), packaging())
+        return reader.value.problems(session().tracks.values(), packaging(), session().draft)
     }),
     objectView: (source, obj, data, state) =>
       reader.value.objectView(source, obj, data, state),

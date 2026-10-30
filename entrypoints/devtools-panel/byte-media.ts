@@ -1,6 +1,6 @@
 /**
  * Media read from what a stream's bytes prove, for a track with no catalog
- * packaging or pin: ISO BMFF boxes, and Annex-B NAL units.
+ * packaging: ISO BMFF boxes, and Annex-B NAL units.
  */
 
 import { detectMediaInfo, type InitSegment, parseBoxes, parseInitSegment } from '@moqtap/media/bmff'

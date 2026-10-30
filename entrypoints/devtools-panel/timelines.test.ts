@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readTimelineObject, type TimelineState, timelineProblemTitle } from './timelines'
+import { readTimelineObject, type TimelineState } from './timelines'
 
 function mediaState(timelineDraft: TimelineState['timelineDraft']): TimelineState {
   return {
@@ -35,8 +35,5 @@ describe('a media timeline object that is not an array', () => {
   it('is shown as bytes without one draft, with no problem', () => {
     const view = readTimelineObject(OBJECT, mediaState(null))
     expect(view).toEqual({ kind: 'invalid', problems: [] })
-    expect(timelineProblemTitle('media', 'invalid_value')).toBe(
-      'Media timeline records with invalid values',
-    )
   })
 })

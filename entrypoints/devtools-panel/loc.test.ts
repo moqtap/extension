@@ -1,6 +1,6 @@
 /**
  * LOC tracks in the panel: which tracks are LOC, the profile their property
- * IDs allow, pins, per-object decoding and the problems reported. Streams are
+ * IDs allow, per-object decoding and the problems reported. Streams are
  * draft-22 wire bytes from the codec's encoders.
  */
 
@@ -187,7 +187,7 @@ beforeEach(() => {
 })
 
 describe('which tracks are LOC', () => {
-  it('reads none without a catalog saying loc or a pin', () => {
+  it('reads none without a catalog saying loc', () => {
     const video = track('1', 'video', 1)
     const t = session([video])
     t.put(10, subgroup(1, 0, [{ props: [KEY] }]), 1)
@@ -217,19 +217,6 @@ describe('which tracks are LOC', () => {
     })
   })
 
-  it('reads a track the user pinned, without a catalog', () => {
-    const video = track('1', 'video', 1)
-    const t = session([video])
-    t.put(10, subgroup(1, 0, [{ props: [KEY] }]), 1)
-    const reader = new SessionLoc()
-    reader.pin(registryTrackKey(video), 'ietf-04')
-    pump(reader, t, new Map())
-    expect(reader.trackState(video, new Map(), '22')).toMatchObject({
-      via: 'pin',
-      pinned: 'ietf-04',
-      resolution: { profile: 'ietf-04' },
-    })
-  })
 
   it('does not read a track whose catalogs disagree on packaging, which the catalogs report', () => {
     const video = track('1', 'video', 1)
@@ -246,11 +233,11 @@ describe('which tracks are LOC', () => {
       const problems = catalogConflictProblems([video], packaging)
       expect(problems).toHaveLength(1)
       expect(problems[0]).toMatchObject({
-        title: 'Catalogs disagree on the packaging of live / video',
+        title: 'Catalogs disagree on the packaging of this track',
         severity: 'info',
       })
-      expect(problems[0]!.detail).toContain('live / catalog-a: ')
-      expect(problems[0]!.detail).toContain('live / catalog-b: ')
+      expect(problems[0]!.found).toContain('live / catalog-a: ')
+      expect(problems[0]!.found).toContain('live / catalog-b: ')
     }
   })
 
@@ -342,22 +329,6 @@ describe('the profile of a track', () => {
     })
   })
 
-  it('takes a pin over the candidates, and drops it when cleared', () => {
-    const video = track('1', 'video', 1)
-    const t = session([video])
-    t.put(10, subgroup(1, 0, [{ props: [KEY] }]), 1)
-    const reader = new SessionLoc()
-    const packaging = described([video], 'loc')
-    pump(reader, t, packaging)
-    reader.pin(registryTrackKey(video), 'ietf-03')
-    expect(reader.trackState(video, packaging, '22')?.resolution).toEqual({
-      profile: 'ietf-03',
-    })
-    reader.pin(registryTrackKey(video), undefined)
-    expect(reader.trackState(video, packaging, '22')?.resolution).toEqual({
-      candidates: ['ietf-03', 'ietf-04'],
-    })
-  })
 })
 
 describe('reading sources', () => {
@@ -554,7 +525,7 @@ describe('payload framing across a track', () => {
     const lists = new Map([[registryTrackKey(video), trackProperties]])
     const problems = reader
       .problems([video], packaging, '22', lists)
-      .filter((p) => p.title.startsWith('LOC objects with 3-byte start codes'))
+      .filter((p) => p.id === 'loc.start-code.three-byte')
     return { views, problems }
   }
 
@@ -587,13 +558,13 @@ describe('payload framing across a track', () => {
     expect(problems).toHaveLength(1)
     expect(problems[0]).toMatchObject({
       severity: 'warning',
-      section: 'LOC-04 2.1.4',
+      spec: { label: 'LOC-04 2.1.4' },
       places: [
         { label: 'group 0, object 0', note: 'Video Config, length prefixes' },
         { label: 'group 0, object 1', note: '3-byte start codes' },
       ],
     })
-    expect(problems[0]!.detail).toContain('This track carries a Video Config and has objects framed with length prefixes.')
+    expect(problems[0]!.found).toContain('a track that carries a Video Config and has objects framed with length prefixes')
   })
 
   it('warns of 3-byte start codes on a track with an object framed by length prefixes', () => {
@@ -605,7 +576,7 @@ describe('payload framing across a track', () => {
     ])
     expect(problems).toHaveLength(1)
     expect(problems[0]!.places.map((p) => p.note)).toEqual(['length prefixes', '3-byte start codes'])
-    expect(problems[0]!.detail).toContain('This track has objects framed with length prefixes.')
+    expect(problems[0]!.found).toContain('a track that has objects framed with length prefixes')
   })
 
   it('lists an object that carries the Video Config and 3-byte start codes once', () => {
@@ -632,7 +603,7 @@ describe('payload framing across a track', () => {
     expect(problems[0]!.places).toMatchObject([
       { label: 'group 0, object 1', note: 'length prefixes, then 3-byte start codes' },
     ])
-    expect(problems[0]!.detail).toContain('This track has objects framed with length prefixes.')
+    expect(problems[0]!.found).toContain('a track that has objects framed with length prefixes')
   })
 
   it('takes a Video Config in the Track Properties into account', () => {
@@ -642,7 +613,7 @@ describe('payload framing across a track', () => {
     )
     expect(problems).toHaveLength(1)
     expect(problems[0]!.places.map((p) => p.note)).toEqual(['3-byte start codes'])
-    expect(problems[0]!.detail).toContain('carries a Video Config in its Track Properties')
+    expect(problems[0]!.found).toContain('carries a Video Config in its Track Properties')
   })
 
   it('says nothing of 3-byte start codes on a track without a Video Config or length prefixes', () => {
@@ -709,10 +680,10 @@ describe('problems', () => {
     const { problems } = problemsFor([[{ props: [KEY] }]])
     expect(problems).toHaveLength(1)
     expect(problems[0]).toMatchObject({
-      title: 'LOC track ambiguous: live / video',
+      title: 'LOC properties fit more than one LOC draft',
       severity: 'info',
     })
-    expect(problems[0]!.detail).toContain('ietf-03, ietf-04')
+    expect(problems[0]!.found).toContain('ietf-03 or ietf-04')
   })
 
   it('reports a track no profile fits', () => {
@@ -720,7 +691,7 @@ describe('problems', () => {
       [{ props: [{ type: 0x04n, value: 1n }, KEY] }],
     ])
     expect(problems[0]).toMatchObject({
-      title: 'LOC track fits no profile: live / video',
+      title: 'LOC properties fit no LOC draft',
       severity: 'warning',
     })
   })
@@ -740,26 +711,25 @@ describe('problems', () => {
     ])
     expect(problems).toHaveLength(1)
     expect(problems[0]).toMatchObject({
-      title: 'LOC group 1, object 0 has Frame Marking I=0: live / video',
+      title: 'Groups start with an object marked not independent',
       severity: 'info',
-      section: 'LOC-04 4.2',
+      spec: { label: 'LOC-04 4.2' },
       places: [{ label: 'group 1, object 0', target: { kind: 'object', source: 's:11' } }],
       atMs: 1011,
-      detail: null,
     })
   })
 
   it('checks the group start on an ambiguous track whose candidates agree on Frame Marking', () => {
     const { problems } = problemsFor([[{ props: [DELTA] }]])
     expect(problems.map((p) => p.title)).toEqual([
-      'LOC track ambiguous: live / video',
-      'LOC group 0, object 0 has Frame Marking I=0: live / video',
+      'LOC properties fit more than one LOC draft',
+      'Groups start with an object marked not independent',
     ])
   })
 
   it('names one property ID in the singular', () => {
     const { problems } = problemsFor([[{ props: [KEY] }]])
-    expect(problems[0]!.detail).toMatch(/^Property ID 0x09;/)
+    expect(problems[0]!.found).toMatch(/^Property ID 0x09;/)
   })
 
   it('does not warn when the Frame Marking reads several ways', () => {
@@ -768,17 +738,10 @@ describe('problems', () => {
       [{ props: [{ type: 0x04n, value: 0x80n }, { type: 0x0dn, bytes: new Uint8Array([1]) }] }],
     ])
     expect(problems.map((p) => p.title)).toEqual([
-      'LOC track ambiguous: live / video',
+      'LOC properties fit more than one LOC draft',
     ])
   })
 
-  it('notes the group start under a pin that makes the Frame Marking read one way', () => {
-    const { reader, video } = problemsFor([[{ props: [DELTA] }]])
-    reader.pin(registryTrackKey(video), 'ietf-03')
-    const problems = reader.problems([video], new Map(), '22')
-    expect(problems).toHaveLength(1)
-    expect(problems[0]!.section).toBe('LOC-03 4.2')
-  })
 
   it('notes a group start a subscription and a fetch both carry once', () => {
     const video = track('1', 'video', 1)
@@ -789,7 +752,7 @@ describe('problems', () => {
     const packaging = described([video], 'loc')
     pump(reader, t, packaging)
     expect(reader.problems([video], packaging, '22').map((p) => p.title)).toEqual([
-      'LOC group 0, object 0 has Frame Marking I=0: live / video',
+      'Groups start with an object marked not independent',
     ])
   })
 

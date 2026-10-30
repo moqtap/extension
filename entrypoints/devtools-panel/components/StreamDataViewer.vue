@@ -78,6 +78,8 @@ const props = defineProps<{
     | { kind: 'object'; offset: number; seq: number }
     | { kind: 'catalog-object'; groupId: number; objectId: number; seq: number }
     | null
+  /** How Tracks has the stream's track viewed: with its packaging's reader, or as its bytes */
+  trackView?: 'reader' | 'hex'
 }>()
 
 /**
@@ -112,6 +114,7 @@ const preferredMode = getCachedPref('streamViewMode') as ViewMode
  */
 /** The view a stream of the track opens on, when its track has one of its own. */
 function trackMode(): ViewMode | null {
+  if (props.trackView === 'hex') return null
   if (props.catalog) return 'catalog'
   if (props.loc) return 'loc'
   if (props.cmaf) return 'cmaf'
@@ -125,19 +128,19 @@ const viewMode = ref<ViewMode>(trackMode() ?? 'hex')
 watch(
   () => props.catalog?.key,
   (key, previous) => {
-    if (key && !previous && viewMode.value === 'hex') viewMode.value = 'catalog'
+    if (key && !previous && viewMode.value === 'hex' && props.trackView !== 'hex') viewMode.value = 'catalog'
     if (!key && viewMode.value === 'catalog') viewMode.value = 'hex'
   },
 )
 
-// So may the catalog that makes the track LOC or CMAF, or a pin.
+// So may the catalog that makes the track LOC or CMAF.
 for (const [mode, key] of [
   ['loc', () => props.loc?.state.key],
   ['cmaf', () => props.cmaf?.state.key],
   ['timeline', () => props.timeline?.state.key],
 ] as const) {
   watch(key, (now, previous) => {
-    if (now && !previous && viewMode.value === 'hex') viewMode.value = mode
+    if (now && !previous && viewMode.value === 'hex' && props.trackView !== 'hex') viewMode.value = mode
     if (!now && viewMode.value === mode) viewMode.value = 'hex'
   })
 }
@@ -373,7 +376,7 @@ function openDecoded() {
   if (jsonData.value !== null) viewMode.value = 'json'
 }
 
-// A catalog or pin that lands takes the byte views away.
+// A catalog that lands takes the byte views away.
 watch([fragmentsAvailable, nalCodec, hasStructuredContent], () => {
   if (
     (viewMode.value === 'fragments' && !fragmentsAvailable.value) ||
@@ -457,8 +460,21 @@ function onModeKey(e: KeyboardEvent) {
   next.focus()
 }
 
-// Auto-open decoded view on first render if preferred
-if (!trackMode() && preferredMode === 'json') openDecoded()
+// Tracks' choice for the track, changed while one of its streams is open.
+watch(
+  () => props.trackView,
+  (view) => {
+    if (view === 'hex') viewMode.value = 'hex'
+    else if (view === 'reader') {
+      const mode = trackMode()
+      if (mode) viewMode.value = mode
+      else openDecoded()
+    }
+  },
+)
+
+// Auto-open the decoded view on first render: the track's reader, or if preferred
+if (!trackMode() && props.trackView !== 'hex' && (props.trackView === 'reader' || preferredMode === 'json')) openDecoded()
 </script>
 
 <template>
@@ -472,7 +488,7 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
           :tabindex="viewMode === 'hex' ? 0 : -1"
           @click="switchToHex"
         >
-          Hex
+          Bytes
         </button>
         <button
           v-if="hasStructuredContent"
@@ -578,6 +594,8 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         v-else-if="viewMode === 'fragments' && fragmentsAvailable"
         :data="data"
         :framing="framing"
+        :draft="draft"
+        :init="cmaf?.state.init.status === 'known' ? cmaf.state.init.segment : null"
       />
       <NalUnitsPanel
         v-else-if="viewMode === 'nal' && nalCodec"
@@ -596,6 +614,7 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         :framing="framing"
         :state="loc.state"
         :object-view="loc.objectView"
+        :draft="draft"
         :focus="objectFocus"
       />
       <CmafObjectsPanel
@@ -604,6 +623,7 @@ if (!trackMode() && preferredMode === 'json') openDecoded()
         :framing="framing"
         :state="cmaf.state"
         :object-view="cmaf.objectView"
+        :draft="draft"
         :focus="objectFocus"
       />
       <TimelinePanel

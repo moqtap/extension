@@ -147,6 +147,12 @@ export interface TrackEntry {
   subscribeOkAt?: number
   subscribeErrorAt?: number
   subscribeDoneAt?: number
+  /**
+   * No decoded request named it: the panel knows it only by the alias its
+   * data carries (alias-tracks.ts). `direction` is unknown when no response
+   * named the alias either.
+   */
+  unnamed?: { directionKnown: boolean }
 }
 
 export interface StreamEntry {

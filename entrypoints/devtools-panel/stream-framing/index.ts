@@ -130,9 +130,7 @@ export function parseDatagramGroupFraming(
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
   const objects: StreamObject[] = []
-  const tags: HeaderTag[] = [
-    { label: 'datagram-group', value: '', kind: 'info' },
-  ]
+  const tags: HeaderTag[] = []
   let headerFields: Record<string, number> = {}
   let offset = 0
   let dgIndex = 0
@@ -181,6 +179,9 @@ export function parseDatagramGroupFraming(
   }
 
   if (objects.length === 0) return null
+  // The group is the store's key: every datagram here carries the same one.
+  if (headerFields.groupId !== undefined)
+    tags.push({ label: 'group', value: String(headerFields.groupId), kind: 'group' })
 
   return {
     streamType: 'datagram',

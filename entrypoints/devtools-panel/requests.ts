@@ -15,6 +15,7 @@ import {
   problemSeverity,
   problemTitle,
   requestIdOf,
+  type SpecRef as InspectSpecRef,
 } from '@moqtap/inspect'
 import { decodeErrorReason, isDecodeError } from '@/src/trace/decode-error'
 import type { MessageEntry, SessionEntry, TrackEntry } from './use-inspector'
@@ -26,6 +27,10 @@ export const PENDING_MS = 5_000
 export type MessageEvent = InspectEvent & { readonly entry: MessageEntry }
 
 export interface SessionProblem {
+  /** `@moqtap/inspect`'s stable id, e.g. `session.error` */
+  id: string
+  /** The section of the session's draft that defines the message, when known */
+  spec: InspectSpecRef | null
   title: string
   detail: string | null
   severity: 'error' | 'warning'
@@ -174,6 +179,8 @@ export function sessionProblems(
     pendingMs: PENDING_MS,
     endMs: options.endMs,
   }).map((problem) => ({
+    id: problem.id,
+    spec: problem.spec ?? null,
     title: problemTitle(problem, wording),
     detail: problemDetail(problem, wording),
     severity: problemSeverity(problem.kind),

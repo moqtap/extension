@@ -147,18 +147,38 @@ export function rowKeyTarget(key: string, current: number, count: number, pageRo
 }
 
 /**
- * Whether item `pos` is wholly in view under a one-row sticky header, items
- * being `row` px tall.
+ * Whether the row at `top` px is wholly in view under a one-row sticky
+ * header, rows being `row` px tall; a negative `top` is no row.
  */
-export function rowInView(pos: number, row: number, scrollTop: number, clientHeight: number): boolean {
-  return pos >= 0 && pos * row >= scrollTop && (pos + 2) * row <= scrollTop + clientHeight
+export function rowInView(top: number, row: number, scrollTop: number, clientHeight: number): boolean {
+  return top >= 0 && top >= scrollTop && top + 2 * row <= scrollTop + clientHeight
 }
 
-/** The scrollTop that brings item `pos` into view by the shortest scroll, or null when it is in view. */
-export function revealTop(pos: number, row: number, scrollTop: number, clientHeight: number): number | null {
-  if (pos < 0 || rowInView(pos, row, scrollTop, clientHeight)) return null
-  if (pos * row < scrollTop) return pos * row
-  return Math.max(0, (pos + 2) * row - clientHeight)
+/** The scrollTop that brings the row at `top` px into view by the shortest scroll, or null when it is in view. */
+export function revealTop(top: number, row: number, scrollTop: number, clientHeight: number): number | null {
+  if (top < 0 || rowInView(top, row, scrollTop, clientHeight)) return null
+  if (top < scrollTop) return top
+  return Math.max(0, top + 2 * row - clientHeight)
+}
+
+/** Where each item starts, and as the last entry where the list ends. */
+export function offsetsOf(heights: readonly number[]): number[] {
+  const out = new Array<number>(heights.length + 1)
+  out[0] = 0
+  for (let i = 0; i < heights.length; i++) out[i + 1] = out[i]! + heights[i]!
+  return out
+}
+
+/** The item at `y` px, by {@link offsetsOf}; the item count past the end. */
+export function itemAt(offsets: readonly number[], y: number): number {
+  let lo = 0
+  let hi = offsets.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (offsets[mid + 1]! <= y) lo = mid + 1
+    else hi = mid
+  }
+  return lo
 }
 
 /** A live grid follows its newest row only at its end, unsorted, with no row selected. */

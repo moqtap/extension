@@ -8,9 +8,13 @@ import {
   sapText,
   syncText,
 } from '../cmaf'
+import { payloadBoxes } from '../byte-media'
 import { formatBytes } from '../format'
+import { objectFrames } from '../frames'
+import { objectContentText } from '../object-status'
 import type { ParsedStreamFraming, StreamObject } from '../stream-framing'
 import FragmentTable from './FragmentTable.vue'
+import Icon from './Icon.vue'
 import ObjectIds from './ObjectIds.vue'
 
 /**
@@ -22,6 +26,8 @@ const props = defineProps<{
   framing: ParsedStreamFraming
   state: CmafTrackState
   objectView: (obj: StreamObject, data: Uint8Array) => CmafObjectView
+  /** The session's draft, which names an object's status */
+  draft?: string
   /** An object to open and scroll to, by its offset in the stream */
   focus?: { offset: number; seq: number } | null
 }>()
@@ -59,20 +65,21 @@ function toggle(offset: number, event: Event) {
   open.value = next
 }
 
-function groupOf(obj: StreamObject): number {
-  return obj.groupId ?? props.framing.headerFields.groupId ?? 0
-}
-
-const items = computed(() =>
-  props.framing.objects.map((obj) => {
+const items = computed(() => {
+  const init = props.state.init.status === 'known' ? props.state.init.segment : null
+  return props.framing.objects.map((obj) => {
     const whole = obj.payloadOffset + obj.payloadLength <= props.data.length
     const view =
       whole && obj.payloadLength > 0 && open.value.has(obj.offset)
         ? props.objectView(obj, props.data)
         : null
-    return { obj, whole, view }
-  }),
-)
+    const end = Math.min(obj.payloadOffset + obj.payloadLength, props.data.length)
+    const payload = props.data.subarray(obj.payloadOffset, end)
+    const boxes = end > obj.payloadOffset ? payloadBoxes(payload) : []
+    const frame = whole && obj.payloadLength > 0 ? objectFrames(payload, init).badge : null
+    return { obj, whole, view, boxes, frame }
+  })
+})
 
 const initWarn = computed(() => props.state.init.status !== 'known')
 </script>
@@ -85,16 +92,14 @@ const initWarn = computed(() => props.state.init.status !== 'known')
     </p>
 
     <ul class="cmaf-objects">
-      <li v-for="{ obj, whole, view } in items" :key="obj.offset" :data-offset="obj.offset">
+      <li v-for="{ obj, whole, view, boxes, frame } in items" :key="obj.offset" :data-offset="obj.offset">
         <details :open="open.has(obj.offset)" @toggle="toggle(obj.offset, $event)">
-          <summary class="cmaf-object">
-            <ObjectIds :group="groupOf(obj)" :object="obj.objectId" />
-            <span class="muted"
-              >{{ formatBytes(obj.payloadLength)
-              }}<template v-if="obj.status !== undefined">
-                · status {{ obj.status }}</template
-              ></span
-            >
+          <summary class="cmaf-object object-row">
+            <Icon name="chevronRight" class="object-row__chevron" />
+            <ObjectIds :group="obj.groupId" :object="obj.objectId" />
+            <span v-if="frame" class="mq-badge mq-badge--mono frame-badge">{{ frame }}</span>
+            <span v-for="(box, i) in boxes" :key="i" class="mq-badge mq-badge--mono">{{ box }}</span>
+            <span class="muted">{{ objectContentText(obj, draft, formatBytes) }}</span>
           </summary>
           <div v-if="view" class="cmaf-detail">
             <dl class="mq-kv cmaf-kv">
@@ -123,10 +128,13 @@ const initWarn = computed(() => props.state.init.status !== 'known')
               :timescales="view.timescales"
               :header-track-ids="view.headerTrackIds"
             />
-            <ul v-if="view.findings.length > 0" class="cmaf-findings">
+            <ul v-if="view.findings.length > 0 || view.frames.mismatches.length > 0" class="cmaf-findings">
               <li v-for="(f, i) in view.findings" :key="i" class="cmaf-bad">
                 {{ f.path ? `${f.path}: ` : '' }}{{ f.message }}
                 <span class="muted">({{ f.section }})</span>
+              </li>
+              <li v-for="m in view.frames.mismatches" :key="m" class="cmaf-warn">
+                Sample flags disagree with the frame: {{ m }}
               </li>
             </ul>
           </div>
@@ -185,6 +193,13 @@ const initWarn = computed(() => props.state.init.status !== 'known')
 
 .cmaf-bad {
   color: var(--danger);
+}
+.cmaf-warn {
+  color: var(--warning);
+}
+.frame-badge {
+  min-width: 4.5ch;
+  justify-content: center;
 }
 
 .mono {

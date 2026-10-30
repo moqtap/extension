@@ -1,9 +1,9 @@
 /**
  * LOC tracks, read in the panel. Which tracks are LOC follows
- * `mediaPackaging` in packaging.ts: the catalogs' packaging, or the user's pin.
- * A track's profile comes from the property IDs its objects carry, under the
- * rules of `@moqtap/media/loc`: one possible profile, or a pin, or the track
- * is ambiguous and the candidates are reported.
+ * `mediaPackaging` in packaging.ts: the catalogs' packaging. A track's profile
+ * comes from the property IDs its objects carry, under the rules of
+ * `@moqtap/media/loc`: one possible profile, or the track is ambiguous and the
+ * candidates are reported.
  */
 
 import type { ObjectProperty } from '@moqtap/codec'
@@ -55,12 +55,17 @@ import {
   type StreamObject,
 } from './stream-framing'
 import { messageTypeName } from './format'
-import { mediaPackaging, PackagingPins, sessionPins } from './packaging'
-import { objectLabel, type PanelProblem, type ProblemPlace } from './problems'
+import { mediaPackaging } from './packaging'
+import {
+  makeProblem,
+  objectLabel,
+  type PanelProblem,
+  type ProblemPlace,
+  specsFromSection,
+  trackSubject,
+} from './problems'
 import { type TrackPropertyList, trackPropertyLists } from './track-properties'
 import type { SessionEntry, TrackEntry } from './use-inspector'
-
-export { LOC_PROFILES, type LocProfile }
 
 const TRANSPORT_DRAFTS = new Set<string>([
   '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19',
@@ -172,21 +177,6 @@ export function listSources(
   return refs
 }
 
-/** The tracks with a stream or datagram group seen carrying an Object Properties block. */
-export function tracksWithObjectProperties(
-  session: Pick<SessionEntry, 'streams' | 'tracks' | 'datagramGroups'>,
-): Set<TrackKey> {
-  const keys = new Set<TrackKey>()
-  for (const ref of listSources(session, () => true)) {
-    const entry =
-      ref.streamId !== undefined
-        ? session.streams.get(ref.streamId)
-        : session.datagramGroups.get(ref.groupKey!)
-    if (entry?.objectProperties) keys.add(ref.key)
-  }
-  return keys
-}
-
 /** Frame a source's bytes as the stream or datagram group it is, or null. */
 export function frameSource(
   ref: Pick<LocSourceRef, 'kind' | 'id'>,
@@ -282,8 +272,7 @@ export function readObjectRecord(
 export interface LocTrackState {
   key: TrackKey
   /** Why the track is read as LOC */
-  via: 'catalog' | 'pin'
-  pinned?: LocProfile
+  via: 'catalog'
   /** Objects read so far */
   objectCount: number
   /** Objects whose property block did not decode; they count toward nothing */
@@ -604,23 +593,14 @@ export class SessionLoc {
   /** Bumped whenever what the reader reports may have changed */
   revision = 0
 
-  /** `pins` are the session's, which the CMAF reader shares. */
-  constructor(private readonly pins: PackagingPins = new PackagingPins()) {}
-
   /** Whether `track` is read as LOC, and why. */
   locVia(
     track: TrackEntry,
     packaging: ReadonlyMap<TrackKey, TrackPackaging>,
-  ): 'catalog' | 'pin' | null {
+  ): 'catalog' | null {
     const key = registryTrackKey(track)
-    const media = mediaPackaging(packaging.get(key), this.pins.get(key))
+    const media = mediaPackaging(packaging.get(key))
     return media?.packaging === 'loc' ? media.via : null
-  }
-
-  /** Pin a profile on a track, or clear the track's pin with undefined. */
-  pin(key: TrackKey, profile: LocProfile | undefined): void {
-    this.pins.set(key, profile)
-    this.revision++
   }
 
   /**
@@ -732,11 +712,10 @@ export class SessionLoc {
     const types = log ? [...log.types.values()].sort(compareTypes) : []
     const transport = transportDraftOf(draft)
     const possible = possibleProfiles(types, transport)
-    const pinned = this.pins.get(key)
     const described = packaging.get(key)
     const codec = agreedCodec(described)
     const conflicts = described ? packagingConflicts(described) : []
-    const resolution = resolveProfile(possible, pinned)
+    const resolution = resolveProfile(possible)
 
     const results: LocPropertyResult[] = []
     const timescales = new Map<bigint, Set<string>>()
@@ -757,7 +736,6 @@ export class SessionLoc {
     return {
       key,
       via,
-      ...(pinned ? { pinned } : {}),
       objectCount: log?.objectCount ?? 0,
       malformedCount: log?.malformedCount ?? 0,
       types,
@@ -937,15 +915,23 @@ export class SessionLoc {
         mixed.includes(record) ? 'length prefixes, then 3-byte start codes' : '3-byte start codes',
       )
     }
-    return {
+    const specs = specsFromSection(startCodeSections(state.resolution))
+    return makeProblem({
       source: 'loc',
-      title: `LOC objects with 3-byte start codes: ${track.fullName}`,
-      detail: `Start codes should be 4 bytes; 3-byte ones are allowed only on a track that never uses length prefixes or a Video Config. This track ${shows.join(' and ')}.`,
+      id: 'loc.start-code.three-byte',
       severity: 'warning',
-      section: startCodeSections(state.resolution),
+      subject: trackSubject(track),
+      title: 'Objects use 3-byte start codes where the track rules them out',
+      found: `3-byte start codes on a track that ${shows.join(' and ')}`,
+      expected:
+        '4-byte start codes; 3-byte ones only on a track that never uses length prefixes or a Video Config',
+      remedy: 'Write 4-byte start codes',
+      spec: specs[0] ?? null,
+      also: specs.slice(1),
       places: [...notes].map(([record, texts]) => objectPlace(record, texts.join(', '))),
+      examined: log.payloads.length,
       atMs: this.progress.get(flagged[0]!.source)?.firstDataAt ?? null,
-    }
+    })
   }
 
   /**
@@ -977,25 +963,29 @@ export class SessionLoc {
           : `Property ${state.types.length === 1 ? 'ID' : 'IDs'} ${state.types.map(propertyTypeText).join(', ')}`
       if ('candidates' in resolution) {
         if (resolution.candidates.length === 0) {
-          out.push({
-            source: 'loc',
-            title: `LOC track fits no profile: ${track.fullName}`,
-            detail: `${ids}: no LOC draft defines ${state.types.length === 1 ? 'it' : 'all of them'} where ${state.types.length === 1 ? 'it was' : 'they were'} seen.`,
-            severity: 'warning',
-            section: null,
-            places: [],
-            atMs: null,
-          })
+          out.push(
+            makeProblem({
+              source: 'loc',
+              id: 'loc.profile.none',
+              severity: 'warning',
+              subject: trackSubject(track),
+              title: 'LOC properties fit no LOC draft',
+              found: `${ids}: no LOC draft defines ${state.types.length === 1 ? 'it' : 'all of them'} where ${state.types.length === 1 ? 'it was' : 'they were'} seen`,
+              expected: 'Property IDs one LOC draft defines where they are carried',
+              remedy: 'Carry only the properties one LOC draft defines',
+            }),
+          )
         } else {
-          out.push({
-            source: 'loc',
-            title: `LOC track ambiguous: ${track.fullName}`,
-            detail: `${ids}; candidates ${resolution.candidates.join(', ')}.`,
-            severity: 'info',
-            section: null,
-            places: [],
-            atMs: null,
-          })
+          out.push(
+            makeProblem({
+              source: 'loc',
+              id: 'loc.profile.open',
+              severity: 'info',
+              subject: trackSubject(track),
+              title: 'LOC properties fit more than one LOC draft',
+              found: `${ids}; read as ${resolution.candidates.join(' or ')}`,
+            }),
+          )
         }
       }
 
@@ -1019,21 +1009,30 @@ export class SessionLoc {
         }
         if (!start.mark || start.mark.independent) continue
         groups.add(record.groupId)
-        out.push({
-          source: 'loc',
-          title: `LOC group ${record.groupId}, object 0 has Frame Marking I=0: ${track.fullName}`,
-          detail: null,
-          severity: 'info',
-          section: exampleSections(resolution),
-          places: [
-            {
-              label: objectLabel(record.groupId, record.objectId),
-              note: null,
-              target: { kind: 'object', source: record.source, offset: record.offset },
-            },
-          ],
-          atMs: this.progress.get(record.source)?.firstDataAt ?? null,
-        })
+        const specs = specsFromSection(exampleSections(resolution))
+        const atMs = this.progress.get(record.source)?.firstDataAt ?? null
+        out.push(
+          makeProblem({
+            source: 'loc',
+            id: 'loc.group-start.not-independent',
+            severity: 'info',
+            subject: trackSubject(track),
+            title: 'Groups start with an object marked not independent',
+            found: 'Frame Marking I=0 on object 0',
+            expected: 'Object 0 of a group marked independent, as in the drafts’ example',
+            spec: specs[0] ?? null,
+            also: specs.slice(1),
+            places: [
+              {
+                label: objectLabel(record.groupId, record.objectId),
+                note: null,
+                target: { kind: 'object', source: record.source, offset: record.offset },
+                atMs,
+              },
+            ],
+            atMs,
+          }),
+        )
       }
     }
     return out
@@ -1174,7 +1173,7 @@ function readerFor(session: SessionEntry): SessionLoc {
   const raw = toRaw(session)
   let reader = readers.get(raw)
   if (!reader) {
-    reader = new SessionLoc(sessionPins(raw))
+    reader = new SessionLoc()
     readers.set(raw, reader)
   }
   return reader
@@ -1185,7 +1184,6 @@ export interface SessionLocView {
   trackState: (track: TrackEntry) => LocTrackState | null
   /** The LOC state of the track a source carries, null when it is not LOC */
   sourceState: (source: LocSource) => LocTrackState | null
-  pin: (track: TrackEntry, profile: LocProfile | undefined) => void
   /** Read when first asked for, and again only once what it rests on changes */
   problems: ComputedRef<PanelProblem[]>
   objectView: (
@@ -1206,13 +1204,11 @@ export function useSessionLoc(
 ): SessionLocView {
   const revision = shallowRef(0)
   const reader = computed(() => readerFor(session()))
-  const pins = computed(() => sessionPins(session()))
   const trackProperties = computed(() => trackPropertyLists(session()))
 
   /** The sources due for a read, so chunks below the next threshold do not fire it. */
   const due = computed(() => {
     void revision.value
-    void pins.value.revision.value
     const s = session()
     return reader.value
       .sync(s, packaging())
@@ -1265,7 +1261,6 @@ export function useSessionLoc(
 
   const trackState = (track: TrackEntry) => {
     void revision.value
-    void pins.value.revision.value
     const s = session()
     return reader.value.trackState(
       track,
@@ -1281,14 +1276,9 @@ export function useSessionLoc(
       const track = trackForSource(session(), source)
       return track ? trackState(track) : null
     },
-    pin: (track, profile) => {
-      reader.value.pin(registryTrackKey(track), profile)
-      revision.value++
-    },
     problems: computed(() => {
       void revision.value
-      void pins.value.revision.value
-      const s = session()
+        const s = session()
       return reader.value.problems(s.tracks.values(), packaging(), s.draft, trackProperties.value)
     }),
     objectView: (source, obj, groupId, data, state) =>

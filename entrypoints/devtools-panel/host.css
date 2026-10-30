@@ -276,6 +276,85 @@ html.host .mq-input::placeholder {
   color: var(--ink-muted);
 }
 
+/* A text button in a view, as DevTools' own: Chrome's tonal pill, Firefox's
+   grey button. The stack keeps a label's width when a state replaces it. */
+html.host .host-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--host-btn-h);
+  padding: 0 var(--host-btn-pad);
+  border: 0;
+  border-radius: var(--host-btn-radius);
+  background: var(--host-btn-bg);
+  color: var(--host-btn-ink);
+  font: inherit;
+  line-height: normal;
+  white-space: nowrap;
+  cursor: pointer;
+}
+html.host .host-btn:hover {
+  background: color-mix(in srgb, var(--host-btn-bg), var(--host-btn-ink) 8%);
+}
+html.host .host-btn:active {
+  background: color-mix(in srgb, var(--host-btn-bg), var(--host-btn-ink) 14%);
+}
+/* In a grid row: as tall as the row allows. */
+html.host .host-btn--row {
+  height: 17px;
+  padding: 0 8px;
+  vertical-align: middle;
+}
+html.host .host-btn .ext-icon svg {
+  width: 14px;
+  height: 14px;
+}
+html.host .host-btn__stack {
+  display: inline-grid;
+}
+html.host .host-btn__stack > * {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+html.host .host-btn__stack > .is-hidden {
+  visibility: hidden;
+}
+html.host--chrome {
+  --host-btn-h: 24px;
+  --host-btn-pad: 12px;
+  --host-btn-radius: 12px;
+  --host-btn-bg: #d3e3fd;
+  --host-btn-ink: #0842a0;
+}
+html.host--chrome[data-theme="dark"] {
+  --host-btn-bg: #004a77;
+  --host-btn-ink: #c2e7ff;
+}
+html.host--firefox {
+  --host-btn-h: 24px;
+  --host-btn-pad: 8px;
+  --host-btn-radius: 4px;
+  --host-btn-bg: #e0e0e6;
+  --host-btn-ink: #15141a;
+}
+html.host--firefox[data-theme="dark"] {
+  --host-btn-bg: #3a3944;
+  --host-btn-ink: #fbfbfe;
+}
+@media (prefers-color-scheme: dark) {
+  html.host--chrome:not([data-theme]) {
+    --host-btn-bg: #004a77;
+    --host-btn-ink: #c2e7ff;
+  }
+  html.host--firefox:not([data-theme]) {
+    --host-btn-bg: #3a3944;
+    --host-btn-ink: #fbfbfe;
+  }
+}
+
 /* Tabs and view modes: one style, the host blue under the selected one. */
 html.host .mq-tabs {
   overflow: hidden;
@@ -363,4 +442,14 @@ html.host--firefox .row-selected .mq-badge {
   html.host .mq-kv dd {
     margin-bottom: 0;
   }
+}
+
+/* An object row that opens: a disclosure chevron, turned when open. */
+html.host .object-row__chevron {
+  flex: none;
+  color: var(--ink-muted);
+  transition: transform 0.1s;
+}
+html.host details[open] > .object-row > .object-row__chevron {
+  transform: rotate(90deg);
 }

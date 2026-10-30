@@ -7,25 +7,25 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 - Intercepts all WebTransport connections on a page (main thread, workers, and iframes)
 - Auto-detects MoQT from wire bytes, and the draft (07 through 22) from the negotiated `moqt-NN` protocol
 - Decodes control messages with full field display, error codes by name for the session's draft, and each response's time since its request
-- Problems list in Details covering control messages (error responses, requests left without a response, blocked or exhausted request IDs, GOAWAY, undecodable bytes), catalogs, catalogs that disagree on a track, media timeline templates, and LOC, CMAF and timeline objects: each with its severity and, where they apply, the spec section and links to the objects, catalog objects or messages where it was seen, filterable by severity
-- Tracks tab with per-track subscription state, timing, namespace grouping, and each track's packaging, codec and size from its catalog
+- Problems tab: one row per problem on the session, a catalog track or a media track, with its severity, what was found and what the rule expects, the fix, where it was seen and the spec section. It covers control messages (error responses, requests left without a response, blocked or exhausted request IDs, GOAWAY, messages that do not decode, parameters the draft does not define), catalogs, catalogs that disagree on a track, media timeline templates, and LOC, CMAF and timeline objects. Filter by level; copy a row as text or JSON
+- Tracks tab with per-track subscription state, direction, timing, namespace grouping, and each track's packaging, codec and size from its catalog; data on an alias no decoded request names is listed as `Track alias N`
 - MSF and CMSF catalogs: a Catalog view on catalog streams, with the tracks each catalog declares and the rules each catalog object breaks
-- Media payloads: a track is read as LOC, CMAF, a media timeline or an event timeline when its catalogs agree on its packaging; a LOC draft can also be picked in the Tracks tab for a track whose catalogs say LOC or whose objects carry Object Properties
+- Media payloads: a track is read as LOC, CMAF, a media timeline or an event timeline when its catalogs agree on its packaging; the Tracks tab switches a track between its reader and its bytes
   - LOC: each object's properties, decoded under the LOC draft the track's property types allow, and its payload's NAL unit framing
-  - CMAF: the track's CMAF header, and each object's boxes, track_IDs, first sample, SAP type and earliest presentation time, checked against CMSF
+  - CMAF: the track's CMAF header, and each object's boxes, track_IDs, first sample, SAP type, earliest presentation time and frame types (H.264, H.265, AV1), checked against CMSF
   - Timelines: media timeline records, event timeline records, and the CMSF SAP type timeline compared with the media track it describes
   - Media timeline templates: the template the catalogs give a track, of any packaging, shown with its streams and in the Tracks tab
 - WebTransport datagram interception and decoding (shown in Streams tab)
 - Stream content detection: JSON, CBOR, MessagePack, H.264 and H.265 Annex-B, and ISO BMFF boxes
-- Hex viewer with inline object boundary annotations and object navigation
+- Bytes view with stream and object headers marked, and object navigation
 - Live bitrate display for active connections
-- Filter toolbar for messages (active only, group by namespace, outgoing/incoming direction, message name under any draft's name for it) and streams (text search)
-- Follows the DevTools light or dark theme
-- Recording toggle and clear controls for stream data
+- Filter bar for messages (by name, under any draft's name for it), streams and tracks (by track name) and problems; a Tracks view menu for active tracks, direction and grouping by namespace
+- Follows the DevTools look, light or dark, in Chrome and Firefox
+- Record and clear controls; Clear stream data in a live connection's context menu
 - Stack traces for control messages and stream creation
-- Export/import `.moqtrace` trace files
+- Export/import `.moqtrace` trace files, with stream headers and messages that do not decode; a long import shows its progress and can be cancelled
 - Optional moqtap account: upload a session to your library and share it by link or with a team
-- Impairs the inspected tab through `moqtap intercept --bridge` (Off, Offline, 3G, 4G), each WebTransport session on its own link
+- Impairs the inspected tab through `moqtap intercept --bridge` with the network profiles the CLI offers, each WebTransport session on its own link and, if you pick one, its own profile
 - Graceful handling of non-MoQT WebTransport connections
 
 ## Development
@@ -102,9 +102,10 @@ the CLI on `127.0.0.1`, and a page whose Content Security Policy sets
 instrument, for example because the page's `worker-src` does not allow
 `blob:`, connects directly, and the panel says so.
 
-The panel uses a CLI only after you allow its identity, which `moqtap cert`
-prints; a CLI with a different identity asks again. Allowed identities are
-listed, and can be removed, in the extension's options.
+The panel uses a CLI only after you allow its pairing code, which the CLI
+prints at startup and `moqtap cert` shows; a CLI with a different pairing code
+asks again. Allowed CLIs are listed, and can be removed, in the panel's
+Settings and the extension's options.
 
 ## License
 

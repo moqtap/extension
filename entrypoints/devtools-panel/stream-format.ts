@@ -1,11 +1,10 @@
 /**
- * What a stream is read as. A track whose packaging the catalogs agree on, or
- * the user pins as LOC, is read as that packaging and its bytes are not classified.
- * Any other stream is read as what its bytes prove.
+ * What a stream is read as. A track whose packaging the catalogs agree on is
+ * read as that packaging and its bytes are not classified. Any other stream
+ * is read as what its bytes prove.
  */
 
 import type { PayloadMediaInfo } from '@moqtap/media/bmff'
-import type { LocProfile } from '@moqtap/media/loc'
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { registryTrackKey, type TrackKey, type TrackPackaging } from './catalogs'
 import { datagramSource, listSources, streamSource, trackForSource } from './loc'
@@ -23,40 +22,34 @@ export type StreamFormat =
   | {
       from: 'packaging'
       packaging: 'loc' | 'cmaf' | 'mediatimeline' | 'eventtimeline'
-      via: 'catalog' | 'pin'
+      via: 'catalog'
     }
   | ({ from: 'bytes' } & ByteFormat)
 
 /** The one place that decides whether a stream's bytes are classified. */
 export function streamFormat(
   described: TrackPackaging | undefined,
-  pin: LocProfile | undefined,
   bytes: ByteFormat,
 ): StreamFormat {
-  const media = mediaPackaging(described, pin)
+  const media = mediaPackaging(described)
   if (media) return { from: 'packaging', packaging: media.packaging, via: media.via }
-  const timeline = timelinePackaging(described, pin)
+  const timeline = timelinePackaging(described)
   if (timeline) return { from: 'packaging', packaging: timeline, via: 'catalog' }
   return { from: 'bytes', ...byteFormatOf(bytes) }
 }
 
-/** A stream's format, from its track's catalog packaging and pin. */
+/** A stream's format, from its track's catalog packaging. */
 export function formatOfStream(
   session: Pick<SessionEntry, 'streams' | 'tracks' | 'datagramGroups'>,
   stream: Pick<StreamEntry, 'streamId' | 'datagramGroupKey'> & ByteFormat,
   packaging: ReadonlyMap<TrackKey, TrackPackaging>,
-  pins: { get(key: TrackKey): LocProfile | undefined },
 ): StreamFormat {
   const source = stream.datagramGroupKey
     ? datagramSource(stream.datagramGroupKey)
     : streamSource(stream.streamId)
   const track = trackForSource(session, source)
   const key = track ? registryTrackKey(track) : null
-  return streamFormat(
-    key === null ? undefined : packaging.get(key),
-    key === null ? undefined : pins.get(key),
-    stream,
-  )
+  return streamFormat(key === null ? undefined : packaging.get(key), stream)
 }
 
 /** The short label of a byte-classified stream; null for none, or for a packaged one. */
@@ -111,7 +104,7 @@ export function sharedByteLabel(formats: Iterable<StreamFormat>): string | null 
 
 /**
  * Each track's {@link sharedByteLabel}, over its streams and datagram groups
- * with bytes; null for a track with catalog packaging. Pins are left out.
+ * with bytes; null for a track with catalog packaging.
  */
 export function trackByteLabels(
   session: Pick<SessionEntry, 'streams' | 'tracks' | 'datagramGroups'>,
@@ -125,7 +118,7 @@ export function trackByteLabels(
         ? session.streams.get(ref.streamId)
         : session.datagramGroups.get(ref.groupKey!)
     if (!entry) continue
-    const format = streamFormat(packaging?.get(ref.key), undefined, entry)
+    const format = streamFormat(packaging?.get(ref.key), entry)
     const list = byTrack.get(ref.key)
     if (list) list.push(format)
     else byTrack.set(ref.key, [format])

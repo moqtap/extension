@@ -16,6 +16,7 @@ import {
   SessionCatalogs,
   trackKey,
 } from './catalogs'
+import { catalogProblems } from './problems'
 import type { SessionEntry, StreamEntry, TrackEntry } from './use-inspector'
 
 vi.mock('@moqtap/media/catalog', async (importOriginal) => {
@@ -287,6 +288,7 @@ describe('following a catalog track', () => {
       ['delta', 'applied'],
     ])
     expect(view.incomplete).toEqual([])
+    expect(view.headers.get(3)?.fields).toMatchObject({ trackAlias: 5, groupId: 0 })
   })
 
   it('parses each object once as its stream grows', () => {
@@ -456,19 +458,21 @@ describe('what a catalog cannot say', () => {
       (p) => p.category === 'object_order',
     )
     expect(problem?.section).toBe('MSF-01 5')
-    expect(problem?.severity).toBe('error')
+    expect(media.severityOf(problem!)).toBe('error')
+    expect(problem?.effect).toBe('applied')
     // The producer broke the rule; nothing was lost in recording.
     expect(view.incomplete).toEqual([])
   })
 
-  it('is incomplete when the bytes are not there', () => {
+  it('reads a stream again after a read that failed, and reports nothing missing', () => {
     const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
     t.put(3, subgroup(5, 0, [CATALOG]))
     const reader = new SessionCatalogs()
     pump(reader, t, new Set([3]))
-    expect(reader.views()[0].incomplete).toEqual([
-      expect.stringContaining('No bytes'),
-    ])
+    expect(reader.views()[0].incomplete).toEqual([])
+    expect(reader.views()[0].objects).toHaveLength(0)
+    pump(reader, t)
+    expect(reader.views()[0].objects).toHaveLength(1)
   })
 
   it('is incomplete once recording has been paused', () => {
@@ -577,5 +581,43 @@ describe('the packaging join', () => {
         registryTrackKey({ trackNamespace: ['live'], trackName: 'audio' }),
       ),
     ).toBe(false)
+  })
+})
+
+describe('what the Catalog view shows of its objects', () => {
+  const at = (generatedAt: number) => ({ ...CATALOG, generatedAt })
+
+  it('says what each object changes from the one before', () => {
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    t.put(3, subgroup(5, 0, [at(1)]), { closed: true })
+    t.put(7, subgroup(5, 1, [at(2)]), { closed: true })
+    t.put(11, subgroup(5, 2, [{ ...at(3), tracks: [VIDEO, AUDIO] }]), { closed: true })
+    const reader = new SessionCatalogs()
+    pump(reader, t)
+    expect(reader.views()[0].objects.map((o) => o.changes)).toEqual([
+      null,
+      ['generatedAt'],
+      ['tracks', 'generatedAt'],
+    ])
+  })
+
+  it('rates problems by their keyword, and lists each rule once with its objects', () => {
+    const quiet = { ...AUDIO, samplerate: undefined }
+    const doc = { version: '1', tracks: [VIDEO, quiet] }
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    t.put(3, subgroup(5, 0, [doc]), { closed: true })
+    t.put(7, subgroup(5, 1, [doc]), { closed: true })
+    const reader = new SessionCatalogs()
+    pump(reader, t)
+    const view = reader.views()[0]
+    expect(view.objects.every((o) => o.outcome === 'applied')).toBe(true)
+    const rows = catalogProblems([view], () => null)
+    expect(rows.map((r) => [r.severity, r.title])).toEqual([
+      ['error', 'Tracks have no bitrate'],
+      ['error', 'CMAF track "video" gives no header in initRef or initData'],
+      ['error', 'Audio track "audio" has no samplerate or channelConfig'],
+    ])
+    expect(rows[0]!.places.map((p) => p.label)).toEqual(['group 0, object 0', 'group 1, object 0'])
+    expect(rows[0]!.examined).toBe(2)
   })
 })

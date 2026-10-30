@@ -14,6 +14,7 @@ import ShareDialog from './components/ShareDialog.vue'
 import SplitView from './components/SplitView.vue'
 import TabStrip from './components/TabStrip.vue'
 import { DIRECT_NOTICE, impairmentProblem, pickProblem, refusalAction, refusalUpgrade } from './cli-copy'
+import { shownTracks } from './alias-tracks'
 import { connectionName } from './connection-name'
 import { formatCount } from './format'
 import { impairmentButtonLabel, shortFingerprint } from './impair-choices'
@@ -128,15 +129,15 @@ const tabs = computed(() => {
   return tabList({
     messages: s.messages.length,
     streams: s.streams.size + s.datagramGroups.size,
-    tracks: s.protocol === 'moqt' ? s.tracks.size : null,
+    tracks: s.protocol === 'moqt' ? shownTracks(s).size : null,
     problems: problemTotal.value,
   })
 })
-/** The problem count button's name: "2 errors, 1 warning", leaving out a zero. */
+/** The problem count button's name: "2 errors, 1 warning, 3 notes", leaving out a zero. */
 const countsLabel = computed(() => {
-  const { error, warning } = problemCounts.value
+  const { error, warning, info } = problemCounts.value
   const part = (n: number, one: string) => (n === 0 ? null : `${formatCount(n)} ${n === 1 ? one : `${one}s`}`)
-  return [part(error, 'error'), part(warning, 'warning')].filter((p) => p !== null).join(', ')
+  return [part(error, 'error'), part(warning, 'warning'), part(info, 'note')].filter((p) => p !== null).join(', ')
 })
 const filterOn = computed(() => selectedSession.value !== null && filters(viewTab.value) && !settingsOpen.value)
 /** The filter keeps its place, unseen, wherever it does not apply, so no row changes height. */
@@ -313,7 +314,7 @@ function openSettings() {
         <Icon name="chevronDown" class="caret" />
       </button>
       <template
-        v-if="selectedSession && (problemCounts.error > 0 || problemCounts.warning > 0)"
+        v-if="selectedSession && problemTotal > 0"
       >
         <span class="bar-sep" aria-hidden="true" />
         <button
@@ -327,6 +328,9 @@ function openSettings() {
           >
           <span v-if="problemCounts.warning > 0" class="count count--warning"
             ><Icon name="warning" />{{ formatCount(problemCounts.warning) }}</span
+          >
+          <span v-if="problemCounts.info > 0" class="count count--info"
+            ><Icon name="info" />{{ formatCount(problemCounts.info) }}</span
           >
         </button>
       </template>
@@ -831,6 +835,9 @@ function openSettings() {
 }
 .count--warning :deep(.ext-icon) {
   color: var(--warning);
+}
+.count--info :deep(.ext-icon) {
+  color: var(--info);
 }
 
 .infobars {

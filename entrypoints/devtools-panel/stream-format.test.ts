@@ -5,8 +5,6 @@
 
 import { describe, expect, it } from 'vitest'
 import { registryTrackKey, type TrackKey, type TrackPackaging } from './catalogs'
-import { tracksWithObjectProperties } from './loc'
-import { PackagingPins } from './packaging'
 import {
   type ByteFormat,
   byteLabel,
@@ -48,7 +46,7 @@ function bytes(format: ByteFormat): StreamFormat {
 describe('the seam', () => {
   it('reads a track the catalogs agree on as that packaging, whatever its bytes', () => {
     for (const packaging of ['loc', 'cmaf', 'mediatimeline', 'eventtimeline'] as const) {
-      expect(streamFormat(described(packaging), undefined, FMP4)).toEqual({
+      expect(streamFormat(described(packaging), FMP4)).toEqual({
         from: 'packaging',
         packaging,
         via: 'catalog',
@@ -56,30 +54,16 @@ describe('the seam', () => {
     }
   })
 
-  it('reads a track pinned as LOC as LOC, over any catalog packaging', () => {
-    for (const packaging of [undefined, described('cmaf'), described('mediatimeline')]) {
-      expect(streamFormat(packaging, 'ietf-04', FMP4)).toEqual({
-        from: 'packaging',
-        packaging: 'loc',
-        via: 'pin',
-      })
-    }
-    expect(streamFormat(described('loc'), 'ietf-04', FMP4)).toEqual({
-      from: 'packaging',
-      packaging: 'loc',
-      via: 'catalog',
-    })
-  })
 
   it('reads the bytes without a catalog packaging the panel reads', () => {
-    expect(streamFormat(undefined, undefined, FMP4)).toEqual(bytes(FMP4))
-    expect(streamFormat(described(null), undefined, H264)).toEqual(bytes(H264))
-    expect(streamFormat(described('moqlog'), undefined, { contentType: 'json' })).toEqual({
+    expect(streamFormat(undefined, FMP4)).toEqual(bytes(FMP4))
+    expect(streamFormat(described(null), H264)).toEqual(bytes(H264))
+    expect(streamFormat(described('moqlog'), { contentType: 'json' })).toEqual({
       from: 'bytes',
       contentType: 'json',
     })
     // Catalogs that disagree on the packaging
-    expect(streamFormat(described('loc', 'cmaf'), undefined, FMP4)).toEqual(bytes(FMP4))
+    expect(streamFormat(described('loc', 'cmaf'), FMP4)).toEqual(bytes(FMP4))
   })
 })
 
@@ -97,7 +81,7 @@ describe('byte labels', () => {
   })
 
   it('gives a packaged stream none', () => {
-    const packaged = streamFormat(described('cmaf'), undefined, CMAF)
+    const packaged = streamFormat(described('cmaf'), CMAF)
     expect(byteLabel(packaged)).toBeNull()
     expect(byteTitle(packaged)).toBeUndefined()
   })
@@ -146,19 +130,12 @@ describe('streams of a session', () => {
     datagramGroups: new Map(),
   } as unknown as SessionEntry
 
-  it('finds each stream’s track for its catalog packaging and pin', () => {
+  it('finds each stream’s track for its catalog packaging', () => {
     const packaging = new Map<TrackKey, TrackPackaging>([[registryTrackKey(video), described('cmaf')]])
-    const pins = new PackagingPins()
-    expect(formatOfStream(session, session.streams.get(2)!, packaging, pins).from).toBe('packaging')
-    expect(formatOfStream(session, session.streams.get(3)!, packaging, pins)).toEqual(bytes(FMP4))
-    pins.set(registryTrackKey(audio), 'ietf-04')
-    expect(formatOfStream(session, session.streams.get(3)!, packaging, pins)).toEqual({
-      from: 'packaging',
-      packaging: 'loc',
-      via: 'pin',
-    })
+    expect(formatOfStream(session, session.streams.get(2)!, packaging).from).toBe('packaging')
+    expect(formatOfStream(session, session.streams.get(3)!, packaging)).toEqual(bytes(FMP4))
     // A stream on no known track
-    expect(formatOfStream(session, session.streams.get(6)!, packaging, pins)).toEqual(bytes(FMP4))
+    expect(formatOfStream(session, session.streams.get(6)!, packaging)).toEqual(bytes(FMP4))
   })
 
   it('labels each track by the streams that have bytes', () => {
@@ -169,12 +146,4 @@ describe('streams of a session', () => {
     expect(trackByteLabels(session, packaging).get(registryTrackKey(video))).toBeNull()
   })
 
-  it('finds the tracks with a stream seen carrying an Object Properties block', () => {
-    expect([...tracksWithObjectProperties(session)]).toEqual([])
-    const streams = new Map(session.streams)
-    streams.set(4, { ...streams.get(4)!, objectProperties: true })
-    expect([...tracksWithObjectProperties({ ...session, streams })]).toEqual([
-      registryTrackKey(audio),
-    ])
-  })
 })

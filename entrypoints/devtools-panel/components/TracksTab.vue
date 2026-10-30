@@ -1,7 +1,6 @@
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  agreedPackaging,
   type CatalogView,
   packagingConflicts,
   packagingLabel,
@@ -21,15 +20,9 @@ import {
 } from '../format'
 import type { DirectionFilter } from '../prefs'
 import { getCachedPref, loadPrefs, savePref } from '../prefs'
-import {
-  LOC_PROFILES,
-  type LocProfile,
-  propertyTypeText,
-  resolutionLabel,
-  type SessionLocView,
-  tracksWithObjectProperties,
-} from '../loc'
-import { sessionPins } from '../packaging'
+import { propertyTypeText, resolutionLabel, type SessionLocView } from '../loc'
+import { sessionViews } from '../packaging'
+import { shownTracks, trackDirection } from '../alias-tracks'
 import { type RequestTimes, trackRoundTrip } from '../requests'
 import { trackByteLabels } from '../stream-format'
 import { TIMELINE_LABELS, templateOf, templateText } from '../timelines'
@@ -99,7 +92,7 @@ const DIRECTIONS: { id: DirectionFilter; label: string }[] = [
 ]
 
 // ── Filtering ────────────────────────────────────────────────────
-const allTracks = computed(() => Array.from(props.session.tracks.values()))
+const allTracks = computed(() => Array.from(shownTracks(props.session).values()))
 
 const filteredTracks = computed(() => {
   let list = allTracks.value
@@ -107,7 +100,7 @@ const filteredTracks = computed(() => {
     list = list.filter((t) => t.status === 'active' || t.status === 'pending')
   }
   if (directionFilter.value !== 'all') {
-    list = list.filter((t) => t.direction === directionFilter.value)
+    list = list.filter((t) => t.unnamed?.directionKnown !== false && trackDirection(t) === directionFilter.value)
   }
   const q = props.filter.trim().toLowerCase()
   if (q) list = list.filter((t) => t.fullName.toLowerCase().includes(q))
@@ -269,51 +262,36 @@ function mediaCell(track: TrackEntry): MediaCell | null {
 
 // ── How the track is read ────────────────────────────────────────
 
-const pins = computed(() => sessionPins(props.session))
+const views = computed(() => sessionViews(props.session))
 
 /** For each track, the byte format all its streams share. */
 const byteLabels = computed(() => trackByteLabels(props.session, props.packaging))
 
-/** The tracks whose objects may be LOC by what capture saw. */
-const propertyTracks = computed(() => tracksWithObjectProperties(props.session))
-
 /**
- * The Media cell: one badge for what the track is read as, then whatever the
- * catalog gave. On a track that may be LOC, the badge picks the LOC draft.
+ * The Media cell: the reader the track's packaging calls for, as the data
+ * gives it (the catalogs, or what its bytes identify), then whatever the
+ * catalog gave. `reader` is null when nothing gives a packaging.
  */
 interface FormatCell {
-  badge: string | null
+  reader: string | null
   badgeClass: string
   text: string
   title: string
-  /** Set when a LOC draft can be picked: the pinned profile, or '' */
-  pin: string | null
-  /** The picker's first entry: how the track reads without a pin */
-  autoLabel: string
 }
 
 function formatCell(track: TrackEntry, media: MediaCell | null): FormatCell {
-  void pins.value.revision.value
   const key = registryTrackKey(track)
-  const pinned = pins.value.get(key) ?? ''
-  const agreed = agreedPackaging(props.packaging?.get(key))
-  const pickable = agreed === 'loc' || pinned !== '' || propertyTracks.value.has(key)
-  const bytes = byteLabels.value.get(key) ?? null
-  const base = {
-    text: media?.text ?? '',
-    pin: pickable ? pinned : null,
-    autoLabel: agreed === 'loc' ? 'LOC, draft from its properties' : (bytes ?? 'hex'),
-  }
+  const base = { text: media?.text ?? '' }
   const titled = (title: string) => [title, media?.title].filter((x) => x).join(' · ')
 
   if (media?.catalog) {
-    return { ...base, badge: 'catalog', badgeClass: 'mq-badge--note', title: media.title, pin: null }
+    return { ...base, reader: 'Catalog', badgeClass: '', title: media.title }
   }
   const cmaf = props.cmaf?.trackState(track) ?? null
   if (cmaf) {
     return {
       ...base,
-      badge: 'CMAF',
+      reader: 'CMAF',
       badgeClass: cmaf.init.status === 'known' ? 'mq-badge--ok' : 'mq-badge--check',
       title: titled(`${initText(cmaf.init)}. ${plural(cmaf.objectCount, 'object')} read.`),
     }
@@ -324,14 +302,26 @@ function formatCell(track: TrackEntry, media: MediaCell | null): FormatCell {
       timeline.depends.length > 0 ? ` Describes ${timeline.depends.join(', ')}.` : ''
     return {
       ...base,
-      badge: TIMELINE_LABELS[timeline.kind],
+      reader: TIMELINE_LABELS[timeline.kind],
       badgeClass: 'mq-badge--ok',
       title: titled(`${plural(timeline.objectCount, 'object')} read.${describes}`),
     }
   }
   const loc = locReading(track)
-  if (loc) return { ...base, ...loc, title: titled(loc.title) }
-  return { ...base, badge: media?.badge ?? bytes, badgeClass: '', title: media?.title ?? '' }
+  if (loc) return { ...base, reader: loc.badge, badgeClass: loc.badgeClass, title: titled(loc.title) }
+  const bytes = byteLabels.value.get(key) ?? null
+  // A packaging the panel has no reader for is named as the catalog gives it.
+  const text = bytes === null && media ? [media.badge, media.text].filter((x) => x).join(' ') : base.text
+  return { text, reader: bytes, badgeClass: '', title: media?.title ?? '' }
+}
+
+function isHex(track: TrackEntry): boolean {
+  void views.value.revision.value
+  return views.value.isHex(registryTrackKey(track))
+}
+
+function setHex(track: TrackEntry, on: boolean) {
+  views.value.setHex(registryTrackKey(track), on)
 }
 
 function locReading(
@@ -345,7 +335,6 @@ function locReading(
       ? 'No LOC property IDs seen'
       : `Property ${state.types.length === 1 ? 'ID' : 'IDs'} seen: ${state.types.map(propertyTypeText).join(', ')}`
   const title = [
-    state.via === 'catalog' ? '' : 'Pinned.',
     'profile' in r ? '' : `${resolutionLabel(r)}.`,
     `${seen} in ${plural(state.objectCount, 'object')}.`,
     state.malformedCount > 0
@@ -368,11 +357,6 @@ function formatTone(badgeClass: string): string | undefined {
   if (badgeClass === 'mq-badge--error') return 'tone-error'
   if (badgeClass === 'mq-badge--check') return 'tone-warning'
   return undefined
-}
-
-function onPin(track: TrackEntry, event: Event) {
-  const value = (event.target as HTMLSelectElement).value
-  pins.value.set(registryTrackKey(track), value === '' ? undefined : (value as LocProfile))
 }
 
 // ── Computed rows with bitrate ───────────────────────────────────
@@ -415,6 +399,7 @@ const trackRows = computed((): TrackRow[] => {
 
 // ── Grid ──────────────────────────────────────────────────────────
 function nsOf(row: TrackRow): string {
+  if (row.track.unnamed) return 'Known by alias only'
   return row.track.trackNamespace.length > 0 ? row.track.trackNamespace.join('/') : '(no namespace)'
 }
 
@@ -441,7 +426,7 @@ const columns = computed((): GridColumn<TrackRow>[] => [
     minWidth: 24,
     align: 'center',
     showFrom: 640,
-    sort: (r) => r.track.direction,
+    sort: (r) => trackDirection(r.track),
   },
   { id: 'name', label: 'Track', minWidth: 120, pinned: true, sort: (r) => r.track.fullName },
   {
@@ -450,7 +435,7 @@ const columns = computed((): GridColumn<TrackRow>[] => [
     width: 180,
     showFrom: 560,
     title: 'What the track is read as, and what its catalog says',
-    sort: (r) => r.format.badge,
+    sort: (r) => r.format.reader ?? r.format.text,
   },
   {
     id: 'subscribed',
@@ -495,15 +480,12 @@ const columns = computed((): GridColumn<TrackRow>[] => [
   { id: 'total', label: 'Total', width: 72, align: 'end', mono: true, showFrom: 360, sort: (r) => r.stats?.totalBytes },
   { id: 'bitrate', label: 'Bitrate', width: 80, align: 'end', mono: true, showFrom: 560, sort: (r) => r.bitrate },
   { id: 'active', label: 'Active', width: 72, align: 'end', mono: true, showFrom: 900 },
-  // An error column with no error in it is only noise; once one shows, it stays.
-  {
-    id: 'error',
-    label: 'Error',
-    width: 140,
-    pinned: anyError.value,
-    showFrom: 900,
-    sort: (r) => r.track.errorReason,
-  },
+  // An error column with no error in it is only noise, in the row and when it opens.
+  ...(anyError.value
+    ? [{ id: 'error', label: 'Error', width: 140, pinned: true, sort: (r: TrackRow) => r.track.errorReason }]
+    : []),
+  // Shown once everything else fits; until then a row opens to show it.
+  { id: 'actions', label: 'Show streams', srOnly: true, width: 112, showFrom: 1100 },
 ])
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -603,17 +585,18 @@ function formatLatency(track: TrackEntry): string {
       :row-key="(r) => r.track.subscribeId"
       :row-class="(r) => (r.track.status === 'error' ? 'row-error' : undefined)"
       :group-of="groupByNs ? nsOf : undefined"
-      @open="(r) => emit('openStreams', r.track.fullName)"
+      expandable
+      action-column="actions"
     >
-      <template #cell="{ row, column }">
+      <template #cell="{ row, column, current }">
         <span v-if="column.id === 'status'" :class="`status-${row.track.status}`" :title="statusTitle(row.track.status)">
           <Icon v-if="row.track.status === 'error'" name="error" />
           <span v-else class="status-dot" />
         </span>
+        <span v-else-if="column.id === 'dir' && row.track.unnamed?.directionKnown === false" />
         <DirMark
           v-else-if="column.id === 'dir'"
-          :dir="row.track.direction"
-          :label="row.track.direction === 'tx' ? 'Sent' : 'Received'"
+          :dir="trackDirection(row.track)"
         />
         <span v-else-if="column.id === 'name'" class="name-cell" :title="row.track.fullName"
           ><span :class="trackColourClass(row.track.colorIndex)" class="track-swatch" aria-hidden="true" /><span
@@ -622,20 +605,35 @@ function formatLatency(track: TrackEntry): string {
             >{{ trackNameParts(row.track, groupByNs).namespace }}</span
           ><span class="name-track">{{ row.track.trackName }}</span></span
         >
-        <span v-else-if="column.id === 'media'" :title="row.format.title || undefined">
-          <label v-if="row.format.pin !== null" class="format-pick" :class="formatTone(row.format.badgeClass)"
-            >{{ row.format.badge ?? 'hex' }}<Icon name="chevronDown" class="format-chevron" /><select
-              :aria-label="`LOC draft for ${row.track.fullName}`"
-              :value="row.format.pin"
-              @click.stop
-              @change="onPin(row.track, $event)"
-            >
-              <option value="">{{ row.format.autoLabel }}</option>
-              <option v-for="p in LOC_PROFILES" :key="p" :value="p">LOC {{ p }}</option>
-            </select></label
+        <span v-else-if="column.id === 'media'" class="media-cell" :title="row.format.title || undefined">
+          <span
+            v-if="row.format.reader"
+            class="reader-toggle"
+            role="group"
+            :aria-label="`View ${row.track.fullName} as`"
           >
-          <span v-else-if="row.format.badge" :class="formatTone(row.format.badgeClass)">{{ row.format.badge }}</span>
-          <span v-if="row.format.text" class="muted media-text">{{ row.format.text }}</span>
+            <button
+              type="button"
+              :class="formatTone(row.format.badgeClass)"
+              :aria-pressed="!isHex(row.track)"
+              :tabindex="current ? 0 : -1"
+              @click.stop="setHex(row.track, false)"
+            >
+              {{ row.format.reader }}
+            </button>
+            <button
+              type="button"
+              :aria-pressed="isHex(row.track)"
+              :tabindex="current ? 0 : -1"
+              @click.stop="setHex(row.track, true)"
+            >
+              Bytes
+            </button>
+          </span>
+          <span v-if="row.format.text" class="muted media-text" :class="{ 'media-text--alone': !row.format.reader }">{{
+            row.format.text
+          }}</span>
+          <template v-else-if="!row.format.reader">—</template>
         </span>
         <span v-else-if="column.id === 'subscribed'" :title="absTitle(row.track.subscribedAt)">{{
           relTime(row.track.subscribedAt)
@@ -655,6 +653,15 @@ function formatLatency(track: TrackEntry): string {
         }}</template>
         <template v-else-if="column.id === 'active'">{{ activeFor(row.track, row.stats) }}</template>
         <span v-else-if="column.id === 'error'" :title="row.track.errorReason">{{ row.track.errorReason }}</span>
+        <button
+          v-else-if="column.id === 'actions'"
+          type="button"
+          class="host-btn host-btn--row"
+          :tabindex="current ? 0 : -1"
+          @click.stop="emit('openStreams', row.track.fullName)"
+        >
+          Show streams
+        </button>
       </template>
     </DataGrid>
   </div>
@@ -685,9 +692,6 @@ function formatLatency(track: TrackEntry): string {
 
 .muted {
   color: var(--ink-muted);
-}
-.tracks-tab :deep(.grid-row) {
-  cursor: pointer;
 }
 .row-selected .muted {
   color: inherit;
@@ -742,27 +746,46 @@ function formatLatency(track: TrackEntry): string {
   border: 1.5px solid currentColor;
 }
 
+.media-cell {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+}
+/* The reader and Bytes: a pair of pills, the one in use pressed. */
+.reader-toggle {
+  display: inline-flex;
+  flex: none;
+  gap: 1px;
+}
+.reader-toggle button {
+  height: 16px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  font: inherit;
+  line-height: normal;
+  cursor: pointer;
+}
+.reader-toggle button:hover {
+  background: var(--bar-hover);
+}
+.reader-toggle button[aria-pressed='true'] {
+  background: var(--host-pressed);
+}
+/* Chrome presses with the selection's fill, so the text takes its ink, as a
+   selected row's does; a warning or error tone shows only unpressed. */
+:global(html.host--chrome .reader-toggle button[aria-pressed='true']) {
+  color: var(--on-row-selected);
+}
 .media-text {
   margin-left: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.format-pick {
-  position: relative;
-  cursor: pointer;
-}
-.format-pick:has(select:focus-visible) {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
-}
-.format-chevron :deep(svg) {
-  width: 10px;
-  height: 10px;
-}
-/* The native select sits over the text, invisible, so the text is the control. */
-.format-pick select {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  opacity: 0;
-  cursor: pointer;
+.media-text--alone {
+  margin-left: 0;
+  color: inherit;
 }
 </style>

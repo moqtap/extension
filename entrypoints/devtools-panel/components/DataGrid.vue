@@ -10,7 +10,9 @@ import {
   type GridPrefs,
   gridTemplate,
   groupItems,
+  itemAt,
   nextSort,
+  offsetsOf,
   revealTop,
   rowInView,
   rowKeyTarget,
@@ -38,6 +40,12 @@ const props = defineProps<{
   groupOf?: (row: R) => string
   /** Keep the newest row in view while scrolled to the end and unsorted */
   follow?: boolean
+  /**
+   * A row opens in place to show the columns not shown. It opens only while
+   * `actionColumn` (the control a click on the row stands for) is not shown.
+   */
+  expandable?: boolean
+  actionColumn?: string
 }>()
 
 const emit = defineEmits<{
@@ -48,7 +56,8 @@ const emit = defineEmits<{
 }>()
 
 defineSlots<{
-  cell(props: { row: R; column: GridColumn<R> }): unknown
+  /** `current`: the row is the grid's tab stop, so its controls take Tab */
+  cell(props: { row: R; column: GridColumn<R>; current: boolean }): unknown
 }>()
 
 const ROW = rowHeight()
@@ -86,6 +95,18 @@ const minWidth = computed(() =>
   ),
 )
 const hideable = computed(() => props.columns.filter((c) => !c.pinned))
+/** The columns a row's expansion lists: what is not shown, the action last. */
+const hiddenColumns = computed(() => {
+  const hidden = props.columns.filter((c) => !shownColumns.value.includes(c))
+  return [...hidden.filter((c) => c.id !== props.actionColumn), ...hidden.filter((c) => c.id === props.actionColumn)]
+})
+/** Rows open while the row's own action is out of view and something is hidden. */
+const rowsOpen = computed(
+  () =>
+    !!props.expandable &&
+    hiddenColumns.value.length > 0 &&
+    !shownColumns.value.some((c) => c.id === props.actionColumn),
+)
 
 // ── Rows ──────────────────────────────────────────────────────────
 const sortColumn = computed(() => {
@@ -100,9 +121,26 @@ const sortedRows = computed(() => {
 const collapsed = ref(new Set<string>())
 const items = computed(() => groupItems(sortedRows.value, props.groupOf, collapsed.value))
 
+/** Open rows, by key */
+const expanded = ref(new Set<string | number>())
+const EXPANSION_PAD = 4
+/** An open row's expansion: a line per hidden column. */
+const expansionHeight = computed(() => hiddenColumns.value.length * ROW + 2 * EXPANSION_PAD)
+function isExpanded(row: R): boolean {
+  return rowsOpen.value && expanded.value.has(keyOf(row))
+}
+const offsets = computed(() =>
+  offsetsOf(
+    items.value.map((it) => (it.kind === 'row' && isExpanded(it.row) ? ROW + expansionHeight.value : ROW)),
+  ),
+)
+function topOf(pos: number): number {
+  return pos < 0 ? -1 : (offsets.value[pos] ?? -1)
+}
+
 const range = computed(() => {
-  const start = Math.max(0, Math.floor(scrollTop.value / ROW) - OVERSCAN)
-  const end = Math.min(items.value.length, start + Math.ceil(viewport.value / ROW) + OVERSCAN * 2)
+  const start = Math.max(0, itemAt(offsets.value, scrollTop.value) - OVERSCAN)
+  const end = Math.min(items.value.length, itemAt(offsets.value, scrollTop.value + viewport.value) + 1 + OVERSCAN)
   return { start, end }
 })
 const visible = computed(() =>
@@ -129,7 +167,7 @@ function onScroll() {
   atEnd.value = el.scrollHeight - el.scrollTop - el.clientHeight < ROW
   // A scroll the browser makes while resizing is not the user leaving the row.
   if (hasSelection.value && el.clientHeight === viewport.value) {
-    keepSelected = rowInView(posOfKey(props.selectedKey), ROW, el.scrollTop, el.clientHeight)
+    keepSelected = rowInView(topOf(posOfKey(props.selectedKey)), ROW, el.scrollTop, el.clientHeight)
   }
 }
 
@@ -137,7 +175,7 @@ function onScroll() {
 function reveal(pos: number) {
   const el = root.value
   if (!el) return
-  const top = revealTop(pos, ROW, el.scrollTop, el.clientHeight)
+  const top = revealTop(topOf(pos), ROW, el.scrollTop, el.clientHeight)
   if (top !== null) el.scrollTop = top
 }
 
@@ -191,7 +229,7 @@ watch(
 const tabPos = computed(() => {
   const { start, end } = range.value
   if (focusPos.value >= start && focusPos.value < end) return focusPos.value
-  return Math.min(Math.max(start, Math.floor(scrollTop.value / ROW)), Math.max(0, items.value.length - 1))
+  return Math.min(Math.max(start, itemAt(offsets.value, scrollTop.value)), Math.max(0, items.value.length - 1))
 })
 
 function focusRow(pos: number) {
@@ -208,7 +246,15 @@ function activate(pos: number) {
   else {
     emit('activate', it.row)
     emit('open', it.row)
+    if (rowsOpen.value) toggleExpanded(keyOf(it.row))
   }
+}
+
+function toggleExpanded(key: string | number) {
+  const s = new Set(expanded.value)
+  if (s.has(key)) s.delete(key)
+  else s.add(key)
+  expanded.value = s
 }
 
 function onRowKey(e: KeyboardEvent, pos: number) {
@@ -364,7 +410,7 @@ defineExpose({
         />
       </div>
     </div>
-    <div class="grid-body" :style="{ height: `${items.length * ROW}px`, minWidth: `${minWidth}px` }">
+    <div class="grid-body" :style="{ height: `${offsets[items.length]}px`, minWidth: `${minWidth}px` }">
       <template v-for="{ item, pos } in visible" :key="item.kind === 'group' ? `g:${item.key}` : keyOf(item.row)">
         <div
           v-if="item.kind === 'group'"
@@ -374,7 +420,7 @@ defineExpose({
           :aria-expanded="!item.collapsed"
           :tabindex="pos === tabPos ? 0 : -1"
           :data-pos="pos"
-          :style="{ top: `${pos * ROW}px` }"
+          :style="{ top: `${offsets[pos]}px` }"
           @click="activate(pos)"
           @keydown="onRowKey($event, pos)"
         >
@@ -384,12 +430,13 @@ defineExpose({
             <span class="group-count">{{ formatCount(item.count) }}</span>
           </div>
         </div>
+        <template v-else>
         <div
-          v-else
           class="grid-row"
           :class="[
             rowClass?.(item.row),
             {
+              'grid-row--opens': rowsOpen,
               'row-alt': item.index % 2 === 1,
               'row-selected': selectedKey !== undefined && selectedKey !== null && keyOf(item.row) === selectedKey,
             },
@@ -397,9 +444,10 @@ defineExpose({
           role="row"
           :aria-rowindex="pos + 2"
           :aria-selected="selectedKey !== undefined && selectedKey !== null && keyOf(item.row) === selectedKey"
+          :aria-expanded="rowsOpen ? isExpanded(item.row) : undefined"
           :tabindex="pos === tabPos ? 0 : -1"
           :data-pos="pos"
-          :style="{ top: `${pos * ROW}px`, gridTemplateColumns: template }"
+          :style="{ top: `${offsets[pos]}px`, gridTemplateColumns: template }"
           @click="activate(pos)"
           @keydown="onRowKey($event, pos)"
         >
@@ -410,9 +458,26 @@ defineExpose({
             :class="[`align-${col.align ?? 'start'}`, { 'grid-cell--mono': col.mono }]"
             role="gridcell"
           >
-            <slot name="cell" :row="item.row" :column="col" />
+            <slot name="cell" :row="item.row" :column="col" :current="pos === tabPos" />
           </div>
         </div>
+        <div
+          v-if="isExpanded(item.row)"
+          class="grid-expansion"
+          :class="{ 'row-alt': item.index % 2 === 1 }"
+          role="row"
+          :style="{ top: `${offsets[pos]! + ROW}px`, height: `${expansionHeight}px`, padding: `${EXPANSION_PAD}px 0` }"
+        >
+          <div class="grid-expansion__cell" role="gridcell" :aria-colspan="shownColumns.length">
+            <div v-for="col in hiddenColumns" :key="col.id" class="grid-expansion__line">
+              <span class="grid-expansion__label">{{ col.id === actionColumn ? '' : col.label }}</span>
+              <span class="grid-expansion__value" :class="{ 'grid-cell--mono': col.mono }">
+                <slot name="cell" :row="item.row" :column="col" :current="true" />
+              </span>
+            </div>
+          </div>
+        </div>
+        </template>
       </template>
     </div>
     <PopupMenu v-if="menuAnchor" :anchor="menuAnchor" :label="`${label} columns`" @close="menuAnchor = null">
@@ -528,6 +593,9 @@ defineExpose({
   color: var(--ink);
   cursor: default;
 }
+.grid-row--opens {
+  cursor: pointer;
+}
 .grid-row.row-alt:not(.row-selected, .row-error, .row-warning) {
   background: var(--host-zebra, transparent);
 }
@@ -562,6 +630,41 @@ defineExpose({
   vertical-align: middle;
 }
 .grid-cell :deep(.ext-icon svg) {
+  width: 12px;
+  height: 12px;
+}
+
+.grid-expansion {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+.grid-expansion.row-alt {
+  background: var(--host-zebra, transparent);
+}
+/* Lines start under the name column, past the status and direction cells. */
+.grid-expansion__line {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+  height: var(--row-tool);
+  padding: 0 6px 0 34px;
+}
+.grid-expansion__label {
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.grid-expansion__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-expansion__value :deep(.ext-icon svg) {
   width: 12px;
   height: 12px;
 }

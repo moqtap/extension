@@ -1,19 +1,22 @@
 <script lang="ts" setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, inject, nextTick, ref, watch } from 'vue'
 import {
+  type CatalogObjectRecord,
   type CatalogTrack,
   type CatalogView,
   packagingLabel,
   trackSummary,
 } from '../catalogs'
 import { formatBitrate, formatBytes, plural } from '../format'
+import { catalogProblems, SESSION_PROBLEMS } from '../problems'
 import JsonTree from './JsonTree.vue'
 import Icon from './Icon.vue'
+import ProblemList from './ProblemList.vue'
 
 /**
  * What one catalog track says, as of the objects recorded so far: the tracks
- * it declares, each object with the rules it broke, and the catalog as an
- * independent catalog would now state it.
+ * it declares, the rules its objects break, its objects, and the catalog as
+ * an independent catalog would now state it.
  */
 const props = defineProps<{
   catalog: CatalogView
@@ -22,21 +25,78 @@ const props = defineProps<{
 }>()
 
 const root = ref<HTMLElement | null>(null)
-const focused = computed(() =>
-  props.focus ? `${props.focus.groupId}:${props.focus.objectId}` : null,
+const objectsOpen = ref(false)
+
+const session = inject(SESSION_PROBLEMS, null)
+
+/** The session's rows about this catalog, as the Problems tab words them. */
+const problems = computed(() =>
+  session
+    ? session.problems.value.filter((p) => p.subject.key === props.catalog.key)
+    : catalogProblems([props.catalog], () => null),
 )
+
+/**
+ * Objects in runs: an object joins the run before it when it is the same
+ * kind and differs from the object before it in generatedAt at most.
+ */
+interface Run {
+  first: CatalogObjectRecord
+  rest: CatalogObjectRecord[]
+  /** Every object after the first is identical, generatedAt included */
+  identical: boolean
+}
+
+const runs = computed((): Run[] => {
+  const out: Run[] = []
+  for (const obj of props.catalog.objects) {
+    const run = out[out.length - 1]
+    const joins =
+      run !== undefined &&
+      obj.outcome !== 'refused' &&
+      run.first.outcome !== 'refused' &&
+      obj.kind === run.first.kind &&
+      obj.changes !== null &&
+      obj.changes.every((c) => c === 'generatedAt')
+    if (joins) {
+      run.rest.push(obj)
+      if (obj.changes!.length > 0) run.identical = false
+    } else {
+      out.push({ first: obj, rest: [], identical: true })
+    }
+  }
+  return out
+})
+
+const objectLabel = (o: { groupId: number; objectId: number }) =>
+  `g${o.groupId} · o${o.objectId}`
+
+const focusedRun = computed(() => {
+  const f = props.focus
+  if (!f) return -1
+  return runs.value.findIndex((r) =>
+    [r.first, ...r.rest].some(
+      (o) => o.groupId === f.groupId && o.objectId === f.objectId,
+    ),
+  )
+})
 
 watch(
   () => props.focus,
   async (focus) => {
-    if (!focus) return
+    if (!focus || focusedRun.value < 0) return
+    objectsOpen.value = true
     await nextTick()
     root.value
-      ?.querySelector(`[data-object="${focus.groupId}:${focus.objectId}"]`)
+      ?.querySelector(`[data-run="${focusedRun.value}"]`)
       ?.scrollIntoView({ block: 'nearest' })
   },
   { immediate: true },
 )
+
+function onObjectsToggle(event: Event) {
+  objectsOpen.value = (event.target as HTMLDetailsElement).open
+}
 
 const DRAFT_LABELS: Record<string, string> = {
   'msf-00': 'MSF-00',
@@ -51,10 +111,6 @@ const draftLabel = computed(() => {
   return drafts.length ? drafts.map((d) => DRAFT_LABELS[d] ?? d).join(' or ') : null
 })
 
-const errorCount = computed(() =>
-  props.catalog.objects.reduce((n, obj) => n + obj.problems.length, 0),
-)
-
 /** `tracks` always, and MSF-01 `publishTracks` when the catalog has any. */
 const trackLists = computed(() => {
   const lists = [{ title: 'Tracks', tracks: props.catalog.tracks }]
@@ -63,25 +119,6 @@ const trackLists = computed(() => {
   }
   return lists
 })
-
-/** Objects worth a line of their own: anything other than a clean apply. */
-const notableObjects = computed(() =>
-  props.catalog.objects.filter(
-    (o) => o.outcome !== 'applied' || o.problems.length > 0,
-  ),
-)
-
-const OUTCOME_LABELS: Record<string, string> = {
-  applied: 'applied',
-  refused: 'refused',
-  skipped: 'not applied',
-}
-
-const OUTCOME_CLASSES: Record<string, string> = {
-  applied: 'mq-badge--ok',
-  refused: 'mq-badge--error',
-  skipped: 'mq-badge--check',
-}
 
 /** A track's namespace, shown only where it is not the catalog's own. */
 function ownNamespace(track: CatalogTrack): string | null {
@@ -143,9 +180,6 @@ function trackTitle(track: CatalogTrack): string {
       >
       <span class="mq-badge mq-badge--mono">{{
         plural(catalog.objects.length, 'object')
-      }}</span>
-      <span v-if="errorCount > 0" class="mq-badge mq-badge--error">{{
-        plural(errorCount, 'error')
       }}</span>
     </div>
 
@@ -214,54 +248,70 @@ function trackTitle(track: CatalogTrack): string {
       </table>
     </section>
 
-    <section v-if="notableObjects.length > 0" class="catalog-section">
+    <section v-if="problems.length > 0" class="catalog-section">
       <h3 class="catalog-heading">
-        Objects
-        <span class="mq-tab__count">{{ notableObjects.length }}</span>
+        Problems
+        <span class="mq-tab__count">{{ problems.length }}</span>
       </h3>
-      <ul class="catalog-objects">
-        <li
-          v-for="obj in notableObjects"
-          :key="`${obj.groupId}:${obj.objectId}`"
-          :data-object="`${obj.groupId}:${obj.objectId}`"
-          :class="{ 'catalog-focused': focused === `${obj.groupId}:${obj.objectId}` }"
-        >
-          <div class="catalog-object">
-            <span class="mono">g{{ obj.groupId }} · o{{ obj.objectId }}</span>
-            <span class="muted"
-              >{{ obj.kind }} · {{ formatBytes(obj.size) }}</span
-            >
-            <span class="mq-badge" :class="OUTCOME_CLASSES[obj.outcome]">{{
-              OUTCOME_LABELS[obj.outcome]
-            }}</span>
-          </div>
-          <ul v-if="obj.problems.length > 0" class="problem-list">
-            <li
-              v-for="(p, i) in obj.problems"
-              :key="i"
-              class="problem"
-              :class="`problem--${p.severity}`"
-            >
-              <span class="problem__glyph"
-                ><Icon name="error" /><span class="mq-sr">Error</span></span
+      <ProblemList
+        embedded
+        :problems="problems"
+        :started-at="session?.startedAt() ?? 0"
+        filter=""
+        :session="session?.session.value ?? ''"
+        :state-key="`${session?.stateKey() ?? ''}|${catalog.key}`"
+        @open="(t) => session?.open(t)"
+      />
+    </section>
+
+    <section v-if="catalog.objects.length > 0" class="catalog-section">
+      <details :open="objectsOpen" @toggle="onObjectsToggle">
+        <summary class="catalog-heading object-row">
+          <Icon name="chevronRight" class="object-row__chevron" />
+          Objects
+          <span class="mq-tab__count">{{ catalog.objects.length }}</span>
+        </summary>
+        <ul class="catalog-objects">
+          <li
+            v-for="(run, i) in runs"
+            :key="`${run.first.groupId}:${run.first.objectId}`"
+            :data-run="i"
+            :class="{ 'catalog-focused': focusedRun === i }"
+          >
+            <div class="catalog-object">
+              <span class="mono">{{ objectLabel(run.first) }}</span>
+              <span class="muted"
+                >{{ run.first.kind }} · {{ formatBytes(run.first.size) }}</span
               >
-              <span class="problem__text">
-                <span class="problem__title">{{ p.message }}</span>
-                <span class="problem__detail"
-                  ><template v-if="p.path"
-                    ><span class="mono">{{ p.path }}</span> · </template
-                  >{{ p.section }}</span
-                >
-              </span>
-            </li>
-          </ul>
-        </li>
-      </ul>
+              <template v-if="run.first.outcome === 'refused'">
+                <span class="mq-badge mq-badge--error">Not applied</span>
+                <span class="muted">A reader keeps the previous catalog.</span>
+              </template>
+            </div>
+            <p v-if="run.first.changes?.length" class="catalog-object-note">
+              Changes {{ run.first.changes.join(', ') }} from the object before
+            </p>
+            <p v-else-if="run.first.changes" class="catalog-object-note">
+              Same as the object before
+            </p>
+            <p v-if="run.rest.length > 0" class="catalog-object-note">
+              {{ plural(run.rest.length, 'more object', 'more objects') }},
+              {{ objectLabel(run.rest[0]) }} –
+              {{ objectLabel(run.rest[run.rest.length - 1]) }}: same as
+              {{ objectLabel(run.first)
+              }}{{ run.identical ? '' : ' apart from generatedAt' }}
+            </p>
+          </li>
+        </ul>
+      </details>
     </section>
 
     <section v-if="catalog.state.document" class="catalog-section">
       <details>
-        <summary class="catalog-heading">Catalog as it stands</summary>
+        <summary class="catalog-heading object-row">
+          <Icon name="chevronRight" class="object-row__chevron" />
+          Catalog as it stands
+        </summary>
         <div class="catalog-json">
           <JsonTree :data="catalog.state.document" :initial-expanded="true" />
         </div>
@@ -332,48 +382,21 @@ summary.catalog-heading {
 }
 .catalog-object {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-2);
+}
+.catalog-object-note {
+  margin: 0;
+  color: var(--ink-muted);
+}
+summary.object-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 .catalog-focused {
   background: var(--surface-selected);
-}
-
-/* One line per problem, as the Details tab lists a session's. */
-.problem-list {
-  list-style: none;
-  padding: 0 0 0 var(--space-3);
-  margin: var(--space-1) 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.problem {
-  display: grid;
-  grid-template-columns: 1em 1fr;
-  gap: var(--space-2);
-  align-items: baseline;
-}
-.problem__glyph {
-  display: inline-flex;
-}
-.problem__glyph :deep(svg) {
-  width: 14px;
-  height: 14px;
-}
-.problem--error .problem__glyph {
-  color: var(--danger);
-}
-.problem--warning .problem__glyph {
-  color: var(--warning);
-}
-.problem__text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.problem__detail {
-  display: block;
-  color: var(--ink-muted);
 }
 
 .catalog-json {

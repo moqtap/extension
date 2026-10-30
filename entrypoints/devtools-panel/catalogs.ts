@@ -9,11 +9,12 @@ import {
   applyCatalogObject,
   type CatalogDraft,
   type CatalogProblem,
-  type CatalogProblemCategory,
   type CatalogState,
   type CatalogTrack,
   catalogTracks,
+  checkCatalogObjectPlacement,
   createCatalogState,
+  type JsonObject,
   isCatalogTrackName,
   type ParsedCatalog,
   parseCatalog,
@@ -31,6 +32,7 @@ import {
   parseStreamFraming,
   parseStreamPrefix,
 } from './stream-framing'
+import { trackDirection } from './alias-tracks'
 import type { SessionEntry, StreamEntry, TrackEntry } from './use-inspector'
 
 // ─── Keys and namespaces ──────────────────────────────────────────
@@ -77,12 +79,6 @@ export interface CatalogStreamRef {
   byteCount: number
 }
 
-/** Which way a track's objects travel, from the request that registered it. */
-function dataDirection(track: TrackEntry): 'tx' | 'rx' {
-  if (track.via === 'publish') return track.direction
-  return track.direction === 'tx' ? 'rx' : 'tx'
-}
-
 /**
  * The track an alias names for data travelling `direction`: the one track
  * sending that way that claimed it, or null when none or several did.
@@ -100,7 +96,7 @@ export function aliasResolver(
   return (alias, direction) => {
     const claims = byAlias.get(String(alias))
     if (!claims) return null
-    const matching = claims.filter((t) => dataDirection(t) === direction)
+    const matching = claims.filter((t) => trackDirection(t) === direction)
     return matching.length === 1 ? matching[0] : null
   }
 }
@@ -182,20 +178,8 @@ export function locateCatalogStreams(
 
 // ─── What the panel keeps ─────────────────────────────────────────
 
-/**
- * A problem with a catalog object: the library's, plus `object_order` for the
- * Group rules, which need the Group and Object IDs. Every rule either source
- * checks is a MUST, a Required field or a value's JSON type (msf 5), so each
- * is an error.
- */
-export interface CatalogObjectProblem extends Omit<CatalogProblem, 'category' | 'severity'> {
-  severity: 'error'
-  category: CatalogProblemCategory | 'object_order'
-}
-
-function asObjectProblem(p: CatalogProblem): CatalogObjectProblem {
-  return { ...p, severity: 'error' }
-}
+/** A problem with a catalog object, the Group rules included. */
+export type CatalogObjectProblem = CatalogProblem
 
 /**
  * What became of one catalog object.
@@ -219,6 +203,14 @@ export interface CatalogObjectRecord {
   draft: CatalogDraft | null
   outcome: CatalogObjectOutcome
   problems: CatalogObjectProblem[]
+  /** The object's JSON; null when it is not JSON */
+  document: JsonObject | null
+  /**
+   * The top-level fields whose value differs from the object before it;
+   * empty when the two are the same, null for the first object or one that
+   * is not JSON.
+   */
+  changes: string[] | null
 }
 
 /** One catalog track as it stands now. */
@@ -238,14 +230,55 @@ export interface CatalogView {
   streamIds: number[]
   /** Why objects the track sent may be missing; empty when none are known */
   incomplete: string[]
+  /** Each stream's header as the session draft's framing read it, by stream id */
+  headers: ReadonlyMap<number, StreamHeader>
+}
+
+/** A data stream's header: its fields as the framing names them, and its bytes. */
+export interface StreamHeader {
+  fields: Record<string, number>
+  bytes: Uint8Array
 }
 
 // ─── One catalog track ────────────────────────────────────────────
 
-interface Entry extends CatalogObjectRecord {
+interface Entry extends Omit<CatalogObjectRecord, 'changes'> {
   parsed: ParsedCatalog
   /** Problems known before applying: the library's parse problems and ours */
   readProblems: CatalogObjectProblem[]
+  /** Each top-level field's JSON text, hashed; null when not JSON */
+  fields: Map<string, string> | null
+}
+
+/** FNV-1a of a string with its length, enough to tell two field values apart. */
+function textHash(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return `${text.length}:${(h >>> 0).toString(16)}`
+}
+
+function fieldHashes(parsed: ParsedCatalog): Map<string, string> | null {
+  if (parsed.kind === 'invalid') return null
+  const out = new Map<string, string>()
+  for (const [key, value] of Object.entries(parsed.document)) {
+    out.set(key, textHash(JSON.stringify(value)))
+  }
+  return out
+}
+
+/** The top-level fields `b` changes from `a`, in `b`'s order then `a`'s. */
+function changedFields(
+  a: Map<string, string> | null,
+  b: Map<string, string> | null,
+): string[] | null {
+  if (!a || !b) return null
+  const out: string[] = []
+  for (const [key, hash] of b) if (a.get(key) !== hash) out.push(key)
+  for (const key of a.keys()) if (!b.has(key)) out.push(key)
+  return out
 }
 
 /** Group ID, then Object ID: the order a catalog track's objects apply in. */
@@ -254,62 +287,6 @@ function compareEntries(
   b: { groupId: number; objectId: number },
 ): number {
   return a.groupId - b.groupId || a.objectId - b.objectId
-}
-
-/** The MSF draft whose section 5 states a catalog's Group rules. */
-function groupRuleSection(draft: CatalogDraft | null): string | null {
-  if (draft === 'msf-00' || draft === 'cmsf-00') return 'MSF-00 5'
-  if (draft === 'msf-01' || draft === 'cmsf-01') return 'MSF-01 5'
-  return null
-}
-
-/**
- * The Group rules: the first object of a Group is independent (msf-00 5,
- * msf-01 5); from MSF-01 the rest of the Group is deltas, all in Subgroup 0.
- * The object still applies.
- */
-function orderProblems(
-  parsed: ParsedCatalog,
-  groupId: number,
-  subgroupId: number,
-  objectId: number,
-): CatalogObjectProblem[] {
-  if (parsed.kind !== 'independent' && parsed.kind !== 'delta') return []
-  // An open draft still has one Group rule when every candidate shares it.
-  const drafts = parsed.draft ? [parsed.draft] : parsed.candidates
-  const sections = new Set(drafts.map(groupRuleSection))
-  const section = sections.size === 1 ? [...sections][0] : null
-  if (!section) return []
-  const msf01 = section === 'MSF-01 5'
-  const problems: CatalogObjectProblem[] = []
-  if (parsed.kind === 'delta' && objectId === 0) {
-    problems.push({
-      severity: 'error',
-      category: 'object_order',
-      path: '',
-      section,
-      message: `Object 0 of group ${groupId} is a delta; the first catalog object of a group must be independent.`,
-    })
-  }
-  if (msf01 && parsed.kind === 'independent' && objectId > 0) {
-    problems.push({
-      severity: 'error',
-      category: 'object_order',
-      path: '',
-      section,
-      message: `Object ${objectId} of group ${groupId} is independent; every object after the first in a group must be a delta, and an independent catalog starts a new group.`,
-    })
-  }
-  if (msf01 && subgroupId !== 0) {
-    problems.push({
-      severity: 'error',
-      category: 'object_order',
-      path: '',
-      section,
-      message: `Sent on subgroup ${subgroupId}; every catalog object must be on subgroup 0.`,
-    })
-  }
-  return problems
 }
 
 /**
@@ -328,6 +305,7 @@ class CatalogLog {
   /** Groups whose deltas had no independent catalog to apply to */
   readonly missingBase = new Set<number>()
   readonly streamIds = new Set<number>()
+  readonly headers = new Map<number, StreamHeader>()
 
   constructor(
     readonly key: TrackKey,
@@ -354,8 +332,13 @@ class CatalogLog {
     const parsed = parseCatalog(payload, { catalogNamespace: this.namespace })
     const readProblems: CatalogObjectProblem[] = [
       // The draft badge shows every candidate draft.
-      ...parsed.problems.filter((p) => p.category !== 'ambiguous_draft').map(asObjectProblem),
-      ...orderProblems(parsed, groupId, subgroupId, objectId),
+      ...parsed.problems.filter((p) => p.category !== 'ambiguous_draft'),
+      ...(parsed.kind === 'invalid'
+        ? []
+        : checkCatalogObjectPlacement(
+            { groupId, subgroupId, objectId, independent: parsed.kind === 'independent' },
+            parsed.draft ?? parsed.candidates,
+          )),
     ]
     const entry: Entry = {
       groupId,
@@ -367,8 +350,10 @@ class CatalogLog {
       draft: parsed.draft,
       outcome: 'skipped',
       problems: readProblems,
+      document: parsed.kind === 'invalid' ? null : parsed.document,
       parsed,
       readProblems,
+      fields: fieldHashes(parsed),
     }
 
     // Live objects arrive in order, so search from the end.
@@ -409,7 +394,7 @@ class CatalogLog {
       }
     }
     const update = applyCatalogObject(this.state, parsed)
-    entry.problems = [...entry.readProblems, ...update.problems.map(asObjectProblem)]
+    entry.problems = [...entry.readProblems, ...update.problems]
     entry.outcome = update.applied ? 'applied' : 'refused'
     if (update.applied) {
       this.state = update.state
@@ -432,8 +417,6 @@ interface StreamProgress {
   closed: boolean
   /** The stream was closed and its bytes have all been read */
   done: boolean
-  /** The background had no bytes for it */
-  unavailable: boolean
   /** Its bytes did not frame as the stream its header names */
   unframed: boolean
   /** Closed with an object cut short */
@@ -493,7 +476,6 @@ export class SessionCatalogs {
           consumed: 0,
           closed: false,
           done: false,
-          unavailable: false,
           unframed: false,
           truncated: false,
           vanished: false,
@@ -524,22 +506,13 @@ export class SessionCatalogs {
 
   /**
    * Read one catalog stream's bytes: frame them by `draft`, take the objects
-   * not taken before, and apply them. `data` null means the bytes could not
-   * be had.
+   * not taken before, and apply them. `data` null is a read that failed: the
+   * stream stays unread, for {@link sync} to offer again.
    */
   ingest(ref: CatalogStreamRef, data: Uint8Array | null, draft?: string): void {
     const p = this.progress.get(ref.streamId)
-    if (!p || p.key !== ref.key) return
+    if (!p || p.key !== ref.key || !data) return
     const log = this.logFor(ref)
-
-    if (!data) {
-      if (ref.byteCount > 0 && !p.unavailable) {
-        p.unavailable = true
-        this.touch()
-      }
-      return
-    }
-    p.unavailable = false
     p.readBytes = data.length
     p.closed = ref.closed
 
@@ -565,6 +538,12 @@ export class SessionCatalogs {
       return
     }
     p.unframed = false
+    if (!log.headers.has(ref.streamId)) {
+      log.headers.set(ref.streamId, {
+        fields: { ...framing.headerFields },
+        bytes: data.slice(0, framing.headerEnd),
+      })
+    }
 
     const objects = framing.objects
     let i = p.consumed
@@ -628,9 +607,7 @@ export class SessionCatalogs {
     }
     for (const [streamId, p] of this.progress) {
       if (p.key !== log.key) continue
-      if (p.unavailable) {
-        incomplete.push(`No bytes are stored for stream ${streamId}.`)
-      } else if (p.vanished) {
+      if (p.vanished) {
         incomplete.push(
           `Stream ${streamId} was cleared before it was read in full.`,
         )
@@ -648,7 +625,10 @@ export class SessionCatalogs {
       )
     }
     const records: CatalogObjectRecord[] = log.entries.map(
-      ({ parsed: _p, readProblems: _r, ...record }) => record,
+      ({ parsed: _p, readProblems: _r, fields, ...record }, i, all) => ({
+        ...record,
+        changes: i === 0 ? null : changedFields(all[i - 1].fields, fields),
+      }),
     )
     const document = log.state.document
     const options = { catalogNamespace: log.namespace }
@@ -662,6 +642,7 @@ export class SessionCatalogs {
       objects: records,
       streamIds: Array.from(log.streamIds),
       incomplete,
+      headers: log.headers,
     }
   }
 }
@@ -868,6 +849,9 @@ export function useSessionCatalogs(
   let running = false
   let again = false
   let stopped = false
+  /** A failed read is tried again after this long, doubling to a minute. */
+  let retryMs = 1000
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
 
   async function pump(): Promise<void> {
     if (running) {
@@ -880,8 +864,10 @@ export function useSessionCatalogs(
         again = false
         const s = session()
         const r = reader.value
-        const before = r.revision
+        let failed = false
+        let seen = r.revision
         const toRead = r.sync(s)
+        if (r.revision !== seen) revision.value++
         for (const ref of toRead) {
           if (stopped) return
           let data: Uint8Array | null = null
@@ -890,9 +876,21 @@ export function useSessionCatalogs(
           } catch {
             data = null
           }
+          if (!data && ref.byteCount > 0) failed = true
+          seen = r.revision
           r.ingest(ref, data, s.draft)
+          // Each stream shows as it is read.
+          if (r.revision !== seen) revision.value++
         }
-        if (r.revision !== before) revision.value++
+        if (failed && !stopped && retryTimer === null) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null
+            void pump()
+          }, retryMs)
+          retryMs = Math.min(retryMs * 2, 60_000)
+        } else if (!failed) {
+          retryMs = 1000
+        }
       } while (again && !stopped)
     } finally {
       running = false
@@ -902,6 +900,7 @@ export function useSessionCatalogs(
   watch(signature, () => void pump(), { immediate: true })
   onBeforeUnmount(() => {
     stopped = true
+    if (retryTimer !== null) clearTimeout(retryTimer)
   })
 
   const catalogs = computed(() => {

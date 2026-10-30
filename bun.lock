@@ -6,8 +6,8 @@
       "name": "@moqtap/extension",
       "dependencies": {
         "@moqtap/codec": "^0.14.0",
-        "@moqtap/inspect": "^0.2.0",
-        "@moqtap/media": "^0.2.0",
+        "@moqtap/inspect": "^0.3.0",
+        "@moqtap/media": "^0.3.0",
         "@moqtap/trace": "^0.5.0",
         "lucide-static": "1.50.0",
         "vue": "^3.5.42",
@@ -122,9 +122,9 @@
 
     "@moqtap/codec": ["@moqtap/codec@0.14.0", "", {}, "sha512-hH3LjVguMNuLJtuzEIzJdgs1NYHtUP+UZCv9wc09U4UQgdqqpdzQK4wG7gdqq55Up46b+EHmOuGaM6yRWsc0vQ=="],
 
-    "@moqtap/inspect": ["@moqtap/inspect@0.2.0", "", { "peerDependencies": { "@moqtap/codec": ">=0.13.2" } }, "sha512-7oRapxrdMbQ4xHhVLZLjGrPbXI34tf9ygfwFAzu4qtuJcmb569bioYzbVJOxvLdwjAWzhXkSOcI1j94tuJIafA=="],
+    "@moqtap/inspect": ["@moqtap/inspect@0.3.0", "", { "peerDependencies": { "@moqtap/codec": ">=0.13.2" } }, "sha512-L7JW9D01rjlHPViXs5x+FvCxM6XJkJcJ0/FVvTI8UPCdXtIb/Yv1voCRjs7Whf2xxhPh2FpSLPjm+GyOYjNwSA=="],
 
-    "@moqtap/media": ["@moqtap/media@0.2.0", "", {}, "sha512-ajj5IbA5sQNgELGpvfLRjMw6I/+E7KXavFRhj2rZK9QuQ9NACeykI6JVEOGYaq2lOUsOHdXh4v13ad5yYVDvIA=="],
+    "@moqtap/media": ["@moqtap/media@0.3.0", "", {}, "sha512-tBRMap0nl3Z9wHR5Wwr9SBiTTpI9J+e8ebBYWldMnKCK3a/1hN9+aBMItlKmCEEako3lsZ5Y8IHM//JagisUpA=="],
 
     "@moqtap/test-vectors": ["@moqtap/test-vectors@0.19.0", "", {}, "sha512-hLKYC/C/ck/eMrv703BlAtx9lQIFyedfU9V5udGxwTATPVoz3SSZm1S42TguERJ7X0ipoafmV+rnrdGAYoG+3Q=="],
 
