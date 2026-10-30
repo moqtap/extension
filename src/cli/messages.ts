@@ -19,6 +19,8 @@ export type CliView =
   | ({ readonly state: 'confirm' } & Found)
   | ({ readonly state: 'declined' } & Found)
   | ({ readonly state: 'connected' } & Found)
+  /** The CLI does not take requests from this build: it must list `extensionId`. */
+  | ({ readonly state: 'not-allowed'; readonly extensionId: string } & Found)
 
 export interface TrustedCli {
   readonly identity: string
@@ -63,7 +65,7 @@ export const IMPAIR_FAILURES: readonly ImpairFailure[] = [
  * - `flag`: the browser refused the script that makes new documents wait for
  *   the tab's profile, so they may connect directly
  */
-export type TabError = 'limit' | 'refused' | 'unreachable' | 'flag'
+export type TabError = 'limit' | 'refused' | 'not-allowed' | 'protocol' | 'unreachable' | 'flag'
 
 /** A session in the tab with its own profile at the CLI. */
 export interface SessionImpairment {
@@ -74,7 +76,7 @@ export interface SessionImpairment {
 }
 
 /** Why the CLI did not take a session's profile: as {@link TabError}. */
-export type SessionError = 'refused' | 'unreachable'
+export type SessionError = 'refused' | 'not-allowed' | 'protocol' | 'unreachable'
 
 export interface SessionFailure {
   readonly session: string
@@ -110,6 +112,7 @@ export type PageCliMsg =
   | { readonly type: 'cli:forget'; readonly identity: string }
   | { readonly type: 'cli:watch-tab'; readonly tabId: number }
   | { readonly type: 'cli:set-profile'; readonly tabId: number; readonly profile: Profile; readonly name: string }
+  | { readonly type: 'cli:clear-error'; readonly tabId: number }
   /** `profile` and `name` null: the session takes the tab's profile again. */
   | {
       readonly type: 'cli:set-session-profile'

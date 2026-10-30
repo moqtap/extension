@@ -83,6 +83,9 @@ export function serveCliPort(
           void impair.setProfile(msg.tabId, msg.profile, msg.name).catch(fail)
         }
         break
+      case 'cli:clear-error':
+        if (isTabId(msg.tabId)) void impair.clearError(msg.tabId).catch(fail)
+        break
       case 'cli:set-session-profile': {
         if (!isTabId(msg.tabId) || !isId16(msg.session)) break
         if (msg.profile === null) {

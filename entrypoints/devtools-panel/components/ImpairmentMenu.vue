@@ -2,8 +2,8 @@
 import type { CliView, TabImpairment } from '@/src/cli/messages'
 import { isOff, OFF, sameProfile, type ProfileChoice, type Profiles } from '@/src/cli/protocol'
 import { computed, onMounted, ref, useId, watch } from 'vue'
-import { PRO_URL, refusalUpgrade, sessionImpairmentProblem } from '../cli-copy'
-import { cliHeader, menuTree, profileChoices, sessionProfile } from '../impair-choices'
+import { GET_CLI_URL, IMPAIRMENT_URL, refusalUpgrade, sessionImpairmentProblem } from '../cli-copy'
+import { cliHeader, cliMissing, menuTree, profileChoices, sessionProfile } from '../impair-choices'
 import ImpairmentNodes from './ImpairmentNodes.vue'
 
 const props = defineProps<{
@@ -69,7 +69,8 @@ const sessionDisabled = () => !connected.value
 
 function pickTab(c: ProfileChoice) {
   if (!connected.value && !isOff(c.profile)) return
-  if (!sameProfile(c.profile, tabCurrent.value)) emit('setProfile', c)
+  // Picking again after an error clears it, Off included.
+  if (!sameProfile(c.profile, tabCurrent.value) || props.tab?.error != null) emit('setProfile', c)
 }
 function pickSession(c: ProfileChoice | null) {
   if (!connected.value) return
@@ -78,7 +79,16 @@ function pickSession(c: ProfileChoice | null) {
 </script>
 
 <template>
-  <div class="mq-menu__label cli-line" role="none">{{ header }}</div>
+  <a
+    v-if="cliMissing(view)"
+    class="mq-menu__item cli-get"
+    role="menuitem"
+    :href="GET_CLI_URL"
+    target="_blank"
+    rel="noopener"
+    >{{ header }}<span class="menu-hint">Get the CLI</span></a
+  >
+  <div v-else class="mq-menu__label cli-line" role="none">{{ header }}</div>
   <template v-if="forTab">
     <hr role="separator" />
     <div v-if="session !== null" class="mq-menu__label" role="none">This tab</div>
@@ -121,16 +131,17 @@ function pickSession(c: ProfileChoice | null) {
   <template v-else-if="known?.more">
     <hr role="separator" />
     <div :id="proId" class="mq-menu__label menu-note" role="none">
-      Pro runs your own scenarios here: networks that change on a timeline, in folders you arrange.
+      With Pro, pick your own networks here: bandwidth that sags mid-stream, loss in bursts, a dropout
+      that recovers.
     </div>
     <a
       class="mq-menu__item"
       role="menuitem"
-      :href="PRO_URL"
+      :href="IMPAIRMENT_URL"
       target="_blank"
       rel="noopener"
       :aria-describedby="proId"
-      >See plans</a
+      >Build your own networks</a
     >
   </template>
 </template>

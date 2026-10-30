@@ -57,13 +57,23 @@ describe('a refused profile', () => {
     expect(impairmentProblem(t, connected)).toBe(`Couldn't apply "lte". Your sign-in has ended. Run moqtap login.`)
   })
 
-  it('asks for an update when the CLI gave no reason it names', () => {
-    expect(impairmentProblem(tab({ error: 'refused' }), connected)).toBe(
-      "Couldn't apply this profile. Update moqtap, then pick the profile again.",
+  it("passes on the CLI's words when it gave no reason it names", () => {
+    const unnamed: Refusal = { error: 'Something went wrong.', reason: null, plan: null, upgrade: null }
+    expect(impairmentProblem(tab({ error: 'refused', refusal: unnamed, refusedName: 'Offline' }), connected)).toBe(
+      'Couldn\'t apply "Offline". Something went wrong.',
     )
-    const unnamed: Refusal = { error: 'something', reason: null, plan: null, upgrade: null }
-    expect(impairmentProblem(tab({ error: 'refused', refusal: unnamed }), connected)).toBe(
-      "Couldn't apply this profile. Update moqtap, then pick the profile again.",
+  })
+
+  it('asks for a CLI update when its reply did not read', () => {
+    expect(impairmentProblem(tab({ error: 'protocol', refusedName: 'Offline' }), connected)).toBe(
+      'The moqtap CLI can\'t run "Offline". Update the moqtap CLI, then pick it again.',
+    )
+  })
+
+  it('names the setting that lets the CLI take this build', () => {
+    const view = { ...connected, state: 'not-allowed', extensionId: 'iobechkloegdiabacdgelepncfojggpe' } as const
+    expect(impairmentProblem(tab({ error: 'not-allowed', refusedName: 'Offline' }), view)).toBe(
+      "The moqtap CLI doesn't accept this build of the extension. Restart it with MOQTAP_BRIDGE_EXTENSION_IDS=iobechkloegdiabacdgelepncfojggpe.",
     )
   })
 

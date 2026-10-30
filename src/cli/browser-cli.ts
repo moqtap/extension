@@ -10,6 +10,8 @@ import { CLI_PORT } from './messages'
 import { toBase64Url } from './protocol'
 import { CliBridge } from './service'
 
+const newOwner = () => toBase64Url(crypto.getRandomValues(new Uint8Array(16)))
+
 export function startCli(sendToFrame: (tabId: number, frameId: number, msg: TabAnswerMsg) => void): ImpairManager {
   const bridge = new CliBridge({
     fetch: (input, init) => fetch(input, init),
@@ -17,6 +19,8 @@ export function startCli(sendToFrame: (tabId: number, frameId: number, msg: TabA
     subtle: crypto.subtle,
     randomBytes: (n) => crypto.getRandomValues(new Uint8Array(n)),
     now: () => Date.now(),
+    extensionId: browser.runtime.id,
+    newOwner,
   })
   const impair = new ImpairManager({
     cli: bridge,
@@ -24,7 +28,7 @@ export function startCli(sendToFrame: (tabId: number, frameId: number, msg: TabA
     sendToFrame,
     // An extension API call also keeps the service worker alive between lease renewals.
     tabExists: (tabId) => browser.tabs.get(tabId).then(() => true, () => false),
-    newOwner: () => toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+    newOwner,
     every: (ms, fn) => {
       const t = setInterval(fn, ms)
       return () => clearInterval(t)

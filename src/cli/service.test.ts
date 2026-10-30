@@ -28,6 +28,8 @@ interface FakeCli {
   profiles?: unknown
   /** Answers every profile request for a known tab or session with this. */
   refuse?: { status: number; body: unknown }
+  /** Answers every POST, lease included, as a CLI that does not allow this build. */
+  notAllowed?: { status: number; body: unknown }
 }
 
 async function makeCli(port: number, extra: Partial<FakeCli> = {}): Promise<FakeCli> {
@@ -95,12 +97,18 @@ function fakeFetch(clis: FakeCli[]): typeof fetch {
       return { id, port: e.port, owner: e.owner, profile: e.profile, sessions }
     }
     const body = init?.body === undefined ? undefined : JSON.parse(String(init.body))
-    if (init?.method === 'POST') cli.posts.push({ endpoint, body })
+    // The lease that asks whether the CLI takes this build is not one of the test's own posts.
+    if (init?.method === 'POST' && body?.owner !== 'probe-owner') cli.posts.push({ endpoint, body })
     if (endpoint === 'status') {
       return json({ v: 3, listen: null, cert_hash: toBase64Url(certHash), tabs: [...cli.tabs.keys()].map(entry) })
     }
     if (endpoint === 'profiles') {
       return cli.profiles === undefined ? json({ error: 'no' }, 500) : json(cli.profiles)
+    }
+    if (cli.notAllowed !== undefined && init?.method === 'POST') {
+      return cli.notAllowed.body === null
+        ? new Response(null, { status: cli.notAllowed.status })
+        : json(cli.notAllowed.body, cli.notAllowed.status)
     }
     if (endpoint === 'tab' && init?.method === 'POST') {
       if (cli.createStatus !== undefined) return json({ error: 'no' }, cli.createStatus)
@@ -149,6 +157,8 @@ function bridgeFor(clis: FakeCli[], local = memoryArea()) {
     randomBytes: (n) => webcrypto.getRandomValues(new Uint8Array(n)),
     now: () => 1000,
     ports: PORTS,
+    extensionId: 'iobechkloegdiabacdgelepncfojggpe',
+    newOwner: () => 'probe-owner',
   })
   return { bridge, local }
 }
@@ -355,8 +365,42 @@ describe('CliBridge', () => {
     expect(await bridge.setTabProfile(created.id, lte)).toEqual({
       refused: { error: 'lte.json: transport cannot apply', reason: 'invalid_scenario', plan: null, upgrade: null },
     })
+    cli.refuse = { status: 500, body: { nothing: 'here' } }
+    expect(await bridge.setTabProfile(created.id, lte)).toEqual('protocol')
+    expect(await bridge.createTab('tab-3', lte)).toEqual({ error: 'protocol' })
     cli.refuse = { status: 403, body: null }
-    expect(await bridge.setTabProfile(created.id, lte)).toEqual({ refused: null })
+    expect(await bridge.setTabProfile(created.id, lte)).toEqual('not-allowed')
+    expect(bridge.view()).toMatchObject({ state: 'not-allowed', extensionId: 'iobechkloegdiabacdgelepncfojggpe' })
+  })
+
+  for (const [what, body] of [
+    ['with no body (a CLI before the reason)', null],
+    ['with reason extension_not_allowed', { error: 'not allowed', reason: 'extension_not_allowed' }],
+  ] as const) {
+    it(`finds out on allowing that the CLI does not take this build, ${what}`, async () => {
+      const { bridge } = bridgeFor([cli])
+      await bridge.probe()
+      cli.notAllowed = { status: 403, body }
+      await bridge.allow(cli.identity)
+      expect(bridge.view()).toMatchObject({ state: 'not-allowed', extensionId: 'iobechkloegdiabacdgelepncfojggpe' })
+      expect(bridge.target()).toBeNull()
+      // Restarted with the build allowed: the next scan connects.
+      cli.notAllowed = undefined
+      await bridge.refresh()
+      expect(bridge.view().state).toBe('connected')
+    })
+  }
+
+  it('reads a 403 that names a reason as a refusal, not as this build being refused', async () => {
+    const { bridge } = bridgeFor([cli])
+    await bridge.probe()
+    await bridge.allow(cli.identity)
+    cli.refuse = { status: 403, body: { error: 'Sign in again.', reason: 'account' } }
+    expect(await bridge.createTab('tab-1', { scenario: 'lte' })).toEqual({
+      error: 'refused',
+      refused: { error: 'Sign in again.', reason: 'account', plan: null, upgrade: null },
+    })
+    expect(bridge.view().state).toBe('connected')
   })
 
   it('tells a scenario with no file from a tab or session that is gone, as both are 404', async () => {

@@ -3,6 +3,7 @@ import type { CliView, TrustedCli } from '@/src/cli/messages'
 import type { ExclusionEntry } from '@/src/messaging/types'
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { START_COMMAND } from '../cli-copy'
+import { shortFingerprint } from '../impair-choices'
 import CopyButton from './CopyButton.vue'
 import Icon from './Icon.vue'
 
@@ -24,9 +25,16 @@ const closeBtn = ref<HTMLButtonElement | null>(null)
 onMounted(() => void nextTick(() => closeBtn.value?.focus()))
 
 const found = computed(() =>
-  props.view?.state === 'connected' || props.view?.state === 'confirm' || props.view?.state === 'declined'
+  props.view?.state === 'connected' ||
+  props.view?.state === 'confirm' ||
+  props.view?.state === 'declined' ||
+  props.view?.state === 'not-allowed'
     ? props.view
     : null,
+)
+const notAllowed = computed(() => (props.view?.state === 'not-allowed' ? props.view : null))
+const allowCommand = computed(() =>
+  notAllowed.value ? `MOQTAP_BRIDGE_EXTENSION_IDS=${notAllowed.value.extensionId}` : '',
 )
 const connected = computed(() => props.view?.state === 'connected')
 const origins = computed(() => Object.keys(props.exclusions).sort())
@@ -65,9 +73,16 @@ function addOrigin() {
         <h3 id="settings-cli" class="settings-heading">moqtap CLI</h3>
         <template v-if="found">
           <p>
-            Version {{ found.cliVersion }}, identity <span class="mq-mono">{{ found.fingerprint }}</span>
+            Version {{ found.cliVersion }}, identity <span class="mq-mono">{{ shortFingerprint(found.fingerprint) }}</span>
           </p>
           <p v-if="connected" class="mq-muted">This browser sends impaired tabs' connections through it.</p>
+          <template v-else-if="notAllowed">
+            <p class="mq-muted">It doesn't accept this build of the extension. Restart it with:</p>
+            <div class="settings-command">
+              <code class="mq-mono">{{ allowCommand }}</code>
+              <CopyButton :value="allowCommand" what="setting" />
+            </div>
+          </template>
           <template v-else>
             <p class="mq-muted">
               Check that the identity matches what <code>moqtap cert</code> prints, then allow it to impair
@@ -90,10 +105,10 @@ function addOrigin() {
 
       <section class="settings-section" aria-labelledby="settings-allowed">
         <h3 id="settings-allowed" class="settings-heading">Allowed CLI identities</h3>
-        <p class="mq-muted">Remove one to be asked again before it impairs a tab.</p>
+        <p class="mq-muted">These moqtap CLIs can impair this browser's tabs. One you remove has to be allowed again.</p>
         <ul v-if="trusted.length > 0" class="settings-list">
           <li v-for="t in trusted" :key="t.identity" class="settings-entry">
-            <span class="mq-mono entry-main">{{ t.fingerprint }}</span>
+            <span class="mq-mono entry-main">{{ shortFingerprint(t.fingerprint) }}</span>
             <span class="mq-muted">Allowed {{ new Date(t.at).toLocaleDateString() }}</span>
             <button class="mq-btn mq-btn--secondary" @click="emit('forget', t.identity)">Remove</button>
           </li>
@@ -104,8 +119,8 @@ function addOrigin() {
       <section class="settings-section" aria-labelledby="settings-workers">
         <h3 id="settings-workers" class="settings-heading">Worker exclusions</h3>
         <p class="mq-muted">
-          Connections opened in workers from these origins aren't captured. Origins whose workers couldn't
-          be captured are added here automatically.
+          Workers on these sites run untouched: the connections they open aren't captured or impaired. A site
+          is added here when its security policy keeps moqtap out of its workers.
         </p>
         <ul v-if="origins.length > 0" class="settings-list">
           <li v-for="origin in origins" :key="origin" class="settings-entry">

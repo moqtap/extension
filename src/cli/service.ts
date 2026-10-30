@@ -44,6 +44,10 @@ export interface CliDeps {
   readonly now: () => number
   readonly timeoutMs?: number
   readonly ports?: readonly number[]
+  /** This build's runtime id, which the CLI must list to take its requests. */
+  readonly extensionId?: string
+  /** A fresh lease owner, to ask the CLI whether it takes this build's requests. */
+  readonly newOwner?: () => string
 }
 
 interface Found {
@@ -63,27 +67,38 @@ export interface CliTarget {
 
 /**
  * - `limit`: the CLI holds as many tabs as it allows
- * - `refused`: the CLI answered with another error
+ * - `refused`: the CLI refused the profile and said why
+ * - `not-allowed`: the CLI does not take requests from this build
+ * - `protocol`: the CLI's reply did not read
  * - `unreachable`: no allowed CLI answered
  */
-export type CreateError = 'limit' | 'refused' | 'unreachable'
+export type CreateError = 'limit' | 'refused' | 'not-allowed' | 'protocol' | 'unreachable'
 
-/** The CLI refused a profile; `refusal` is null when its reply says no more. */
+/** The CLI refused a profile and said why. */
 export interface Refused {
-  readonly refused: Refusal | null
+  readonly refused: Refusal
 }
 
 export type CreateResult =
   | CreatedTab
-  | { readonly error: 'limit' | 'unreachable' }
+  | { readonly error: 'limit' | 'not-allowed' | 'protocol' | 'unreachable' }
   | ({ readonly error: 'refused' } & Refused)
 
 /** How a profile change went: `gone` when the CLI no longer has the tab or session. */
-export type SwitchResult = 'ok' | 'gone' | 'unreachable' | Refused
+export type SwitchResult = 'ok' | 'gone' | 'unreachable' | 'not-allowed' | 'protocol' | Refused
 
-const refusedBy = async (res: Response): Promise<Refused> => ({
-  refused: parseRefusal(await res.json().catch(() => null)),
-})
+/**
+ * What an error reply means: a 403 with no body (CLIs before the reason) or
+ * with `extension_not_allowed` is this build not being allowed; a reply that
+ * names no error is one this build cannot read.
+ */
+async function replyError(res: Response): Promise<'not-allowed' | 'protocol' | Refused> {
+  const body: unknown = await res.json().catch(() => null)
+  const reason = typeof body === 'object' && body !== null ? (body as { reason?: unknown }).reason : undefined
+  if (res.status === 403 && (body === null || reason === 'extension_not_allowed')) return 'not-allowed'
+  const refusal = parseRefusal(body)
+  return refusal === null ? 'protocol' : { refused: refusal }
+}
 
 export class CliBridge {
   private current: CliView = { state: 'searching' }
@@ -142,7 +157,7 @@ export class CliBridge {
     c[identity] = { fingerprint: f.fingerprint, at: this.deps.now() }
     await this.deps.local.set(CONSENT_KEY, c)
     this.declined.delete(identity)
-    this.set({ state: 'connected', ...this.summary(f) })
+    this.set(await this.allowedView(f))
   }
 
   decline(identity: string): void {
@@ -179,9 +194,12 @@ export class CliBridge {
     const res = await this.post(t, 'tab', { profile, owner })
     if (res === null) return { error: 'unreachable' }
     if (res.status === 429) return { error: 'limit' }
-    if (!res.ok) return { error: 'refused', ...(await refusedBy(res)) }
+    if (!res.ok) {
+      const e = this.learn(await replyError(res))
+      return typeof e === 'string' ? { error: e } : { error: 'refused', ...e }
+    }
     const created = parseCreatedTab(await res.json().catch(() => null))
-    return created ?? { error: 'refused', refused: null }
+    return created ?? { error: 'protocol' }
   }
 
   /** Switches a tab and every session in it, live. */
@@ -191,8 +209,8 @@ export class CliBridge {
     const res = await this.post(t, `tab/${id}/profile`, { profile })
     if (res === null) return 'unreachable'
     if (res.status === 404 && !(await this.missingScenario(profile, (tab) => tab.id === id))) return 'gone'
-    if (!res.ok) return refusedBy(res)
-    return parseTab(await res.json().catch(() => null)) === null ? { refused: null } : 'ok'
+    if (!res.ok) return this.learn(await replyError(res))
+    return parseTab(await res.json().catch(() => null)) === null ? 'protocol' : 'ok'
   }
 
   /** Gives one session its own profile, live, or with null the tab's again. */
@@ -203,8 +221,8 @@ export class CliBridge {
     if (res === null) return 'unreachable'
     const listed = (tab: CliTab) => tab.sessions.some((s) => s.id === id)
     if (res.status === 404 && !(await this.missingScenario(profile, listed))) return 'gone'
-    if (!res.ok) return refusedBy(res)
-    return parseSession(await res.json().catch(() => null)) === null ? { refused: null } : 'ok'
+    if (!res.ok) return this.learn(await replyError(res))
+    return parseSession(await res.json().catch(() => null)) === null ? 'protocol' : 'ok'
   }
 
   /**
@@ -288,7 +306,7 @@ export class CliBridge {
       return
     }
     this.found = { hello: pick, fingerprint: await fingerprint(this.deps.subtle, pick.identityPub) }
-    if (pick.identity in consents) this.set({ state: 'connected', ...this.summary(this.found) })
+    if (pick.identity in consents) this.set(await this.allowedView(this.found))
     else if (this.declined.has(pick.identity)) this.set({ state: 'declined', ...this.summary(this.found) })
     else this.set({ state: 'confirm', ...this.summary(this.found) })
   }
@@ -320,6 +338,34 @@ export class CliBridge {
       redirect: 'error',
       signal: AbortSignal.timeout(this.deps.timeoutMs ?? 1500),
     })
+  }
+
+  /**
+   * `connected`, or `not-allowed` when the CLI refuses this build: a lease
+   * for a fresh owner holds nothing and tells which.
+   */
+  private async allowedView(f: Found): Promise<CliView> {
+    const owner = this.deps.newOwner?.()
+    if (owner !== undefined && isOwner(owner)) {
+      const res = await this.request(bridgeUrl(f.hello.port, 'lease'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner }),
+      }).catch(() => null)
+      if (res !== null && !res.ok && (await replyError(res)) === 'not-allowed') {
+        return { state: 'not-allowed', extensionId: this.deps.extensionId ?? '', ...this.summary(f) }
+      }
+    }
+    return { state: 'connected', ...this.summary(f) }
+  }
+
+  /** A request refused as from a build the CLI does not allow says so for the CLI as a whole. */
+  private learn<T>(e: T): T {
+    const f = this.found
+    if (e === 'not-allowed' && f !== null && this.current.state === 'connected') {
+      this.set({ state: 'not-allowed', extensionId: this.deps.extensionId ?? '', ...this.summary(f) })
+    }
+    return e
   }
 
   private summary(f: Found) {

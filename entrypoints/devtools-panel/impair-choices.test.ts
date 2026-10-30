@@ -3,6 +3,7 @@ import type { TabImpairment } from '@/src/cli/messages'
 import type { Profiles } from '@/src/cli/protocol'
 import {
   cliHeader,
+  cliMissing,
   impairmentButtonLabel,
   impairsSession,
   DEFAULT_FOLDER,
@@ -152,6 +153,9 @@ describe('impairment menu', () => {
     expect(cliHeader({ state: 'confirm', ...found })).toBe('moqtap CLI 0.9.0 · 21FE-31DF')
     expect(cliHeader({ state: 'absent' })).toBe("moqtap CLI isn't running")
     expect(cliHeader(null)).toBe("moqtap CLI isn't running")
+    expect(cliMissing(null)).toBe(true)
+    expect(cliMissing({ state: 'absent' })).toBe(true)
+    expect(cliMissing({ state: 'unsupported' })).toBe(false)
     expect(cliHeader({ state: 'unsupported' })).toBe('This browser cannot verify the moqtap CLI')
   })
 

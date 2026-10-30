@@ -1,18 +1,29 @@
-import type { CliView, TabImpairment } from '@/src/cli/messages'
+import type { CliView, TabError, TabImpairment } from '@/src/cli/messages'
 import { isOff, type Refusal } from '@/src/cli/protocol'
 
 export const START_COMMAND = 'moqtap intercept --bridge'
 
 export const PRO_URL = 'https://moqtap.com/pricing/#cli'
+/** What the impairment menu's Pro line leads to: custom scenarios, shown */
+export const IMPAIRMENT_URL = 'https://moqtap.com/products/network-impairment/'
+/** How to get and start the CLI, for a panel that finds none running */
+export const GET_CLI_URL = 'https://moqtap.com/getting-started/cli/'
 
 const NOT_RUNNING = `The moqtap CLI isn't running. Start it with ${START_COMMAND}.`
 
 export const DIRECT_NOTICE = "Connections opened before the profile was set aren't impaired."
 
+function notAllowedText(extensionId: string): string {
+  const setting = extensionId ? `MOQTAP_BRIDGE_EXTENSION_IDS=${extensionId}` : 'MOQTAP_BRIDGE_EXTENSION_IDS set to this build'
+  return `The moqtap CLI doesn't accept this build of the extension. Restart it with ${setting}.`
+}
+
 function cliProblem(view: CliView | null): string | null {
   switch (view?.state) {
     case 'connected':
       return null
+    case 'not-allowed':
+      return notAllowedText(view.extensionId)
     case 'confirm':
     case 'declined':
       return 'Allow the moqtap CLI under Impairment.'
@@ -31,10 +42,24 @@ function refusalText(refusal: Refusal | null, name: string | null): string {
       return `Couldn't apply ${what}: there's no scenario with that name.`
     case 'invalid_scenario':
       return `Couldn't apply ${what}: its scenario file can't run in the browser.`
-    case 'account':
-      return `Couldn't apply ${what}. ${refusal.error}`
   }
-  return `Couldn't apply ${what}. Update moqtap, then pick the profile again.`
+  return refusal ? `Couldn't apply ${what}. ${refusal.error}` : `Couldn't apply ${what}.`
+}
+
+/** Errors a pick ran into: the pick was not taken and the notice can be dismissed. */
+const PICK_ERRORS: ReadonlySet<TabError> = new Set(['refused', 'not-allowed', 'protocol'])
+
+/** What a pick ran into, worded. */
+function pickText(error: TabError, refusal: Refusal | null, name: string | null): string {
+  const what = name === null ? 'this profile' : `"${name}"`
+  if (error === 'not-allowed') return notAllowedText('')
+  if (error === 'protocol') return `The moqtap CLI can't run ${what}. Update the moqtap CLI, then pick it again.`
+  return refusalText(refusal, name)
+}
+
+/** Whether the tab's notice is about its last pick, which the user can dismiss. */
+export function pickProblem(tab: TabImpairment | null): boolean {
+  return tab !== null && tab.error !== null && PICK_ERRORS.has(tab.error)
 }
 
 /** The tab's last pick was refused and nothing else is in the way. */
@@ -50,9 +75,9 @@ function tabRefused(tab: TabImpairment | null, view: CliView | null): tab is Tab
 /** Why the tab's connections are not going through the CLI, with what to do; null when nothing is wrong. */
 export function impairmentProblem(tab: TabImpairment | null, view: CliView | null): string | null {
   if (tab === null) return null
-  // A refused pick leaves the tab on what was in force before, Off included.
-  if (tab.error === 'refused' && (tab.failure === null || tab.failure === 'no-cli')) {
-    return cliProblem(view) ?? refusalText(tab.refusal, tab.refusedName)
+  // A pick not taken leaves the tab on what was in force before, Off included.
+  if (pickProblem(tab) && (tab.failure === null || tab.failure === 'no-cli')) {
+    return cliProblem(view) ?? pickText(tab.error!, tab.refusal, tab.refusedName)
   }
   if (isOff(tab.profile)) return null
   switch (tab.failure) {
@@ -94,9 +119,9 @@ export function sessionImpairmentProblem(
   if (failed === undefined) return null
   const cli = cliProblem(view)
   if (cli !== null) return cli
-  return failed.error === 'refused'
-    ? refusalText(failed.refusal, null)
-    : `The moqtap CLI didn't answer. Check the terminal running ${START_COMMAND}, then pick the profile again.`
+  return failed.error === 'unreachable'
+    ? `The moqtap CLI didn't answer. Check the terminal running ${START_COMMAND}, then pick the profile again.`
+    : pickText(failed.error, failed.refusal, null)
 }
 
 export interface Upgrade {

@@ -278,7 +278,8 @@ describe('ImpairManager', () => {
     manager.frameConnected(3, 0)
     await manager.setProfile(3, G3, '3G')
     expect(manager.view(3).error).toBe('limit')
-    expect(last(3, 0)).toEqual({ on: true, route: null })
+    // A pick the CLI will not open impairs nothing.
+    expect(last(3, 0)).toEqual({ on: false, route: null })
   })
 
   it('reopens on a switch the CLI answers with gone', async () => {
@@ -366,7 +367,7 @@ describe('ImpairManager', () => {
     expect(sent.every((s) => s.msg.answer.route !== null)).toBe(true)
   })
 
-  it('answers held frames with no route once the tab port fails to open', async () => {
+  it('answers held frames Off once the CLI refuses to open the tab port', async () => {
     const cli = new FakeCli()
     cli.createError = 'refused'
     let release = () => {}
@@ -379,7 +380,50 @@ describe('ImpairManager', () => {
     expect(last(3, 0)).toBeUndefined()
     release()
     await picked
-    expect(last(3, 0)).toEqual({ on: true, route: null })
+    expect(last(3, 0)).toEqual({ on: false, route: null })
+  })
+
+  for (const error of ['refused', 'not-allowed', 'protocol'] as const) {
+    it(`drops a pick the CLI answered ${error}, and does not try it again`, async () => {
+      const cli = new FakeCli()
+      cli.createError = error
+      const { manager, last, tick, store } = setup({ cli })
+      manager.frameConnected(3, 0)
+      await manager.setProfile(3, G3, '3G')
+      expect(manager.view(3)).toEqual(expect.objectContaining({ profile: OFF, error, refusedName: '3G' }))
+      expect(last(3, 0)).toEqual({ on: false, route: null })
+      expect(store.data.get(PROFILES_KEY)).toEqual({})
+      const opens = cli.log.filter((l) => l === 'createTab').length
+      await tick()
+      await tick()
+      expect(cli.log.filter((l) => l === 'createTab').length).toBe(opens)
+    })
+  }
+
+  it('keeps an unreachable pick and opens it once the CLI answers', async () => {
+    const cli = new FakeCli()
+    cli.current = null
+    const { manager, last, tick } = setup({ cli })
+    manager.frameConnected(3, 0)
+    await manager.setProfile(3, G3, '3G')
+    expect(manager.view(3).error).toBe('unreachable')
+    cli.current = TARGET
+    await tick()
+    expect(last(3, 0)).toEqual({ on: true, route: routeOf(cli, 1) })
+  })
+
+  it('clears what the last pick ran into when Off is picked, or when dismissed', async () => {
+    const cli = new FakeCli()
+    cli.createError = 'not-allowed'
+    const { manager } = setup({ cli })
+    await manager.setProfile(3, G3, '3G')
+    expect(manager.view(3).error).toBe('not-allowed')
+    await manager.setProfile(3, OFF, 'Off')
+    expect(manager.view(3)).toEqual(expect.objectContaining({ profile: OFF, error: null, refusedName: null }))
+    await manager.setProfile(3, G3, '3G')
+    expect(manager.view(3).error).toBe('not-allowed')
+    await manager.clearError(3)
+    expect(manager.view(3).error).toBeNull()
   })
 
   it('holds frames after a restart until the tab port reopens', async () => {

@@ -13,10 +13,10 @@ import SettingsView from './components/SettingsView.vue'
 import ShareDialog from './components/ShareDialog.vue'
 import SplitView from './components/SplitView.vue'
 import TabStrip from './components/TabStrip.vue'
-import { DIRECT_NOTICE, impairmentProblem, refusalAction, refusalUpgrade } from './cli-copy'
+import { DIRECT_NOTICE, impairmentProblem, pickProblem, refusalAction, refusalUpgrade } from './cli-copy'
 import { connectionName } from './connection-name'
 import { formatCount } from './format'
-import { impairmentButtonLabel } from './impair-choices'
+import { impairmentButtonLabel, shortFingerprint } from './impair-choices'
 import { logoPlace, panelLayout, SIDEBAR_COLLAPSED_WIDTH, tabMenuHasConnection } from './layout'
 import { getCachedPref, savePref } from './prefs'
 import type { ProblemSeverity } from './problems'
@@ -164,17 +164,11 @@ const impairmentIssue = computed(() => impairmentProblem(cli.tab.value, cliView.
 const impairmentUpgrade = computed(() => refusalUpgrade(cli.tab.value, cliView.value))
 /** What the refusal notice offers; null when the problem is not a refusal. */
 const refusal = computed(() => refusalAction(cli.tab.value, cliView.value))
-const refusalKey = computed(() => {
-  const t = cli.tab.value
-  return refusal.value && t ? JSON.stringify([t.refusedName, t.refusal]) : null
-})
-/** A dismissed refusal stays hidden until another one comes; the button keeps its warning. */
-const dismissedRefusal = ref<string | null>(null)
-const impairmentNotice = computed(
-  () => impairmentIssue.value !== null && (refusalKey.value === null || refusalKey.value !== dismissedRefusal.value),
-)
+const impairmentNotice = computed(() => impairmentIssue.value !== null)
+/** A pick's notice can be dismissed; the background forgets it, so the button's warning goes too. */
+const pickNotice = computed(() => pickProblem(cli.tab.value))
 function dismissRefusal() {
-  dismissedRefusal.value = refusalKey.value
+  cli.clearError()
 }
 /** Open connections that bypass the CLI while the tab has a profile. */
 const directSessions = computed(() =>
@@ -384,7 +378,7 @@ function openSettings() {
     </div>
 
     <div class="infobars">
-      <Infobar v-if="impairmentNotice" kind="warning" :dismissible="refusal !== null" @dismiss="dismissRefusal">
+      <Infobar v-if="impairmentNotice" kind="warning" :dismissible="pickNotice" @dismiss="dismissRefusal">
         {{ impairmentIssue }}
         <template v-if="refusal" #actions>
           <a
@@ -404,7 +398,7 @@ function openSettings() {
       </Infobar>
       <Infobar v-if="cliConfirm" kind="info">
         Let moqtap send this tab's connections through this moqtap CLI? Identity
-        <span class="mq-mono">{{ cliConfirm.fingerprint }}</span>, shown by <code>moqtap cert</code>.
+        <span class="mq-mono">{{ shortFingerprint(cliConfirm.fingerprint) }}</span>, as the moqtap CLI prints it.
         <template #actions>
           <button class="mq-btn mq-btn--primary" @click="cli.allow(cliConfirm.identity)">Allow</button>
           <button class="mq-btn mq-btn--secondary" @click="cli.decline(cliConfirm.identity)">Not now</button>
@@ -422,8 +416,8 @@ function openSettings() {
         to capture them.
       </Infobar>
       <Infobar v-if="cspBlockedWorkers.length > 0" kind="warning">
-        This site's security policy blocks worker capture. Its workers run normally, but connections
-        opened inside them aren't captured.
+        This site's security policy keeps moqtap out of its workers. They run normally, but the
+        connections they open aren't captured or impaired.
       </Infobar>
     </div>
 

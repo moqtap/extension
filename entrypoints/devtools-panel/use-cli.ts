@@ -84,6 +84,10 @@ export function useCli(tabId?: number) {
     decline: (identity: string) => send({ type: 'cli:decline', identity }),
     reconsider: () => send({ type: 'cli:reconsider' }),
     forget: (identity: string) => send({ type: 'cli:forget', identity }),
+    /** Forgets what the tab's last pick ran into. */
+    clearError: () => {
+      if (tabId !== undefined) send({ type: 'cli:clear-error', tabId })
+    },
     setProfile: (profile: Profile, name: string) => {
       if (tabId !== undefined && isProfile(profile)) send({ type: 'cli:set-profile', tabId, profile, name })
     },

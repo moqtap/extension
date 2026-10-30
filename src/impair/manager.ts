@@ -175,6 +175,11 @@ export class ImpairManager {
     this.emit(tabId)
   }
 
+  /** The user dismissed the tab's refusal: the notice and the button's warning go. */
+  clearError(tabId: number): Promise<void> {
+    return this.serial(async () => this.setError(tabId, null))
+  }
+
   tabRemoved(tabId: number): Promise<void> {
     return this.serial(() => this.remove(tabId))
   }
@@ -186,7 +191,12 @@ export class ImpairManager {
   }
 
   private async switchTo(tabId: number, profile: Profile, name: string): Promise<void> {
-    this.state(tabId).failure = null
+    // A new pick, Off included, replaces whatever the last one ran into.
+    const s = this.state(tabId)
+    s.failure = null
+    s.error = null
+    s.refusal = null
+    s.refusedName = null
     let p = this.profiles.get(tabId)
     if (p === undefined) {
       if (isOff(profile)) {
@@ -203,11 +213,12 @@ export class ImpairManager {
       if (p.held !== null) {
         const r = await this.deps.cli.setTabProfile(p.held.id, profile)
         if (r === 'gone') drop(p)
-        else if (typeof r === 'object') {
+        else if (typeof r === 'object' || r === 'not-allowed' || r === 'protocol') {
           // The CLI keeps the tab's previous profile.
           p.profile = before.profile
           p.name = before.name
-          this.setError(tabId, 'refused', r.refused, name)
+          if (typeof r === 'object') this.setError(tabId, 'refused', r.refused, name)
+          else this.setError(tabId, r, null, name)
         } else this.setError(tabId, r === 'ok' ? null : r)
         // The CLI drops sessions' own profiles on a tab switch.
         if (r === 'ok') {
@@ -257,7 +268,13 @@ export class ImpairManager {
       }
       const r = await this.deps.cli.createTab(p.owner, p.profile)
       if ('error' in r) {
-        this.setError(tabId, r.error, 'refused' in r ? r.refused : null, r.error === 'refused' ? p.name : null)
+        if (r.error === 'unreachable') {
+          this.setError(tabId, 'unreachable')
+          return
+        }
+        // A pick the CLI will not open impairs nothing and is not retried.
+        if (this.profiles.get(tabId) === p) this.profiles.delete(tabId)
+        this.setError(tabId, r.error, 'refused' in r ? r.refused : null, p.name)
         return
       }
       p.held = { id: r.id, port: r.port, token: r.token, certHash: t.certHash, cli: t.identity }

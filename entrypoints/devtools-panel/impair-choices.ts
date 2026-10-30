@@ -84,12 +84,18 @@ export function cliHeader(view: CliView | null): string {
     case 'connected':
     case 'confirm':
     case 'declined':
+    case 'not-allowed':
       return `moqtap CLI ${view.cliVersion} · ${shortFingerprint(view.fingerprint)}`
     case 'unsupported':
       return 'This browser cannot verify the moqtap CLI'
     default:
       return "moqtap CLI isn't running"
   }
+}
+
+/** No CLI answers: the menu's first line offers the page on getting one. */
+export function cliMissing(view: CliView | null): boolean {
+  return view === null || view.state === 'absent' || view.state === 'searching'
 }
 
 /** An identity's first two groups, enough to tell two CLIs apart at a glance. */
