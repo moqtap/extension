@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  controlMessageLength,
   decodeControlMessage,
   encodeControlMessage,
   isIncomplete,
@@ -106,6 +107,35 @@ describe('isIncomplete', () => {
       '19',
     )
     expect(result.ok).toBe(true)
+  })
+})
+
+describe('controlMessageLength', () => {
+  it('frames a message the codec refuses, so the next one can be read', () => {
+    const bad = publishNamespace(paramBlock(0x3f, hex('00')))
+    const next = encodeControlMessage(
+      { type: 'goaway', new_session_uri: 'https://example.test/', timeout: 0n },
+      '19',
+    )
+    const run = concat(bad, next)
+    expect(decodeControlMessage(run, '19').ok).toBe(false)
+    expect(controlMessageLength(run, '19')).toBe(bad.length)
+    const after = run.subarray(bad.length)
+    expect(controlMessageLength(after, '19')).toBe(next.length)
+    expect(decodeControlMessage(after, '19').ok).toBe(true)
+  })
+
+  it('waits while the Type and Length are arriving', () => {
+    const msg = publishNamespace(encodeVarint(0))
+    expect(controlMessageLength(msg.subarray(0, 1), '19')).toBe('incomplete')
+    expect(controlMessageLength(msg.subarray(0, 2), '19')).toBe('incomplete')
+    expect(controlMessageLength(msg.subarray(0, 3), '19')).toBe(msg.length)
+  })
+
+  it('reads a varint Length through draft-10', () => {
+    // CLIENT_SETUP-sized frame: type 0x40 0x40, length 3, three bytes
+    const msg = hex('40 40 03 01 02 03')
+    expect(controlMessageLength(msg, '10')).toBe(6)
   })
 })
 

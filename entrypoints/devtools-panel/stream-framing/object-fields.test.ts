@@ -27,7 +27,11 @@ import {
   encodeSubgroupStream as encodeSubgroupStream22,
 } from '@moqtap/codec/draft22'
 import { describe, expect, it } from 'vitest'
-import { decodeObjectProperties, parseStreamFraming } from './index'
+import {
+  decodeObjectProperties,
+  parseDatagramFraming,
+  parseStreamFraming,
+} from './index'
 
 // The codec's per-draft stream types are nominal and this file builds fixtures
 // for them rather than consuming them.
@@ -215,12 +219,16 @@ describe('datagram status and type', () => {
   const bytes = new Uint8Array([0x20, 0x01, 0x00, 0x05, 0x80, 0x03])
 
   it('reports the datagram type', () => {
-    expect(parseStreamFraming(bytes, '22')?.headerFields.streamType).toBe(0x20)
+    expect(parseDatagramFraming(bytes, '22')?.headerFields.streamType).toBe(0x20)
   })
 
   it('reports the object status', () => {
-    const framing = parseStreamFraming(bytes, '22')
+    const framing = parseDatagramFraming(bytes, '22')
     expect(framing?.headerFields.objectStatus).toBe(3)
     expect(framing?.objects[0]?.status).toBe(3)
+  })
+
+  it('is never read as a stream', () => {
+    expect(parseStreamFraming(bytes, '22')).toBeNull()
   })
 })

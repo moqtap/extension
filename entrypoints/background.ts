@@ -10,12 +10,13 @@
 
 import {
   carriesObjectProperties,
-  parseStreamFraming,
+  parseDatagramFraming,
+  readStreamHeader,
 } from '@/entrypoints/devtools-panel/stream-framing'
 import {
+  controlMessageLength,
   decodeControlMessage,
   getCodec,
-  isIncomplete,
 } from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import { DECODE_ERROR_MESSAGE_TYPE } from '@/src/trace/decode-error'
@@ -157,26 +158,36 @@ interface ControlStreamState {
    * responses.
    */
   role: 'control' | 'request'
-  /**
-   * Leftover bytes of a message that spanned chunks.
-   *
-   * Per stream, not per session: draft-17+ runs many request streams
-   * concurrently, and one shared buffer would splice byte runs from unrelated
-   * streams together and corrupt every decode after the first partial message.
-   */
-  remainder: Uint8Array | null
   /** Message type of the first decoded message, which names a request stream */
   firstMessageType?: string
   /**
-   * Set once this stream produced bytes that no continuation can decode.
-   *
-   * A message split across chunks runs out of bytes and nothing else, so it is
-   * held as `remainder` and retried. Anything else is already whole and still
-   * wrong, and retrying it holds the same bytes forever while every later
-   * message on the stream goes unread. The stream stops here instead, and the
-   * reason is reported once.
+   * Reassembly per direction: through draft-16 both directions share the one
+   * control stream, and a draft-17+ request stream carries the request one
+   * way and its responses the other.
+   */
+  tx: DirectionDecodeState
+  rx: DirectionDecodeState
+}
+
+interface DirectionDecodeState {
+  /** Leftover bytes of a message that spanned chunks */
+  remainder: Uint8Array | null
+  /**
+   * Set once a message's Type and Length themselves would not read, so
+   * there is no next message to find. A bad message inside its Length is
+   * reported and skipped instead.
    */
   undecodable?: boolean
+}
+
+function newControlState(
+  role: ControlStreamState['role'],
+): ControlStreamState {
+  return {
+    role,
+    tx: { remainder: null },
+    rx: { remainder: null },
+  }
 }
 
 /**
@@ -209,6 +220,10 @@ interface StreamRecord {
   controlLead?: Uint8Array
   /** Set once the stream's opening bytes proved it is not control-plane */
   notControlPlane?: boolean
+  /** Opening bytes held while the data stream header is incomplete */
+  headerLead?: Uint8Array
+  /** Set once the header was read, or proved not to be one */
+  headerRead?: boolean
 }
 
 interface ControlMessageRecord {
@@ -397,12 +412,64 @@ function controlStreamFor(
 
   // Hand the earlier chunks to the decoder as this stream's reassembly
   // remainder, so bytes held back while classifying are not lost.
-  const state: ControlStreamState = {
-    role: verdict,
-    remainder: prior ?? null,
-  }
+  const state = newControlState(verdict)
+  // The opening bytes come from the side that opened the stream.
+  state[stream.direction].remainder = prior ?? null
   session.controlStreams.set(stream.streamId, state)
   return state
+}
+
+/**
+ * Read a data stream's header with the session's draft, holding the opening
+ * bytes until the header is whole. True when it was read from this chunk.
+ */
+function readHeader(
+  stream: StreamRecord,
+  bytes: Uint8Array,
+  draft: string | null | undefined,
+): boolean {
+  if (!draft) {
+    // The first bytes are gone by the time a draft is known.
+    stream.headerRead = true
+    return false
+  }
+  const lead = stream.headerLead ? concatBytes(stream.headerLead, bytes) : bytes
+  const header = readStreamHeader(lead, draft)
+  if (header.state === 'pending') {
+    stream.headerLead = lead
+    return false
+  }
+  stream.headerLead = undefined
+  stream.headerRead = true
+  if (header.state === 'invalid') return false
+
+  const framing = header.framing
+  stream.trackAlias = framing.headerFields.trackAlias
+  // Fetch streams identify their track by the request id in the header; only
+  // subgroup streams carry an alias.
+  stream.fetchRequestId = framing.headerFields.requestId
+  if (carriesObjectProperties(framing)) stream.objectProperties = true
+
+  const obj = framing.objects[0]
+  if (obj) {
+    const end = Math.min(obj.payloadOffset + obj.payloadLength, lead.length)
+    if (end > obj.payloadOffset) {
+      const payload = lead.subarray(obj.payloadOffset, end)
+      const media = detectPayloadMedia(payload)
+      if (media) {
+        stream.contentType = 'fmp4'
+        stream.mediaInfo = media
+      } else {
+        // Not a container — the object may be a raw codec frame
+        const annexb = detectAnnexB(payload)
+        if (annexb) {
+          stream.contentType = annexb.codec
+          stream.codecString = annexb.codecString
+        }
+      }
+    }
+  }
+  return true
 }
 
 function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -457,7 +524,7 @@ function attemptDetection(
 
   session.detectionAttempted = true
   session.detection = result
-  const state: ControlStreamState = { role: 'control', remainder: null }
+  const state = newControlState('control')
   session.controlStreams.set(streamId, state)
 
   if (result.protocol === 'moqt') {
@@ -466,59 +533,35 @@ function attemptDetection(
     // Create trace recorder for MoQT sessions
     session.recorder = createExtensionRecorder(result.draft, session.url)
 
-    // A byte-offset → direction map, so each decoded message gets the
-    // direction of the chunk it came from. Still needed in the draft-17+ era
-    // even though its control streams are one-way: through draft-16 both
-    // directions share one bidirectional stream and interleave here.
-    const directionMap: { offset: number; direction: 'tx' | 'rx' }[] = []
-    let dirOffset = 0
+    // Through draft-16 both directions share one bidirectional stream, so the
+    // chunks go in arrival order, each to its own direction's reassembly.
+    const trackUpdates: TrackRecord[] = []
     for (const chunk of chunks) {
-      directionMap.push({ offset: dirOffset, direction: chunk.direction })
-      dirOffset += chunk.data.length
+      trackUpdates.push(
+        ...decodeControlBytes(session, streamId, state, chunk.data, chunk.direction)
+          .trackUpdates,
+      )
     }
-    const directionAt = (offset: number): 'tx' | 'rx' => {
-      for (let i = directionMap.length - 1; i >= 0; i--) {
-        if (directionMap[i].offset <= offset) return directionMap[i].direction
-      }
-      return 'rx'
-    }
-
-    // Now try to decode the buffered bytes as control messages
-    return decodeControlBytes(session, streamId, state, buf, directionAt)
-      .trackUpdates
+    return trackUpdates
   }
   return []
 }
 
-/**
- * How much of an undecodable run to keep for display.
- *
- * The bytes are shown so the violation can be read off the wire; a control
- * message is far smaller than this, and the rest of the run is whatever the
- * peer sent after it, which is no longer being interpreted.
- */
+/** How much of an undecodable message to keep for display. */
 const MAX_UNDECODABLE_RAW = 4096
 
 /**
- * Record that a control-plane stream carried bytes that will not decode, and
- * stop reading it.
- *
- * The panel shows this beside the messages that did decode, so a stream that
- * ends early says why. Nothing is written to the trace recorder: the format
- * holds MoQT messages, and this is the absence of one.
+ * Record a control message that will not decode, beside the ones that did.
+ * The bytes go with it so the violation can be read off the wire.
  */
 function reportUndecodable(
   session: SessionRecord,
   streamId: number,
-  state: ControlStreamState,
   bytes: Uint8Array,
   direction: 'tx' | 'rx',
   code: string,
   reason: string,
 ): ControlMessageRecord {
-  state.undecodable = true
-  state.remainder = null
-
   const record: ControlMessageRecord = {
     streamId,
     direction,
@@ -532,133 +575,130 @@ function reportUndecodable(
 }
 
 /**
- * Decode every complete control message in a run of bytes from one
+ * Decode every complete control message in one direction's bytes on one
  * control-plane stream, reassembling messages that span chunks.
  *
- * Scoped to a single stream: from draft-17 a session has several control-plane
- * streams open at once (a unidirectional control stream per direction, plus a
- * bidirectional stream per request), and each needs its own reassembly buffer.
- *
- * @param directionAt maps a byte offset to the direction of the chunk it came
- *   from. Through draft-16 both directions share one bidirectional control
- *   stream, so a single stream's bytes are not all one way.
+ * Every control message declares its length, so one that will not decode is
+ * reported and skipped and the next is read. Only bytes whose Type and Length
+ * will not read stop the direction.
  */
 function decodeControlBytes(
   session: SessionRecord,
   streamId: number,
   state: ControlStreamState,
   data: Uint8Array,
-  directionAt: (offset: number) => 'tx' | 'rx',
+  direction: 'tx' | 'rx',
   stack?: string,
 ): { records: ControlMessageRecord[]; trackUpdates: TrackRecord[] } {
   const records: ControlMessageRecord[] = []
   const trackUpdates: TrackRecord[] = []
-  if (!session.detectedDraft) return { records, trackUpdates }
-  if (state.undecodable) return { records, trackUpdates }
+  const draft = session.detectedDraft
+  if (!draft) return { records, trackUpdates }
+  const dir = state[direction]
+  if (dir.undecodable) return { records, trackUpdates }
 
-  // Prepend this stream's leftover bytes from the previous chunk
-  let buf: Uint8Array
-  const carried = state.remainder?.length ?? 0
-  if (state.remainder && carried > 0) {
-    buf = new Uint8Array(carried + data.length)
-    buf.set(state.remainder)
-    buf.set(data, carried)
-    state.remainder = null
-  } else {
-    buf = data
-  }
+  const buf =
+    dir.remainder && dir.remainder.length > 0
+      ? concatBytes(dir.remainder, data)
+      : data
+  dir.remainder = null
 
   let offset = 0
   while (offset < buf.length) {
     const remaining = buf.subarray(offset)
-    if (remaining.length < 2) break
-
-    // Offsets shift by the carried bytes, which belong to the previous chunk
-    const direction = directionAt(Math.max(0, offset - carried))
-
-    try {
-      const result = decodeControlMessage(remaining, session.detectedDraft)
-      if (!result.ok) {
-        if (isIncomplete(result.error)) break // wait for the rest of it
-
-        records.push(
-          reportUndecodable(
-            session,
-            streamId,
-            state,
-            remaining,
-            direction,
-            result.error.code,
-            result.error.message,
-          ),
-        )
-        return { records, trackUpdates }
-      }
-
-      const msg = result.value
-      const msgType =
-        'type' in msg && typeof msg.type === 'string' ? msg.type : 'unknown'
-      const raw = remaining.subarray(0, result.bytesRead)
-
-      const record: ControlMessageRecord = {
-        streamId,
-        direction,
-        timestamp: Date.now(),
-        decoded: jsonSafe(msg),
-        messageType: msgType,
-        raw: bytesToBase64(raw),
-        stack: direction === 'tx' ? stack : undefined,
-      }
-      session.controlMessages.push(record)
-      records.push(record)
-      state.firstMessageType ??= msgType
-
-      // streamId matters from draft-17: responses there carry no request id,
-      // so the request stream they arrive on is what identifies them.
-      const trackUpdate = session.trackRegistry.apply(
-        msgType,
-        msg as unknown as Record<string, unknown>,
-        { direction, streamId, timestamp: record.timestamp },
-      )
-      if (trackUpdate) trackUpdates.push(trackUpdate)
-
-      if (session.recorder) {
-        const idMap = getMessageIdMap(session.detectedDraft)
-        const wireId = idMap.get(msgType)
-        session.recorder.record({
-          type: 'control',
-          seq: session.controlMessages.length - 1,
-          timestamp: Math.round(performance.now() * 1000),
-          direction: direction === 'tx' ? 0 : 1,
-          messageType: wireId != null ? Number(wireId) : 0,
-          message: msg as unknown as Record<string, unknown>,
-          // Recorded so a reader can pair a draft-17+ response with its
-          // request. Optional in the format, so older readers ignore it.
-          streamId: BigInt(streamId),
-        })
-      }
-
-      offset += result.bytesRead
-    } catch (e) {
-      // The codec answers a malformed message with `ok: false`, so a throw is
-      // the codec itself failing on these bytes. More of them will not help.
+    const frame = controlMessageLength(remaining, draft)
+    if (frame === 'incomplete') break
+    if (frame === 'invalid') {
+      dir.undecodable = true
       records.push(
         reportUndecodable(
           session,
           streamId,
-          state,
           remaining,
+          direction,
+          'INVALID_VARINT',
+          'The message type or length does not read.',
+        ),
+      )
+      return { records, trackUpdates }
+    }
+    if (frame > remaining.length) break // wait for the rest of it
+    const message = remaining.subarray(0, frame)
+    offset += frame
+
+    let result: ReturnType<typeof decodeControlMessage>
+    try {
+      result = decodeControlMessage(message, draft)
+    } catch (e) {
+      records.push(
+        reportUndecodable(
+          session,
+          streamId,
+          message,
           direction,
           'DECODER_THREW',
           e instanceof Error ? e.message : String(e),
         ),
       )
-      return { records, trackUpdates }
+      continue
+    }
+    if (!result.ok) {
+      records.push(
+        reportUndecodable(
+          session,
+          streamId,
+          message,
+          direction,
+          result.error.code,
+          result.error.message,
+        ),
+      )
+      continue
+    }
+
+    const msg = result.value
+    const msgType =
+      'type' in msg && typeof msg.type === 'string' ? msg.type : 'unknown'
+    const record: ControlMessageRecord = {
+      streamId,
+      direction,
+      timestamp: Date.now(),
+      decoded: jsonSafe(msg),
+      messageType: msgType,
+      raw: bytesToBase64(message),
+      stack: direction === 'tx' ? stack : undefined,
+    }
+    session.controlMessages.push(record)
+    records.push(record)
+    state.firstMessageType ??= msgType
+
+    // streamId matters from draft-17: responses there carry no request id,
+    // so the request stream they arrive on is what identifies them.
+    const trackUpdate = session.trackRegistry.apply(
+      msgType,
+      msg as unknown as Record<string, unknown>,
+      { direction, streamId, timestamp: record.timestamp },
+    )
+    if (trackUpdate) trackUpdates.push(trackUpdate)
+
+    if (session.recorder) {
+      const wireId = getMessageIdMap(draft).get(msgType)
+      session.recorder.record({
+        type: 'control',
+        seq: session.controlMessages.length - 1,
+        timestamp: Math.round(performance.now() * 1000),
+        direction: direction === 'tx' ? 0 : 1,
+        messageType: wireId != null ? Number(wireId) : 0,
+        message: msg as unknown as Record<string, unknown>,
+        // Recorded so a reader can pair a draft-17+ response with its
+        // request. Optional in the format, so older readers ignore it.
+        streamId: BigInt(streamId),
+      })
     }
   }
 
-  // Save leftover bytes for reassembly with this stream's next chunk
-  state.remainder = offset < buf.length ? buf.subarray(offset) : null
+  // Save leftover bytes for reassembly with this direction's next chunk
+  dir.remainder = offset < buf.length ? buf.slice(offset) : null
 
   return { records, trackUpdates }
 }
@@ -1100,7 +1140,7 @@ function handleContentMessage(
             message.streamId,
             state,
             bytes,
-            () => message.direction,
+            message.direction,
             message.stack,
           )
           if (!wasKnown) controlRoleLearned = true
@@ -1131,47 +1171,26 @@ function handleContentMessage(
         (!session.streamRecording ||
           session.discardedStreamIds.has(message.streamId))
 
+      // Bytes not kept break the run a header is read from.
+      if (skipData) stream.headerRead = true
       if (!skipData) {
         // First-chunk processing: detect content type and parse stream framing
         let detectionUpdated = false
-        if (isFirstChunk) {
-          stream.contentType = detectContentType(bytes)
+        if (isFirstChunk) stream.contentType = detectContentType(bytes)
 
-          if (session.detectedDraft && !isControlStream) {
-            const framing = parseStreamFraming(bytes, session.detectedDraft)
-            if (framing) {
-              stream.trackAlias = framing.headerFields.trackAlias
-              // Fetch streams identify their track by the request id in the
-              // header; only subgroup and datagram streams carry an alias.
-              stream.fetchRequestId = framing.headerFields.requestId
-              if (carriesObjectProperties(framing)) stream.objectProperties = true
-
-              // Use framing boundaries for precise BMFF detection on first object payload
-              if (framing.objects.length > 0) {
-                const obj = framing.objects[0]
-                const end = Math.min(
-                  obj.payloadOffset + obj.payloadLength,
-                  bytes.length,
-                )
-                if (end > obj.payloadOffset) {
-                  const payload = bytes.subarray(obj.payloadOffset, end)
-                  const media = detectPayloadMedia(payload)
-                  if (media) {
-                    stream.contentType = 'fmp4'
-                    stream.mediaInfo = media
-                  } else {
-                    // Not a container — the object may be a raw codec frame
-                    const annexb = detectAnnexB(payload)
-                    if (annexb) {
-                      stream.contentType = annexb.codec
-                      stream.codecString = annexb.codecString
-                    }
-                  }
-                }
-              }
-            }
+        if (!isControlStream && !stream.headerRead) {
+          if (stream.controlLead) {
+            // Still possibly a request stream: hold the bytes until it is not.
+            stream.headerLead = stream.controlLead
+          } else if (
+            readHeader(stream, bytes, session.detectedDraft) &&
+            !isFirstChunk
+          ) {
+            detectionUpdated = true
           }
+        }
 
+        if (isFirstChunk) {
           // Fallback: if no framing available, try scanning raw bytes for BMFF
           if (!stream.mediaInfo && stream.contentType === 'fmp4') {
             stream.mediaInfo = detectStreamMedia(bytes) ?? undefined
@@ -1400,7 +1419,7 @@ function handleContentMessage(
         }
       }
       if (appendResult.isNewGroup) {
-        const framing = parseStreamFraming(bytes, session.detectedDraft)
+        const framing = parseDatagramFraming(bytes, session.detectedDraft)
         if (framing && carriesObjectProperties(framing)) {
           appendResult.group.objectProperties = true
         }

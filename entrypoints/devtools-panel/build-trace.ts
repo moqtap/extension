@@ -172,12 +172,9 @@ export async function buildTrace(
         // Stream data load failed — the stream is still exported, without objects
       }
     }
-    // The session's own draft first: a parser for another draft can accept the
-    // same bytes and read different fields out of them.
     let framing = data ? parseStreamFraming(data, session.draft) : null
-    // A stream is never a datagram: the parser falls back to one when a
-    // stream ends inside an object. Keep the objects before the cut instead.
-    if (data && (framing == null || framing.streamType === 'datagram')) {
+    // A stream that ends inside an object keeps the objects before the cut.
+    if (data && framing == null) {
       const draft = session.draft
       // A stream the background saw a fetch header on is a fetch stream;
       // otherwise either kind may be.
@@ -208,9 +205,10 @@ export async function buildTrace(
       // What the stream header carried, so a reader can attribute the stream to
       // its track: by alias on a subgroup stream, by request on a fetch stream.
       ...(isFetch
-        ? optionalId('fetchRequestId', stream.fetchRequestId ?? hf.requestId)
+        ? optionalId('fetchRequestId', hf.requestId ?? stream.fetchRequestId)
         : {
-            ...optionalId('trackAlias', stream.trackAlias ?? hf.trackAlias),
+            // The stored bytes, parsed whole, over what the capture read.
+            ...optionalId('trackAlias', hf.trackAlias ?? stream.trackAlias),
             ...optionalId('subgroupId', hf.subgroupId),
           }),
     })

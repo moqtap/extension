@@ -24,36 +24,63 @@ import type {
 } from './types'
 
 const draftParsers = new Map<string, DraftParser>()
+const datagramParsers = new Map<string, DraftParser>()
 
-export function registerDraftParser(draft: string, parser: DraftParser): void {
+export function registerDraftParser(
+  draft: string,
+  parser: DraftParser,
+  datagram: DraftParser,
+): void {
   draftParsers.set(draft, parser)
+  datagramParsers.set(draft, datagram)
 }
 
 /**
- * Try to parse MoQT data stream framing from raw bytes.
- * Tries the specified draft parser first, then falls back to all registered parsers.
- * Returns null if no parser recognizes the data.
+ * Parse a subgroup or fetch stream by the rules of the session's draft.
+ * Null when the draft is unknown or the bytes do not frame under it: another
+ * draft's reading of the same bytes would be a guess.
  */
 export function parseStreamFraming(
   data: Uint8Array,
   draft?: string,
 ): ParsedStreamFraming | null {
-  if (data.length < 3) return null
+  if (data.length < 3 || !draft) return null
+  return draftParsers.get(draft)?.(data) ?? null
+}
 
-  if (draft) {
-    const parser = draftParsers.get(draft)
-    if (parser) {
-      const result = parser(data)
-      if (result) return result
-    }
-  }
+/** Parse one datagram by the rules of the session's draft. */
+export function parseDatagramFraming(
+  data: Uint8Array,
+  draft?: string,
+): ParsedStreamFraming | null {
+  if (!draft) return null
+  return datagramParsers.get(draft)?.(data) ?? null
+}
 
-  for (const parser of draftParsers.values()) {
-    const result = parser(data)
-    if (result) return result
-  }
+/** Longest a subgroup or fetch stream header can be, in any draft. */
+const MAX_STREAM_HEADER = 64
 
-  return null
+/**
+ * Read a data stream's header from its first bytes, which may end inside the
+ * header or inside the first object. `pending` asks for more bytes;
+ * `invalid` means the bytes are no stream header of this draft.
+ */
+export function readStreamHeader(
+  lead: Uint8Array,
+  draft: string,
+):
+  | { state: 'pending' }
+  | { state: 'invalid' }
+  | { state: 'done'; framing: ParsedStreamFraming } {
+  const whole = parseStreamFraming(lead, draft)
+  if (whole) return { state: 'done', framing: whole }
+  const prefix =
+    parseStreamPrefix(lead, draft, 'subgroup') ??
+    parseStreamPrefix(lead, draft, 'fetch')
+  if (prefix) return { state: 'done', framing: prefix.framing }
+  if (!draftParsers.has(draft) || lead.length >= MAX_STREAM_HEADER)
+    return { state: 'invalid' }
+  return { state: 'pending' }
 }
 
 // ─── Payload extraction helpers ────────────────────────────────────
@@ -116,8 +143,7 @@ export function parseDatagramGroupFraming(
 
     const dgBytes = data.subarray(offset + 4, offset + 4 + rawLen)
 
-    // Try to parse individual datagram framing to extract objectId
-    const framing = parseStreamFraming(dgBytes, draft)
+    const framing = parseDatagramFraming(dgBytes, draft)
     if (framing && framing.objects.length > 0) {
       // Use the first datagram's header fields for the group
       if (dgIndex === 0) {
@@ -170,6 +196,7 @@ export function parseDatagramGroupFraming(
 import type { SupportedDraft } from '@/src/types/common'
 import type { DecodeResult, ObjectProperty } from '@moqtap/codec'
 import {
+  createCodecDatagramParser,
   createCodecDraftParser,
   createCodecPrefixParser,
   createPropertiesDecoder,
@@ -226,19 +253,26 @@ export function decodeObjectProperties(
 }
 
 // All drafts use the codec adapter — each gets its own codec instance
-registerDraftParser('07', createCodecDraftParser('07'))
-registerDraftParser('08', createCodecDraftParser('08'))
-registerDraftParser('09', createCodecDraftParser('09'))
-registerDraftParser('10', createCodecDraftParser('10'))
-registerDraftParser('11', createCodecDraftParser('11'))
-registerDraftParser('12', createCodecDraftParser('12'))
-registerDraftParser('13', createCodecDraftParser('13'))
-registerDraftParser('14', createCodecDraftParser('14'))
-registerDraftParser('15', createCodecDraftParser('15'))
-registerDraftParser('16', createCodecDraftParser('16'))
-registerDraftParser('17', createCodecDraftParser('17'))
-registerDraftParser('18', createCodecDraftParser('18'))
-registerDraftParser('19', createCodecDraftParser('19'))
-registerDraftParser('20', createCodecDraftParser('20'))
-registerDraftParser('21', createCodecDraftParser('21'))
-registerDraftParser('22', createCodecDraftParser('22'))
+function registerCodecDraft(draft: SupportedDraft): void {
+  registerDraftParser(
+    draft,
+    createCodecDraftParser(draft),
+    createCodecDatagramParser(draft),
+  )
+}
+registerCodecDraft('07')
+registerCodecDraft('08')
+registerCodecDraft('09')
+registerCodecDraft('10')
+registerCodecDraft('11')
+registerCodecDraft('12')
+registerCodecDraft('13')
+registerCodecDraft('14')
+registerCodecDraft('15')
+registerCodecDraft('16')
+registerCodecDraft('17')
+registerCodecDraft('18')
+registerCodecDraft('19')
+registerCodecDraft('20')
+registerCodecDraft('21')
+registerCodecDraft('22')

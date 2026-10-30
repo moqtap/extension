@@ -543,7 +543,7 @@ export class SessionCatalogs {
     p.readBytes = data.length
     p.closed = ref.closed
 
-    // Rejects a framing that fell back to another draft or to a datagram.
+    // Rejects a framing of another kind or track.
     const matches = (f: ParsedStreamFraming | null): f is ParsedStreamFraming =>
       f != null &&
       f.streamType === ref.kind &&

@@ -34,6 +34,7 @@ import { isSupportedDraft, type SupportedDraft } from '@/src/types/common'
 import {
   decodeObjectProperties,
   type ParsedStreamFraming,
+  parseDatagramFraming,
   parseStreamFraming,
 } from './stream-framing'
 import type {
@@ -662,7 +663,7 @@ function frameDatagramGroup(
             })
           : encoder.encodeDatagram({ ...fields, type: 'datagram' })
 
-      const framing = parseStreamFraming(data, draft)
+      const framing = parseDatagramFraming(data, draft)
       if (framing?.streamType !== 'datagram') return null
       const hf = framing.headerFields
       if (

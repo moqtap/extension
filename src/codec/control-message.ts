@@ -14,6 +14,7 @@ import {
   type DecodeResult,
 } from '@moqtap/codec'
 import type { SupportedDraft } from '../types/common'
+import { decodeVarintForDraft, VarintError } from './varint'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyCodec = BaseCodec<any>
@@ -72,4 +73,29 @@ export function encodeControlMessage(
 ): Uint8Array {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return getCodec(draft).encodeMessage(msg as any)
+}
+
+/**
+ * Bytes the control message at the start of `buf` occupies, read from its
+ * Type and Length alone: a varint Length through draft-10, 16 bits from
+ * draft-11. `incomplete` while those are still arriving; `invalid` when the
+ * Type is no varint of this draft.
+ */
+export function controlMessageLength(
+  buf: Uint8Array,
+  draft: SupportedDraft,
+): number | 'incomplete' | 'invalid' {
+  try {
+    const [, typeLen] = decodeVarintForDraft(draft, buf, 0)
+    if (Number(draft) <= 10) {
+      const [length, lengthLen] = decodeVarintForDraft(draft, buf, typeLen)
+      return typeLen + lengthLen + length
+    }
+    if (buf.length < typeLen + 2) return 'incomplete'
+    return typeLen + 2 + ((buf[typeLen] << 8) | buf[typeLen + 1])
+  } catch (e) {
+    if (e instanceof VarintError && /too short/.test(e.message))
+      return 'incomplete'
+    return 'invalid'
+  }
 }

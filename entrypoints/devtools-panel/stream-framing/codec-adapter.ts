@@ -104,22 +104,22 @@ interface FetchObjectResult extends ObjectResult {
 }
 
 /**
- * Create a DraftParser that delegates to the codec's per-draft decoders.
- * Works for every draft `SUPPORTED_DRAFTS` names.
+ * A DraftParser for a data stream (subgroup or fetch) under one draft's
+ * decoders. Works for every draft `SUPPORTED_DRAFTS` names.
  */
 export function createCodecDraftParser(draft: SupportedDraft): DraftParser {
   const codec = createCodec({ draft }) as unknown as DataStreamCodec
 
   return (data: Uint8Array): ParsedStreamFraming | null => {
     if (data.length < 3) return null
-
-    // Try subgroup first, then fetch, then datagram
-    return (
-      tryDecodeSubgroup(codec, data) ??
-      tryDecodeFetch(codec, data) ??
-      tryDecodeDatagram(codec, data)
-    )
+    return tryDecodeSubgroup(codec, data) ?? tryDecodeFetch(codec, data)
   }
+}
+
+/** A DraftParser for one datagram under one draft's decoders. */
+export function createCodecDatagramParser(draft: SupportedDraft): DraftParser {
+  const codec = createCodec({ draft }) as unknown as DataStreamCodec
+  return (data: Uint8Array) => tryDecodeDatagram(codec, data)
 }
 
 /**
