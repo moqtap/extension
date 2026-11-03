@@ -113,6 +113,47 @@ describe('requestIds', () => {
   })
 })
 
+describe('draft-23 FETCH', () => {
+  // draft-23 Section 9.3: "The REQUEST_OK message is sent in response to
+  // PUBLISH, FETCH, REQUEST_UPDATE, TRACK_STATUS, SUBSCRIBE_NAMESPACE,
+  // SUBSCRIBE_TRACKS and PUBLISH_NAMESPACE requests."
+  const FETCH = {
+    type: 'fetch',
+    request_id: 2n,
+    track_namespace: ['live', 'ch4'],
+    track_name: 'video',
+    parameters: {},
+  }
+  const REQUEST_OK = { type: 'request_ok', parameters: {}, track_properties: {} }
+
+  it('pairs the REQUEST_OK that answers it, timed from the FETCH', () => {
+    const fetch = entry('23', FETCH, 'tx', 1_000, 8)
+    const ok = entry('23', REQUEST_OK, 'rx', 1_030, 8)
+    const events = messageEvents([fetch, ok])
+    expect(requestIds(events, 23).get(ok)).toBe('2')
+    expect(requestTimes(events, 23).byResponse.get(ok)).toBe(30)
+  })
+
+  it('names UNAVAILABLE, new in draft-23', () => {
+    const fetch = entry('23', FETCH, 'tx', 0, 8)
+    const err = entry(
+      '23',
+      {
+        type: 'request_error',
+        error_code: 0xan,
+        retry_interval: 1001n,
+        reason_phrase: '',
+        error_details: {},
+      },
+      'rx',
+      10,
+      8,
+    )
+    expect(errorCodeLabels(messageEvents([fetch, err]), 23).get(err)).toBe('UNAVAILABLE (0xa)')
+    expect(errorCodeLabels(messageEvents([fetch, err]), 22).get(err)).toBe('0xa, unknown for draft-22')
+  })
+})
+
 describe('requestTimes', () => {
   it("times each response from its request, and each track's request", () => {
     const sub = entry('17', SUBSCRIBE, 'tx', 1_000, 4)

@@ -26,10 +26,14 @@ import {
   SessionCmaf,
   syncText,
 } from './cmaf'
+import { SUPPORTED_DRAFTS } from '@/src/types/common'
 import { SessionLoc } from './loc'
 import type { PanelProblem } from './problems'
 import { templateOf, templateProblems } from './timelines'
 import type { SessionEntry, StreamEntry, TrackEntry } from './use-inspector'
+
+/** The draft after the last supported one, unsupported by construction. */
+const BEYOND = String(Number(SUPPORTED_DRAFTS[SUPPORTED_DRAFTS.length - 1]) + 1)
 
 vi.mock('@moqtap/media/cmaf', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@moqtap/media/cmaf')>()
@@ -506,7 +510,8 @@ describe('copies of one object', () => {
   it('cites the rule in the session draft, and nothing without one', () => {
     expect(copiesSpec('07')!.url).toBe('https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-07#section-2.1')
     expect(copiesSpec(undefined)).toBeNull()
-    expect(copiesSpec('23')).toBeNull()
+    expect(copiesSpec('23')!.url).toBe('https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-23#section-2.1')
+    expect(copiesSpec(BEYOND)).toBeNull()
   })
 })
 

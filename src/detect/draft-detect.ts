@@ -109,7 +109,7 @@ export function couldBeControlStream(leadingBytes: Uint8Array): boolean {
  * The draft assumed when nothing named one. Only ever reached through
  * `{ via: 'unidentified' }` evidence, which says so.
  */
-export const NEWEST_SUPPORTED_DRAFT: SupportedDraft = '22'
+export const NEWEST_SUPPORTED_DRAFT: SupportedDraft = '23'
 
 /**
  * Wire version numbers → draft, for the drafts that negotiate a version in
@@ -366,6 +366,9 @@ function readVersionList(bytes: Uint8Array, offset: number): number[] {
  * the draft for anything from draft-15 on, so a caller that has it should pass
  * it.
  *
+ * Answers `unknown` while too few bytes have arrived to decide, so a caller
+ * tries again when more arrive.
+ *
  * This uses only the inline varint decoder — no codec dependency — so it
  * can run before we know which codec to instantiate.
  */
@@ -382,17 +385,24 @@ export function detectFromControlStream(
   // Draft-17+: SETUP (0x2F00) on a unidirectional control stream, written with
   // MoQT's own varint — `af 00`, not the `6f 00` RFC 9000 would produce.
   //
-  // The type ID alone does not separate drafts 17 through 22: all six write
-  // SETUP as 0x2F00. That is a claim about the message type varint and
-  // nothing more — the bodies are not identical (draft-19 added Setup Options
-  // 0x06 MAX_FILTER_RANGES and 0x08 MAX_REQUEST_UPDATES, so either one present
-  // rules out 17 and 18) — but every option is optional and unknown ones must
-  // be ignored, so their absence proves nothing and no body read here could
-  // settle it either way. Drafts 20, 21 and 22 are past settling by any read
-  // of SETUP at all: 21 restructures 20 and changes nothing a decoder can
-  // observe, and 22's one wire change is to LOCATION_FILTER, a request
-  // parameter SETUP never carries. None of that matters here: the type ID
-  // says MoQT, and the negotiated protocol string says which draft.
+  // The type ID alone does not separate drafts 17 through 23: every one of
+  // them writes SETUP as 0x2F00. That is a claim about the message type
+  // varint and nothing more — the bodies are not identical (draft-19 added
+  // Setup Options 0x06 MAX_FILTER_RANGES and 0x08 MAX_REQUEST_UPDATES, so
+  // either one present rules out 17 and 18) — but every option is optional
+  // and unknown ones must be ignored, so their absence proves nothing and no
+  // body read here could settle it either way. Drafts 20, 21 and 22 are past
+  // settling by any read of SETUP at all: 21 restructures 20 and changes
+  // nothing a decoder can observe, and 22's one wire change is to
+  // LOCATION_FILTER, a request parameter SETUP never carries.
+  //
+  // Draft-23 frames SETUP differently, and the frame still does not settle
+  // it. draft-22 Section 9.1, Figure 6: "Length (16)"; draft-23 Section 9.1,
+  // Figure 7: "Length (vi64)". A draft-22 SETUP with a short body opens
+  // `af 00 00 LL`, and under draft-23 `af 00 00` is a whole SETUP with no
+  // options; a draft-23 `af 00 LL` under draft-22 is a frame still waiting
+  // for bytes. None of that matters here: the type ID says MoQT, and the
+  // negotiated protocol string says which draft.
   try {
     const [msgType] = decodeMoqtVarint(bytes, 0)
     if (msgType === SETUP_DRAFT17_PLUS) return identifyFromProtocol(resolution)
@@ -401,7 +411,9 @@ export function detectFromControlStream(
   }
 
   // Drafts ≤ 16: CLIENT_SETUP on a bidirectional control stream. Everything
-  // below stays on RFC 9000 because only those drafts reach it.
+  // below stays on RFC 9000 because only those drafts reach it. Under four
+  // bytes there is no version list to read yet.
+  if (bytes.length < 4) return { protocol: 'unknown' }
   try {
     const [msgType, msgTypeLen] = decodeVarint(bytes, 0)
 

@@ -25,6 +25,9 @@ const PARAMETER_RULE: Record<string, { section: string; quote: string }> = {
   '20': { section: '10.2', quote: RULE_17 },
   '21': { section: '9.20', quote: RULE_17 },
   '22': { section: '9.20', quote: RULE_17 },
+  // draft-23 Section 9.19 names the code: "An endpoint that receives an
+  // unknown Message Parameter MUST close the session with INVALID_PARAMETER."
+  '23': { section: '9.19', quote: RULE_17.replace('PROTOCOL_VIOLATION', 'INVALID_PARAMETER') },
 }
 
 /** The message type `bytes` open with, in the draft's varint, or null when it is cut short. */

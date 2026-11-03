@@ -69,7 +69,7 @@ import type { SessionEntry, TrackEntry } from './use-inspector'
 
 const TRANSPORT_DRAFTS = new Set<string>([
   '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19',
-  '20', '21', '22',
+  '20', '21', '22', '23',
 ])
 
 /** The session draft as `@moqtap/media/loc` names it; undefined for one it does not cover. */
@@ -652,7 +652,7 @@ export class SessionLoc {
     let added = false
     for (const obj of framing.objects) {
       if (obj.payloadOffset + obj.payloadLength > data.length) break
-      if (obj.endOfRange !== undefined) continue
+      if (obj.indicator !== undefined) continue
       const key = recordKey(ref.source, obj.offset)
       if (this.records.has(key)) continue
       const groupId = obj.groupId ?? framing.headerFields.groupId ?? 0

@@ -15,6 +15,7 @@ import {
   decodeControlMessage,
   encodeControlMessage,
   isIncomplete,
+  receiveLimit,
 } from './control-message'
 import { buildControlMessage, concat, encodeVarint, hex } from './test-helpers'
 
@@ -184,5 +185,129 @@ describe('draft-20 against draft-19', () => {
       expect(isIncomplete(result.error)).toBe(true)
     }
     expect(decodeControlMessage(whole, '20').ok).toBe(true)
+  })
+})
+
+describe('draft-23 against draft-22', () => {
+  /**
+   * draft-22 Section 9, Figure 5: "Message Length (16)". draft-23 Section 9,
+   * Figure 6: "Message Length (vi64)". The same bytes frame differently under
+   * the two, and neither reading fails on the other's bytes, so the framing
+   * has to be the session draft's.
+   */
+  const REQUEST_OK_23 = encodeControlMessage(
+    { type: 'request_ok', parameters: {}, track_properties: {} },
+    '23',
+  )
+  const GOAWAY_23 = encodeControlMessage(
+    { type: 'goaway', new_session_uri: 'https://example.test/', timeout: 0n },
+    '23',
+  )
+
+  it('writes the Length as a varint', () => {
+    expect(REQUEST_OK_23).toEqual(hex('07 01 00'))
+    expect(controlMessageLength(REQUEST_OK_23, '23')).toBe(3)
+    // Draft-22 reads `01 00` as a Length of 256.
+    expect(controlMessageLength(REQUEST_OK_23, '22')).toBe(3 + 256)
+  })
+
+  it('frames a run of draft-23 messages one at a time', () => {
+    const run = concat(REQUEST_OK_23, GOAWAY_23)
+    expect(controlMessageLength(run, '23')).toBe(REQUEST_OK_23.length)
+    const after = run.subarray(REQUEST_OK_23.length)
+    expect(controlMessageLength(after, '23')).toBe(GOAWAY_23.length)
+    expect(decodeControlMessage(after, '23').ok).toBe(true)
+  })
+
+  it('reads multi-byte Lengths, including ones 16 bits cannot hold', () => {
+    // 300 is `81 2c`, 70000 is `c1 11 70` (draft-23 Section 8.1).
+    expect(controlMessageLength(hex('07 81 2c'), '23')).toBe(1 + 2 + 300)
+    expect(controlMessageLength(hex('07 c1 11 70'), '23')).toBe(1 + 3 + 70000)
+    // A non-minimal Length is still its value.
+    expect(controlMessageLength(hex('07 c0 00 01 00'), '23')).toBe(1 + 3 + 1)
+  })
+
+  it('waits while a varint Length is arriving', () => {
+    expect(controlMessageLength(hex('07'), '23')).toBe('incomplete')
+    expect(controlMessageLength(hex('07 81'), '23')).toBe('incomplete')
+    expect(controlMessageLength(hex('07 c1 11'), '23')).toBe('incomplete')
+  })
+
+  it('holds a draft-23 message that is still arriving', () => {
+    for (let cut = 1; cut < GOAWAY_23.length; cut++) {
+      const result = decodeControlMessage(GOAWAY_23.subarray(0, cut), '23')
+      expect(result.ok, `truncated to ${cut} bytes`).toBe(false)
+      if (result.ok) continue
+      expect(isIncomplete(result.error)).toBe(true)
+    }
+    expect(decodeControlMessage(GOAWAY_23, '23').ok).toBe(true)
+  })
+
+  it('does not hold a draft-22 frame read as draft-23', () => {
+    // Draft-22's empty REQUEST_OK, `07 00 01 00`: under draft-23 a zero-length
+    // REQUEST_OK, which lacks its Number of Parameters, then `01 00`.
+    const d22 = encodeControlMessage(
+      { type: 'request_ok', parameters: {}, track_properties: {} },
+      '22',
+    )
+    expect(d22).toEqual(hex('07 00 01 00'))
+    expect(controlMessageLength(d22, '23')).toBe(2)
+    const result = decodeControlMessage(d22.subarray(0, 2), '23')
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(isIncomplete(result.error)).toBe(false)
+  })
+
+  it('refuses 0x18, which draft-23 reserves (FETCH_OK in draft-22)', () => {
+    // draft-23 Section 9, Table 5: "0x18 | RESERVED (FETCH_OK in <= 22)".
+    const result = decodeControlMessage(hex('18 00'), '23')
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('UNKNOWN_MESSAGE_TYPE')
+    expect(isIncomplete(result.error)).toBe(false)
+  })
+})
+
+describe('draft-23 MAX_CONTROL_MESSAGE_SIZE', () => {
+  /**
+   * draft-23 Section 9: "If an endpoint receives a control message with a
+   * length larger than its MAX_CONTROL_MESSAGE_SIZE, it MUST close the session
+   * with FIELD_LENGTH_EXCEEDED." Section 9.1.8: "If not present, the default
+   * value is 65535. Until an endpoint receives the peer's SETUP, it uses the
+   * default value, including for SETUP itself."
+   */
+  it('is 65535 until the receiver advertises more, and absent before draft-23', () => {
+    expect(receiveLimit('23', undefined)).toBe(65535n)
+    expect(receiveLimit('23', 100000n)).toBe(100000n)
+    expect(receiveLimit('22', 100000n)).toBeUndefined()
+  })
+
+  it('refuses a Length over the limit before its body arrives', () => {
+    // GOAWAY with a Length of 70000, `c1 11 70`, and no body yet.
+    const header = hex('10 c1 11 70')
+    const over = decodeControlMessage(header, '23', 65535n)
+    expect(over.ok).toBe(false)
+    if (over.ok) return
+    expect(over.error.code).toBe('CONSTRAINT_VIOLATION')
+    expect(isIncomplete(over.error)).toBe(false)
+
+    const under = decodeControlMessage(header, '23', 100000n)
+    expect(under.ok).toBe(false)
+    if (under.ok) return
+    expect(isIncomplete(under.error)).toBe(true)
+  })
+
+  it('holds SETUP to 65535 whatever the receiver advertised', () => {
+    const result = decodeControlMessage(hex('af 00 c1 11 70'), '23', 100000n)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(isIncomplete(result.error)).toBe(false)
+  })
+
+  it('decodes a SETUP with no options, three bytes', () => {
+    expect(decodeControlMessage(hex('af 00 00'), '23', 65535n)).toMatchObject({
+      ok: true,
+      value: { type: 'setup', options: {} },
+    })
   })
 })

@@ -252,8 +252,8 @@ export async function buildTrace(
       try {
         if (framing && framing.objects.length > 0) {
           for (const obj of framing.objects) {
-            // An End of Range marker is not an object; the format has no event for it.
-            if (obj.endOfRange !== undefined) continue
+            // A fetch indicator is not an object; the format has no event for it.
+            if (obj.indicator !== undefined) continue
             const end = Math.min(
               obj.payloadOffset + obj.payloadLength,
               data.length,

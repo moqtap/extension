@@ -38,10 +38,15 @@ stays in step.
 - `src/codec/message-ids.ts`: import `MESSAGE_ID_MAP` / `MESSAGE_TYPE_MAP`
   from the new draft subpath and register both.
 - `src/codec/varint.ts`: add it to `VARINT_ENCODINGS`, from the draft's own
-  integer section (Section 8.1 in drafts 21 and 22, Section 1.4.1 in drafts
+  integer section (Section 8.1 in drafts 21 to 23, Section 1.4.1 in drafts
   17–20).
-- `entrypoints/devtools-panel/stream-framing/index.ts`: register a parser with
-  `registerDraftParser('NN', createCodecDraftParser('NN'))`.
+- `src/codec/control-message.ts`: add it to `LENGTH_FIELD`, the width of the
+  control message Length in the draft's Section 9 figure: a varint through
+  draft-10 and from draft-23, 16 bits in drafts 11–22.
+- `entrypoints/devtools-panel/stream-framing/index.ts`: register its parsers
+  with `registerCodecDraft('NN')`.
+- `entrypoints/devtools-panel/redact-trace.ts`: add the draft's
+  `redactAuthTokens` to `REDACTORS`.
 - `vitest.config.ts`: add it to `DRAFTS`. Every draft must be listed.
 - `src/detect/draft-detect.ts`: bump `NEWEST_SUPPORTED_DRAFT`. Do not add a row
   to `VERSION_TO_DRAFT`, which covers only drafts with a SETUP version number
@@ -57,6 +62,13 @@ stays in step.
 - A change to the messages that may open a bidirectional request stream goes in
   `REQUEST_STREAM_OPENERS` in `src/detect/control-streams.ts`, with the per-era
   counts its test pins.
+- Draft ranges that compile without the new draft, each checked against its
+  text: `copiesSpec` in `entrypoints/devtools-panel/cmaf.ts` (Section 2.1),
+  `objectStatusName` in `object-status.ts` (the Object Status registry),
+  `PARAMETER_RULE` in `undecodable.ts` (the unknown Message Parameter rule),
+  `TRANSPORT_DRAFTS` in `loc.ts`, which follows `@moqtap/media`, and
+  `receiveLimit` and `decodeControlMessage` in `src/codec/control-message.ts`
+  (MAX_CONTROL_MESSAGE_SIZE, draft-23 Section 9.1.8).
 
 ### 4. Update tests
 

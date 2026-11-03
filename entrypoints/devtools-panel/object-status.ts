@@ -1,7 +1,7 @@
 /**
  * Object Status names, as each draft assigns them: drafts 07-10 have five
  * code points, 11-15 drop End of Subgroup and rename 0x4 End of Track, and
- * 16 on drop Object Does Not Exist.
+ * 16 to 23 drop Object Does Not Exist.
  */
 const STATUS_07: Record<number, string> = {
   0x0: 'Normal',
@@ -28,7 +28,7 @@ export function objectStatusName(
   draft: string | null | undefined,
 ): string | null {
   const n = Number(draft)
-  if (!Number.isInteger(n) || n < 7 || n > 22) return null
+  if (!Number.isInteger(n) || n < 7 || n > 23) return null
   const table = n <= 10 ? STATUS_07 : n <= 15 ? STATUS_11 : STATUS_16
   return table[status] ?? null
 }

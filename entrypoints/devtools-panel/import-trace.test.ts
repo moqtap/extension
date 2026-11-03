@@ -11,6 +11,7 @@ import {
   encodeFetchStream,
   encodeSubgroupStream,
 } from '@moqtap/codec/draft22'
+import { encodeFetchStream as encodeFetchStream23 } from '@moqtap/codec/draft23'
 import { readMoqtrace, type Trace, writeMoqtrace } from '@moqtap/trace'
 import { describe, expect, it } from 'vitest'
 import { buildTrace } from './build-trace'
@@ -524,6 +525,71 @@ describe('datagram groups come back framed, on their own aliases', () => {
   })
 })
 
+describe('draft-23 fetch End of Group and End of Track are no objects', () => {
+  /**
+   * draft-23 Section 11.4.2.2: "When Serialization Flags is 0x80 (End of
+   * Group) or 0x81 (End of Track), no other fields are present." Group 5
+   * holds objects 0 and 1, group 6 object 0, and the stream ends the Track.
+   */
+  const ENTRIES = [
+    { id: 0, group: 5n, flags: 0x1c, body: 'a' },
+    { id: 1, group: 5n, flags: 0x10, body: 'b' },
+    { id: 0, group: 5n, flags: 0x80 },
+    { id: 0, group: 6n, flags: 0x1c, body: 'c' },
+    { id: 0, group: 6n, flags: 0x81 },
+  ]
+  const stream = encodeFetchStream23({
+    type: 'fetch',
+    requestId: 12n,
+    objects: ENTRIES.map((e) => ({
+      ...object({ id: e.id, body: e.body }),
+      serializationFlags: e.flags,
+      groupId: e.group,
+      subgroupId: 0n,
+      publisherPriority: 5,
+    })),
+  } as Any)
+
+  it('frames them as indicators, which draft-22 cannot read', () => {
+    const framing = parseStreamFraming(stream, '23')
+    expect(framing?.streamType).toBe('fetch')
+    expect(framing!.objects.map((o) => [o.groupId, o.objectId, o.indicator])).toEqual([
+      [5, 0, undefined],
+      [5, 1, undefined],
+      [5, 1, 0x80],
+      [6, 0, undefined],
+      [6, 0, 0x81],
+    ])
+    expect(parseStreamFraming(stream, '22')).toBeNull()
+  })
+
+  it('leaves them out of the trace, and the objects come back framed', async () => {
+    const f = fixture([[6, stream, { fetchRequestId: 12 }]])
+    ;(f.session as Any).draft = '23'
+    const trace = await buildTrace(f.session, async (_s, id) =>
+      f.streams.get(id) ?? null,
+    )
+    expect(
+      trace.events
+        .filter((e) => e.type === 'object-header')
+        .map((e) => [e.groupId, e.objectId]),
+    ).toEqual([
+      [5n, 0n],
+      [5n, 1n],
+      [6n, 0n],
+    ])
+
+    const imported = importTrace(readMoqtrace(writeMoqtrace(trace)))
+    const after = imported.streamData.get(6)!
+    expect(objectsOf(after, parseStreamFraming(after, '23'))).toEqual([
+      expect.objectContaining({ objectId: 0, groupId: 5, payload: '61' }),
+      expect.objectContaining({ objectId: 1, groupId: 5, payload: '62' }),
+      expect.objectContaining({ objectId: 0, groupId: 6, payload: '63' }),
+    ])
+    expect(imported.session.streams.get(6)?.importedFraming).toBe('recorded')
+  })
+})
+
 describe('a draft-22 fetch End of Range marker is no object', () => {
   it('is left out of the trace, and the objects come back framed', async () => {
     const stream = encodeFetchStream({
@@ -547,7 +613,7 @@ describe('a draft-22 fetch End of Range marker is no object', () => {
         },
       ],
     } as Any)
-    expect(parseStreamFraming(stream, '22')!.objects[1].endOfRange).toBe(0x8c)
+    expect(parseStreamFraming(stream, '22')!.objects[1].indicator).toBe(0x8c)
 
     const f = fixture([[6, stream, { fetchRequestId: 12 }]])
     const trace = await buildTrace(f.session, async (_s, id) =>

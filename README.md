@@ -5,7 +5,7 @@ DevTools extension for inspecting WebTransport connections and MoQT protocol tra
 ## Features
 
 - Intercepts all WebTransport connections on a page (main thread, workers, and iframes)
-- Auto-detects MoQT from wire bytes, and the draft (07 through 22) from the negotiated `moqt-NN` protocol
+- Auto-detects MoQT from wire bytes, and the draft (07 through 23) from the negotiated `moqt-NN` protocol
 - Decodes control messages with full field display, error codes by name for the session's draft, and each response's time since its request
 - Problems tab: one row per problem on the session, a catalog track or a media track, with its severity, what was found and what the rule expects, the fix, where it was seen and the spec section. It covers control messages (error responses, requests left without a response, blocked or exhausted request IDs, GOAWAY, messages that do not decode, parameters the draft does not define), catalogs, catalogs that disagree on a track, media timeline templates, and LOC, CMAF and timeline objects. Filter by level; copy a row as text or JSON
 - Tracks tab with per-track subscription state, direction, timing, namespace grouping, and each track's packaging, codec and size from its catalog; data on an alias no decoded request names is listed as `Track alias N`

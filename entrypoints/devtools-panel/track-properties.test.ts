@@ -63,9 +63,9 @@ const SUBSCRIBE_OK = {
   track_properties: { unknown: [TIMESCALE], immutable_properties: IMMUTABLE },
 }
 
-function sessionOf(messages: MessageEntry[], tracks: TrackEntry[] = []) {
+function sessionOf(messages: MessageEntry[], tracks: TrackEntry[] = [], draft: SupportedDraft = '22') {
   return {
-    draft: '22',
+    draft,
     messages,
     tracks: new Map(tracks.map((t) => [t.subscribeId, t])),
   } as unknown as SessionEntry
@@ -133,6 +133,27 @@ describe('trackPropertyLists', () => {
     )
     const lists = trackPropertyLists(sessionOf([status, ok]))
     expect(lists.get(VIDEO)?.[0]?.message).toBe(ok)
+  })
+
+  it('places a draft-23 REQUEST_OK by the FETCH it answers', () => {
+    // draft-23 Section 9.3: "Track Properties are populated in TRACK_STATUS_OK
+    // and FETCH_OK", and Section 1.5 makes FETCH_OK the shorthand for the
+    // REQUEST_OK that answers a FETCH.
+    const fetch = entry(
+      '23',
+      { type: 'fetch', request_id: 2n, track_namespace: ['live'], track_name: 'video', parameters: {} },
+      'tx',
+      8,
+    )
+    const ok = entry(
+      '23',
+      { type: 'request_ok', parameters: {}, track_properties: { unknown: [TIMESCALE] } },
+      'rx',
+      8,
+    )
+    const lists = trackPropertyLists(sessionOf([fetch, ok], [], '23'))
+    expect(lists.get(VIDEO)?.[0]?.message).toBe(ok)
+    expect(lists.get(VIDEO)?.[0]?.properties).toEqual([{ type: 0x08n, value: 90000n }])
   })
 
   it('leaves out messages whose Track Properties are all named by the codec', () => {

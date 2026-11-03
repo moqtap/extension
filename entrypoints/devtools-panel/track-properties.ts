@@ -1,7 +1,8 @@
 /**
  * The Track Properties a session's control messages carry (draft-16 Track
  * Extensions), by the track they describe: SUBSCRIBE_OK, PUBLISH and
- * FETCH_OK from draft-16, and REQUEST_OK for TRACK_STATUS from draft-18.
+ * FETCH_OK from draft-16, REQUEST_OK for TRACK_STATUS from draft-18, and
+ * REQUEST_OK for FETCH from draft-23, which has no FETCH_OK message.
  */
 
 import { pairRequests, trackEventFrom } from '@moqtap/inspect'
@@ -36,7 +37,7 @@ function asBytes(value: unknown): Uint8Array | null {
 
 /**
  * A variable-length integer from its encoded bytes: the leading-ones form of
- * draft-17 on (draft-22 Section 8.1), the QUIC form (RFC 9000 16) before.
+ * draft-17 on (draft-23 Section 8.1), the QUIC form (RFC 9000 16) before.
  */
 function readVarint(bytes: Uint8Array, draft: string | undefined): bigint | null {
   if (bytes.length === 0) return null

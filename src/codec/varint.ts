@@ -129,6 +129,8 @@ const VARINT_ENCODINGS: Record<SupportedDraft, VarintEncoding> = {
   '21': 'moqt18',
   // Draft-22 leaves §8.1 as draft-21 wrote it.
   '22': 'moqt18',
+  // Draft-23 leaves §8.1 as draft-22 wrote it.
+  '23': 'moqt18',
 }
 
 /** The variable-length integer encoding this draft writes on the wire. */

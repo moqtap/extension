@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { SUPPORTED_DRAFTS } from '@/src/types/common'
 import { objectContentText, objectStatusName } from './object-status'
 
 const bytes = (n: number) => `${n} B`
+
+/** The draft after the last supported one, unsupported by construction. */
+const BEYOND = String(Number(SUPPORTED_DRAFTS[SUPPORTED_DRAFTS.length - 1]) + 1)
 
 describe('objectStatusName', () => {
   it('names each draft generation its own way', () => {
@@ -14,8 +18,16 @@ describe('objectStatusName', () => {
     expect(objectStatusName(5, '11')).toBeNull()
   })
 
-  it('names nothing without a draft', () => {
+  it('names draft-23 statuses as Section 16.9 does, with no Object Does Not Exist', () => {
+    expect(objectStatusName(0, '23')).toBe('Normal')
+    expect(objectStatusName(3, '23')).toBe('End of Group')
+    expect(objectStatusName(4, '23')).toBe('End of Track')
+    expect(objectStatusName(1, '23')).toBeNull()
+  })
+
+  it('names nothing without a draft, or for one this build does not know', () => {
     expect(objectStatusName(3, undefined)).toBeNull()
+    expect(objectStatusName(3, BEYOND)).toBeNull()
   })
 })
 

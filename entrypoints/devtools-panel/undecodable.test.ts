@@ -70,6 +70,29 @@ describe('a message with a parameter its draft does not define', () => {
     })
   }
 
+  it('cites the draft-23 rule, which closes with INVALID_PARAMETER', () => {
+    // SUBSCRIBE, Request ID 4, ("live") / "video", one parameter 0x24 = 0,
+    // with draft-23's varint Length.
+    const msg = refused('23', '03100401046c69766505766964656f012400')
+    expect(undefinedParameter(msg, { draft: '23', streams: new Map(), messages: [msg] })).toMatchObject({
+      title: "SUBSCRIBE carries parameter 0x24, which draft-23 doesn't define",
+      spec: {
+        label: 'MoQT-23 9.19',
+        url: 'https://datatracker.ietf.org/doc/html/draft-ietf-moq-transport-23#section-9.19',
+        quote: expect.stringContaining('MUST close the session with INVALID_PARAMETER'),
+      },
+    })
+  })
+
+  it("reads the message type with the draft's own varint", () => {
+    // SUBSCRIBE_NAMESPACE is 0x50, one byte from draft-17 on. Read as an
+    // RFC 9000 varint it would be a two-byte type 0x1000.
+    const msg = refused('23', '500a0201046c697665012400')
+    expect(undefinedParameter(msg, { draft: '23', streams: new Map(), messages: [msg] })?.title).toBe(
+      "SUBSCRIBE_NAMESPACE carries parameter 0x24, which draft-23 doesn't define",
+    )
+  })
+
   it('names SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS on draft-22, with its 16-bit Length', () => {
     for (const [hex, name] of [
       ['50000a0201046c697665012400', 'SUBSCRIBE_NAMESPACE'],

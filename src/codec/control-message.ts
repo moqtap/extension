@@ -13,6 +13,10 @@ import {
   type DecodeErrorCode,
   type DecodeResult,
 } from '@moqtap/codec'
+import {
+  DEFAULT_MAX_CONTROL_MESSAGE_SIZE,
+  type Draft23Codec,
+} from '@moqtap/codec/draft23'
 import type { SupportedDraft } from '../types/common'
 import { decodeVarintForDraft, VarintError } from './varint'
 
@@ -29,14 +33,45 @@ export function getCodec(draft: SupportedDraft): AnyCodec {
   return codecs.get(draft)!
 }
 
-/** Decode a control message from raw bytes using the specified draft codec */
+/**
+ * Decode a control message from raw bytes using the specified draft codec.
+ * `limit` is the receiver's limit from `receiveLimit`: a Length over it fails
+ * as soon as the Type and Length have arrived.
+ */
 export function decodeControlMessage(
   buf: Uint8Array,
   draft: SupportedDraft,
+  limit?: bigint,
 ): DecodeResult<Record<string, unknown>> {
-  return getCodec(draft).decodeMessage(buf) as DecodeResult<
-    Record<string, unknown>
-  >
+  const codec = getCodec(draft)
+  const result =
+    draft === '23' && limit !== undefined
+      ? (codec as Draft23Codec).decodeMessage(buf, {
+          maxControlMessageSize: limit,
+        })
+      : codec.decodeMessage(buf)
+  return result as DecodeResult<Record<string, unknown>>
+}
+
+/**
+ * The largest control message Length an endpoint accepts, on the drafts that
+ * limit it, from the MAX_CONTROL_MESSAGE_SIZE its own SETUP advertised
+ * (`undefined` until that SETUP is seen, or when it carried none).
+ *
+ * draft-23 Section 9: "If an endpoint receives a control message with a
+ * length larger than its MAX_CONTROL_MESSAGE_SIZE, it MUST close the session
+ * with FIELD_LENGTH_EXCEEDED."
+ *
+ * draft-23 Section 9.1.8: "If not present, the default value is 65535. Until
+ * an endpoint receives the peer's SETUP, it uses the default value, including
+ * for SETUP itself." The codec holds SETUP to 65535 whatever is passed.
+ */
+export function receiveLimit(
+  draft: SupportedDraft,
+  advertised: bigint | undefined,
+): bigint | undefined {
+  if (draft !== '23') return undefined
+  return advertised ?? DEFAULT_MAX_CONTROL_MESSAGE_SIZE
 }
 
 /**
@@ -76,10 +111,41 @@ export function encodeControlMessage(
 }
 
 /**
+ * How each draft writes a control message's Length: a varint through draft-10,
+ * 16 bits from draft-11 to draft-22, and a varint again from draft-23.
+ *
+ * draft-22 Section 9, Figure 5: "Message Length (16)".
+ * draft-23 Section 9, Figure 6: "Message Length (vi64)".
+ *
+ * The two readings cannot be told apart from the bytes: draft-22's `00 01` for
+ * a one-byte body is, under draft-23, a zero-length message followed by a
+ * byte. So the width is the draft's, never a guess.
+ */
+const LENGTH_FIELD: Record<SupportedDraft, 'varint' | 'u16'> = {
+  '07': 'varint',
+  '08': 'varint',
+  '09': 'varint',
+  '10': 'varint',
+  '11': 'u16',
+  '12': 'u16',
+  '13': 'u16',
+  '14': 'u16',
+  '15': 'u16',
+  '16': 'u16',
+  '17': 'u16',
+  '18': 'u16',
+  '19': 'u16',
+  '20': 'u16',
+  '21': 'u16',
+  '22': 'u16',
+  '23': 'varint',
+}
+
+/**
  * Bytes the control message at the start of `buf` occupies, read from its
- * Type and Length alone: a varint Length through draft-10, 16 bits from
- * draft-11. `incomplete` while those are still arriving; `invalid` when the
- * Type is no varint of this draft.
+ * Type and Length alone, in the draft's Length width (see `LENGTH_FIELD`).
+ * `incomplete` while those are still arriving; `invalid` when the Type or a
+ * varint Length is no varint of this draft.
  */
 export function controlMessageLength(
   buf: Uint8Array,
@@ -87,7 +153,7 @@ export function controlMessageLength(
 ): number | 'incomplete' | 'invalid' {
   try {
     const [, typeLen] = decodeVarintForDraft(draft, buf, 0)
-    if (Number(draft) <= 10) {
+    if (LENGTH_FIELD[draft] === 'varint') {
       const [length, lengthLen] = decodeVarintForDraft(draft, buf, typeLen)
       return typeLen + lengthLen + length
     }

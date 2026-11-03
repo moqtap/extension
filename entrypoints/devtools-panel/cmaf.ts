@@ -264,14 +264,14 @@ const COPIES_WORDS = {
   remedy: 'Send each object with the same bytes on every stream and fetch',
 }
 
-/** Drafts 07 to 22 all state it in 2.1, Objects, in these words. */
+/** Drafts 07 to 23 all state it in 2.1, Objects, in these words. */
 const COPIES_QUOTE =
   'An object is uniquely identified by its track namespace, track name, group ID, and object ID, and must be an identical sequence of bytes regardless of how or where it is retrieved.'
 
 /** The rule {@link COPIES_WORDS} states, in the session's MoQT draft. */
 export function copiesSpec(draft: string | undefined): PanelSpec | null {
   const n = Number(draft)
-  if (!Number.isInteger(n) || n < 7 || n > 22) return null
+  if (!Number.isInteger(n) || n < 7 || n > 23) return null
   return moqtSpec({ revision: String(n).padStart(2, '0'), section: '2.1', quote: COPIES_QUOTE })
 }
 
@@ -544,7 +544,7 @@ export class SessionCmaf {
     let added = false
     for (const obj of framing.objects) {
       if (obj.payloadOffset + obj.payloadLength > data.length) break
-      if (obj.endOfRange !== undefined || obj.payloadLength === 0) continue
+      if (obj.indicator !== undefined || obj.payloadLength === 0) continue
       const key = recordKey(ref.source, obj.offset)
       if (this.seen.has(key)) continue
       this.seen.add(key)

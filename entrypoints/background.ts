@@ -17,6 +17,8 @@ import {
   controlMessageLength,
   decodeControlMessage,
   getCodec,
+  isIncomplete,
+  receiveLimit,
 } from '@/src/codec/control-message'
 import { getMessageIdMap } from '@/src/codec/message-ids'
 import {
@@ -139,6 +141,11 @@ interface SessionRecord {
    * bidirectional stream. Through draft-16 this holds exactly one entry.
    */
   controlStreams: Map<number, ControlStreamState>
+  /**
+   * The MAX_CONTROL_MESSAGE_SIZE each side's SETUP advertised, keyed by the
+   * direction that SETUP travelled. Drafts that have the option only.
+   */
+  maxControlMessageSize: { tx?: bigint; rx?: bigint }
   /** Trace recorder for this session (only if MoQT detected) */
   recorder: TraceRecorder | null
   /** History of decoded control messages for replay */
@@ -177,7 +184,8 @@ interface DirectionDecodeState {
   /** Leftover bytes of a message that spanned chunks */
   remainder: Uint8Array | null
   /**
-   * Set once a message's Type and Length themselves would not read, so
+   * Set once a message's Type and Length themselves would not read, or its
+   * Length is over the receiver's limit before its body has arrived, so
    * there is no next message to find. A bad message inside its Length is
    * reported and skipped instead.
    */
@@ -511,8 +519,6 @@ function attemptDetection(
 
   // Concatenate chunks
   const totalLen = chunks.reduce((s, c) => s + c.data.length, 0)
-  if (totalLen < 4) return [] // need enough bytes for detection
-
   const buf = new Uint8Array(totalLen)
   let offset = 0
   for (const chunk of chunks) {
@@ -604,6 +610,10 @@ function decodeControlBytes(
       ? concatBytes(dir.remainder, data)
       : data
   dir.remainder = null
+  const limit = receiveLimit(
+    draft,
+    session.maxControlMessageSize[direction === 'tx' ? 'rx' : 'tx'],
+  )
 
   let offset = 0
   while (offset < buf.length) {
@@ -624,13 +634,32 @@ function decodeControlBytes(
       )
       return { records, trackUpdates }
     }
-    if (frame > remaining.length) break // wait for the rest of it
+    if (frame > remaining.length) {
+      // A Length over the limit fails from the header alone; waiting for its
+      // body would hold every later byte, possibly for good.
+      const header = decodeControlMessage(remaining, draft, limit)
+      if (!header.ok && !isIncomplete(header.error)) {
+        dir.undecodable = true
+        records.push(
+          reportUndecodable(
+            session,
+            streamId,
+            remaining,
+            direction,
+            header.error.code,
+            header.error.message,
+          ),
+        )
+        return { records, trackUpdates }
+      }
+      break // wait for the rest of it
+    }
     const message = remaining.subarray(0, frame)
     offset += frame
 
     let result: ReturnType<typeof decodeControlMessage>
     try {
-      result = decodeControlMessage(message, draft)
+      result = decodeControlMessage(message, draft, limit)
     } catch (e) {
       records.push(
         reportUndecodable(
@@ -673,6 +702,11 @@ function decodeControlBytes(
     session.controlMessages.push(record)
     records.push(record)
     state.firstMessageType ??= msgType
+    if (msgType === 'setup' && limit !== undefined) {
+      const options = msg.options as { max_control_message_size?: bigint }
+      session.maxControlMessageSize[direction] =
+        options.max_control_message_size
+    }
 
     // streamId matters from draft-17: responses there carry no request id,
     // so the request stream they arrive on is what identifies them.
@@ -955,6 +989,7 @@ function handleContentMessage(
         detectionRuledOut: new Set(),
         detectionAttempted: false,
         controlStreams: new Map(),
+        maxControlMessageSize: {},
         recorder: null,
         controlMessages: [],
         tracks,

@@ -96,7 +96,7 @@ interface ObjectResult {
 
 /** Minimal shape of FetchObjectPayload from the codec */
 interface FetchObjectResult extends ObjectResult {
-  /** From draft-15; 128 and above is an End of Range marker */
+  /** From draft-15; 128 and above is an indicator, not an Object */
   readonly serializationFlags?: number
   readonly groupId?: bigint
   readonly subgroupId?: bigint
@@ -414,7 +414,7 @@ function mapFetchObjects(codecObjects: FetchObjectResult[]): StreamObject[] {
         ? { publisherPriority: obj.publisherPriority }
         : {}),
       ...(obj.serializationFlags !== undefined && obj.serializationFlags >= 128
-        ? { endOfRange: obj.serializationFlags }
+        ? { indicator: obj.serializationFlags }
         : {}),
     }
   })

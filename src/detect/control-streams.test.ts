@@ -35,6 +35,7 @@ const ALL_DRAFTS: SupportedDraft[] = [
   '20',
   '21',
   '22',
+  '23',
 ]
 
 /**
@@ -72,7 +73,9 @@ describe('streamOpeners', () => {
     // but rides an already-open subscription stream and never opens one.
     // Draft-21 §6.3 is that same list renumbered — it restructures draft-20
     // and assigns no code point differently. Draft-22 gives every message type
-    // the same code point as draft-21.
+    // the same code point as draft-21. Draft-23 Section 9, Table 5 marks the
+    // same seven "Request, First"; the one it drops, FETCH_OK, never opened a
+    // stream.
     const expected: Record<string, number> = {
       '17': 6,
       '18': 7,
@@ -80,6 +83,7 @@ describe('streamOpeners', () => {
       '20': 7,
       '21': 7,
       '22': 7,
+      '23': 7,
     }
     for (const draft of ALL_DRAFTS.filter(hasRequestStreams)) {
       const map = getMessageIdMap(draft)

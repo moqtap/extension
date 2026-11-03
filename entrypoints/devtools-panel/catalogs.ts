@@ -113,8 +113,11 @@ export interface TrackStream {
 /**
  * Every data stream of `session` whose track `include` accepts. An alias
  * resolves only as {@link aliasResolver} says; a stream whose alias is
- * ambiguous is left out. A draft-22 fill fetch carries the SUBSCRIBE's request
- * id (transport-22 3.4), so a fetch stream's track may be any request kind.
+ * ambiguous is left out. A fill fetch stream carries the request id of the
+ * subscription it fills, so a fetch stream's track may be any request kind:
+ * draft-22 Section 3.4, "the SUBSCRIBE Request ID for the initial fill";
+ * draft-23 Section 3.4, "the subscription's Request ID for an initial fill",
+ * which a PUBLISH that carries FILL_PARAMETERS also has (Section 3.4.1).
  */
 export function locateTrackStreams(
   session: Pick<SessionEntry, 'streams' | 'tracks'>,

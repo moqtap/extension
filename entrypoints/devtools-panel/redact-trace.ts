@@ -50,6 +50,7 @@ import { redactAuthTokens as r19 } from '@moqtap/codec/draft19'
 import { redactAuthTokens as r20 } from '@moqtap/codec/draft20'
 import { redactAuthTokens as r21 } from '@moqtap/codec/draft21'
 import { redactAuthTokens as r22 } from '@moqtap/codec/draft22'
+import { redactAuthTokens as r23 } from '@moqtap/codec/draft23'
 import { redactCatalogText, redactJsonText } from '@moqtap/media/catalog'
 import { fitDetail } from '@/src/trace/detail'
 import type { SupportedDraft } from '@/src/types/common'
@@ -79,6 +80,7 @@ const REDACTORS: Record<SupportedDraft, (bytes: Uint8Array) => AuthRedaction> =
     '20': r20,
     '21': r21,
     '22': r22,
+    '23': r23,
   }
 
 export interface ShareContent {

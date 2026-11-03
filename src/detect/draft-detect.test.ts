@@ -28,7 +28,7 @@ import {
   versionToDraft,
 } from './draft-detect'
 import { SUPPORTED_DRAFTS } from '../types/common'
-import { encodeVarint, concat } from '../codec/test-helpers'
+import { encodeVarint, concat, hex } from '../codec/test-helpers'
 import { encodeMoqtVarint } from '../codec/varint'
 
 // The draft after the last supported one, unsupported by construction. A
@@ -92,6 +92,7 @@ describe('draftFromProtocolString', () => {
     expect(draftFromProtocolString('moqt-20')).toBe('20')
     expect(draftFromProtocolString('moqt-21')).toBe('21')
     expect(draftFromProtocolString('moqt-22')).toBe('22')
+    expect(draftFromProtocolString('moqt-23')).toBe('23')
   })
 
   it('normalises a single-digit draft to the two-digit form the tables use', () => {
@@ -313,6 +314,33 @@ describe('detectFromControlStream — negotiated protocol (drafts 15+)', () => {
     }
   })
 
+  it('tells draft-23 from draft-22 by the protocol string, not the SETUP frame', () => {
+    // draft-22 Section 9.1, Figure 6: "Length (16)"; draft-23 Section 9.1,
+    // Figure 7: "Length (vi64)". An empty draft-22 SETUP opens `af 00 00`,
+    // which is a whole draft-23 SETUP, so the frame cannot name the draft.
+    const d22 = concat(SETUP_BYTES, new Uint8Array([0x00, 0x00]))
+    const d23 = concat(SETUP_BYTES, new Uint8Array([0x00]))
+    for (const [bytes, draft] of [
+      [d22, '22'],
+      [d23, '23'],
+      [d22.subarray(0, 3), '22'],
+      [d23, '22'],
+    ] as const) {
+      const result = detectFromControlStream(bytes, { selected: `moqt-${draft}` })
+      expect(result.protocol).toBe('moqt')
+      if (result.protocol === 'moqt') {
+        expect(result.draft).toBe(draft)
+        expect(isDraftAssumed(result)).toBe(false)
+      }
+    }
+  })
+
+  it('detects a draft-23 SETUP with no options, three bytes', () => {
+    // draft-23 Section 9.1, Figure 7: "Type (vi64) = 0x2F00, Length (vi64)".
+    const result = detectFromControlStream(hex('af 00 00'), { selected: 'moqt-23' })
+    expect(result).toMatchObject({ protocol: 'moqt', draft: '23' })
+  })
+
   it('reads draft-19 out of the offered protocol, not the newest known draft', () => {
     // The defect this replaces: every draft-17+ session was reported as the
     // newest draft the build knew, whatever the protocol string said.
@@ -443,10 +471,17 @@ describe('detectFromControlStream — versionless CLIENT_SETUP (drafts 15-16)', 
     expect(isDraftAssumed(result)).toBe(true)
   })
 
+  it('waits for four bytes of a CLIENT_SETUP', () => {
+    const bytes = buildVersionlessClientSetupBytes()
+    const negotiated = { selected: 'moqt-15' }
+    expect(detectFromControlStream(bytes.subarray(0, 3), negotiated).protocol).toBe('unknown')
+    expect(detectFromControlStream(bytes, negotiated).protocol).toBe('moqt')
+  })
+
   it('does not fall back to a draft that has no CLIENT_SETUP to send', () => {
     // The draft-17+ path assumes the newest supported draft when nothing names
-    // one. Doing that here would report draft-22 for bytes draft-22 cannot
-    // have written: it has no CLIENT_SETUP at all.
+    // one. Doing that here would report a draft for bytes it cannot have
+    // written: no draft from 17 on has a CLIENT_SETUP at all.
     const result = detectFromControlStream(buildVersionlessClientSetupBytes(), {
       offered: ['moq-lite'],
     })

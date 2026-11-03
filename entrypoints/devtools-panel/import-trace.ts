@@ -771,8 +771,11 @@ function optionalBig(n: number | bigint | undefined): bigint | undefined {
  * A fetch stream. Each object carries its own Group ID, Object ID and
  * Priority, so an object says everything about itself: the Group ID is sent
  * when it changes (a delta from the one before, from draft-19), the Object ID
- * and Priority always, and the property block when any object had one. The
- * Subgroup ID, which the trace does not record, is left at 0.
+ * and Priority always (from draft-23 the Object ID is left out for the next
+ * Object in the same Group), and the property block when any object had one.
+ * The Subgroup ID, which the trace does not record, is left at 0. A draft-23
+ * End of Group or End of Track indicator has no trace event, so none is
+ * written back.
  */
 function frameFetch(
   rec: RecordedDataStream,
@@ -790,15 +793,28 @@ function frameFetch(
 
   const objects = []
   let prevGroup: bigint | undefined
+  let prevObject: bigint | undefined
   for (const o of rec.objects) {
     const obj = encoderObject(o, withProperties, draft)
     if (!obj) return null
+    const newGroup = o.groupId !== prevGroup
+    // draft-23 Section 11.4.1.1: "When the Group ID Delta field is not
+    // present, the Object ID is the prior Object's ID plus the Object ID
+    // Delta + 2 if present. If Object ID Delta is not present, the Object ID
+    // is the prior Object's ID plus one". So the next Object in the same
+    // Group can only be written without the field.
+    const nextInGroup =
+      Number(draft) >= 23 &&
+      !newGroup &&
+      prevObject !== undefined &&
+      o.objectId === prevObject + 1n
     const flags =
-      (o.groupId !== prevGroup ? 0x08 : 0) |
-      0x04 |
+      (newGroup ? 0x08 : 0) |
+      (nextInGroup ? 0 : 0x04) |
       0x10 |
       (withProperties ? 0x20 : 0)
     prevGroup = o.groupId
+    prevObject = o.objectId
     // Serialization Flags from draft-15; earlier drafts send every field
     objects.push({ ...obj, serializationFlags: flags })
   }

@@ -41,6 +41,7 @@ const ALL_DRAFTS: SupportedDraft[] = [
   '20',
   '21',
   '22',
+  '23',
 ]
 
 /**
@@ -428,6 +429,19 @@ describe('TrackRegistry', () => {
       expect(track?.via, `draft-${draft}`).toBe('fetch')
       expect(track?.trackAlias, `draft-${draft}`).toBeUndefined()
     }
+  })
+
+  it('accepts a draft-23 FETCH by the REQUEST_OK on its stream', () => {
+    // Draft-23 has no FETCH_OK: draft-23 Section 9.3, "The REQUEST_OK message
+    // is sent in response to PUBLISH, FETCH, REQUEST_UPDATE, ...".
+    const { tracks, registry: reg } = registry()
+    reg.apply(roundTrip('23', FETCH), { direction: 'tx', streamId: 8, timestamp: 1000 })
+    expect(tracks.get('7')?.status).toBe('pending')
+    reg.apply(
+      roundTrip('23', { type: 'request_ok', parameters: {}, track_properties: {} }),
+      { direction: 'rx', streamId: 8, timestamp: 1030 },
+    )
+    expect(tracks.get('7')?.status).toBe('active')
   })
 
   it('borrows the name of the subscription a joining FETCH continues', () => {
