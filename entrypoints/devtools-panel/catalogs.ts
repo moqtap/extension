@@ -424,6 +424,8 @@ interface StreamProgress {
   unframed: boolean
   /** Closed with an object cut short */
   truncated: boolean
+  /** The codec's reason for refusing an object of the stream */
+  refused?: string
   /** Gone from the session before it was read in full */
   vanished: boolean
 }
@@ -527,12 +529,15 @@ export class SessionCatalogs {
         ? f.headerFields.trackAlias === ref.id
         : f.headerFields.requestId === ref.id)
     let framing = parseStreamFraming(data, draft)
-    // A stream ending inside an object: read its complete objects.
+    // A stream that ends inside an object, or carries one the draft refuses:
+    // read the objects before it.
     let cut = false
+    let refused: string | undefined
     if (!matches(framing) && draft !== undefined) {
       const prefix = parseStreamPrefix(data, draft, ref.kind)
       framing = prefix?.framing ?? null
-      cut = prefix != null
+      refused = prefix?.refused
+      cut = prefix != null && refused === undefined
     }
     if (!matches(framing)) {
       p.unframed = ref.closed
@@ -567,6 +572,7 @@ export class SessionCatalogs {
     }
     p.consumed = i
     p.truncated = ref.closed && (cut || i < objects.length)
+    p.refused = refused
     p.done = ref.closed
     log.streamIds.add(ref.streamId)
     log.settle()
@@ -617,6 +623,10 @@ export class SessionCatalogs {
       } else if (p.unframed) {
         incomplete.push(
           `Stream ${streamId} closed but its bytes do not frame as a ${p.kind} stream.`,
+        )
+      } else if (p.refused !== undefined) {
+        incomplete.push(
+          `Stream ${streamId} has an object the draft forbids: ${p.refused}.`,
         )
       } else if (p.truncated) {
         incomplete.push(`Stream ${streamId} closed inside an object.`)

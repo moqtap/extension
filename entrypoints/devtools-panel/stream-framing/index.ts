@@ -213,8 +213,8 @@ const prefixParsers = new Map<
 
 /**
  * The longest prefix of `data` that frames whole as a `kind` stream of
- * `draft`, for a stream that ends inside an object. Null when the draft is
- * unknown here or no prefix frames.
+ * `draft`, for a stream that ends inside an object or carries one the draft
+ * refuses. Null when the draft is unknown here or no prefix frames.
  */
 export function parseStreamPrefix(
   data: Uint8Array,

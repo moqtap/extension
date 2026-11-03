@@ -336,6 +336,50 @@ describe('following a catalog track', () => {
     expect(view.incomplete).toEqual(['Stream 3 closed inside an object.'])
   })
 
+  // draft-22 Section 11.1.2: "If an endpoint receives properties on an Object
+  // with status that is not Normal, it MUST close the session with a
+  // PROTOCOL_VIOLATION."
+  it('names an object the draft refuses rather than a cut', () => {
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    const reader = new SessionCatalogs()
+    const object = (id: bigint, body: Uint8Array, extra: object = {}) => ({
+      type: 'object',
+      byteOffset: 0,
+      payloadByteOffset: 0,
+      objectId: id,
+      payloadLength: body.length,
+      payload: body,
+      extensionData: new Uint8Array(0),
+      ...extra,
+    })
+    // Header type 0x11: the objects carry a properties field.
+    const bytes = encodeSubgroupStream({
+      type: 'subgroup',
+      headerType: 0x11,
+      trackAlias: 5n,
+      groupId: 0n,
+      subgroupId: 0n,
+      publisherPriority: 0,
+      objects: [
+        object(0n, payload(CATALOG)),
+        // End of Group, with one property: type 2, value 5.
+        object(1n, new Uint8Array(0), {
+          status: 3n,
+          extensionData: new Uint8Array([0x02, 0x05]),
+        }),
+        object(2n, payload(ADD_AUDIO)),
+      ],
+    } as AnyStream)
+    t.put(3, bytes, { closed: true, trackAlias: 5 })
+    pump(reader, t)
+    const view = reader.views()[0]
+    expect(view.objects.map((o) => o.outcome)).toEqual(['applied'])
+    expect(view.tracks.map((tr) => tr.name)).toEqual([VIDEO.name])
+    expect(view.incomplete).toEqual([
+      'Stream 3 has an object the draft forbids: only a Normal (0x0) Object may carry Properties, got status 0x3.',
+    ])
+  })
+
   it('says so when a closed stream frames as nothing at all', () => {
     const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
     const reader = new SessionCatalogs()

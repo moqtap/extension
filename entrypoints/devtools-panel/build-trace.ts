@@ -203,7 +203,8 @@ export async function buildTrace(
       }
     }
     let framing = data ? parseStreamFraming(data, session.draft) : null
-    // A stream that ends inside an object keeps the objects before the cut.
+    // A stream that ends inside an object, or carries one the draft refuses,
+    // keeps the objects before it.
     if (data && framing == null) {
       const draft = session.draft
       // A stream the background saw a fetch header on is a fetch stream;

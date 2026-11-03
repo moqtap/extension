@@ -196,7 +196,8 @@ export function frameSource(
   const framing = parseStreamFraming(data, draft)
   if (matches(framing)) return framing
   if (draft === undefined) return null
-  // A stream that ends inside an object: its complete objects.
+  // A stream that ends inside an object, or carries one the draft refuses:
+  // the objects before it.
   const prefix = parseStreamPrefix(data, draft, ref.kind)
   return matches(prefix?.framing ?? null) ? prefix!.framing : null
 }

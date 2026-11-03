@@ -8,8 +8,10 @@
  */
 
 import type { SupportedDraft } from '@/src/types/common'
+import { isIncomplete } from '@/src/codec/control-message'
 import {
   createCodec,
+  type DecodeError,
   type DecodeResult,
   type ObjectProperty,
 } from '@moqtap/codec'
@@ -124,8 +126,9 @@ export function createCodecDatagramParser(draft: SupportedDraft): DraftParser {
 
 /**
  * A parser for the longest prefix of a stream that frames whole as `kind`
- * under this draft alone, for a stream that ends inside an object. Each try
- * cuts the bytes back to the codec's error offset, or by one byte.
+ * under this draft alone, for a stream that ends inside an object or carries
+ * one the draft refuses. Each try cuts the bytes back to the codec's error
+ * offset, or by one byte.
  */
 export function createCodecPrefixParser(
   draft: SupportedDraft,
@@ -134,25 +137,28 @@ export function createCodecPrefixParser(
 
   return (data, kind) => {
     let end = data.length
+    let refused: string | undefined
     for (let tries = 0; tries < MAX_PREFIX_TRIES && end > 0; tries++) {
       const bytes = data.subarray(0, end)
-      let next: number
+      let error: DecodeError
       try {
         if (kind === 'subgroup') {
           const result = codec.decodeSubgroupStream(bytes)
           if (result.ok)
-            return { framing: subgroupFraming(result.value, end), end }
-          next = result.error.offset
+            return prefixOf(subgroupFraming(result.value, end), end, refused)
+          error = result.error
         } else {
           const result = codec.decodeFetchStream(bytes)
           if (result.ok)
-            return { framing: fetchFraming(result.value, end), end }
-          next = result.error.offset
+            return prefixOf(fetchFraming(result.value, end), end, refused)
+          error = result.error
         }
       } catch {
         return null
       }
-      end = Math.min(end - 1, next)
+      // The whole stream's error says why it stops: out of bytes, or refused.
+      if (end === data.length && !isIncomplete(error)) refused = error.message
+      end = Math.min(end - 1, error.offset)
     }
     return null
   }
@@ -161,8 +167,21 @@ export function createCodecPrefixParser(
 /** The longest prefix of a stream that frames, and where it ends. */
 export interface ParsedPrefix {
   framing: ParsedStreamFraming
-  /** Bytes the framing covers; past it is an object cut short */
+  /** Bytes the framing covers */
   end: number
+  /**
+   * The codec's reason for refusing the object at `end`. Absent when the
+   * bytes past `end` are an object cut short.
+   */
+  refused?: string
+}
+
+function prefixOf(
+  framing: ParsedStreamFraming,
+  end: number,
+  refused: string | undefined,
+): ParsedPrefix {
+  return refused === undefined ? { framing, end } : { framing, end, refused }
 }
 
 /** Decode attempts {@link createCodecPrefixParser} makes before giving up. */
