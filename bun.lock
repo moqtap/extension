@@ -7,7 +7,7 @@
       "dependencies": {
         "@moqtap/codec": "^0.14.0",
         "@moqtap/inspect": "^0.3.0",
-        "@moqtap/media": "^0.3.0",
+        "@moqtap/media": "^0.4.0",
         "@moqtap/trace": "^0.6.0",
         "lucide-static": "1.50.0",
         "vue": "^3.5.42",
@@ -124,7 +124,7 @@
 
     "@moqtap/inspect": ["@moqtap/inspect@0.3.0", "", { "peerDependencies": { "@moqtap/codec": ">=0.13.2" } }, "sha512-L7JW9D01rjlHPViXs5x+FvCxM6XJkJcJ0/FVvTI8UPCdXtIb/Yv1voCRjs7Whf2xxhPh2FpSLPjm+GyOYjNwSA=="],
 
-    "@moqtap/media": ["@moqtap/media@0.3.0", "", {}, "sha512-tBRMap0nl3Z9wHR5Wwr9SBiTTpI9J+e8ebBYWldMnKCK3a/1hN9+aBMItlKmCEEako3lsZ5Y8IHM//JagisUpA=="],
+    "@moqtap/media": ["@moqtap/media@0.4.0", "", {}, "sha512-v+bdyB1CtY+T/aNUUxUJud7jpLMPh82VOTragt0crR+ZCTVd9wE9zPgElCdx88ZJIuKxHnHwuWNILq2UTD5aMA=="],
 
     "@moqtap/test-vectors": ["@moqtap/test-vectors@0.19.0", "", {}, "sha512-hLKYC/C/ck/eMrv703BlAtx9lQIFyedfU9V5udGxwTATPVoz3SSZm1S42TguERJ7X0ipoafmV+rnrdGAYoG+3Q=="],
 

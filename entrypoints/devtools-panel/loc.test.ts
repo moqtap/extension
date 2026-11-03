@@ -8,6 +8,7 @@ import {
   encodeObjectProperties,
   encodeSubgroupStream,
 } from '@moqtap/codec/draft22'
+import { decodeLocProperties } from '@moqtap/media/loc'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { registryTrackKey, type TrackKey, type TrackPackaging } from './catalogs'
 import {
@@ -176,11 +177,13 @@ function pump(
   return refs.length
 }
 
-// Frame Marking, one octet (ietf-03/04, odd 0x09): S I set, or S alone.
+// Frame Marking, one octet (ietf-03 to -05, odd 0x09): S I set, or S alone.
 const KEY = { type: 0x09n, bytes: new Uint8Array([0xa0]) }
 const DELTA = { type: 0x09n, bytes: new Uint8Array([0x80]) }
-// ietf-04 Timestamp (even 0x10), which only ietf-04 and mzanaty-05 define.
+// Timestamp in ietf-04/05 (even 0x10); only ietf-04, ietf-05 and mzanaty-05 define 0x10.
 const TS = (v: bigint) => ({ type: 0x10n, value: v })
+// Codec String (odd 0x11), which only ietf-05 defines.
+const CODEC = { type: 0x11n, bytes: new TextEncoder().encode('avc1.64001f') }
 
 beforeEach(() => {
   decodeSpy.mockClear()
@@ -265,7 +268,7 @@ describe('the profile of a track', () => {
   it('is the one profile that defines every property ID', () => {
     const video = track('1', 'video', 1)
     const t = session([video])
-    t.put(10, subgroup(1, 0, [{ props: [KEY, TS(1000n)] }]), 1)
+    t.put(10, subgroup(1, 0, [{ props: [KEY, TS(1000n), CODEC] }]), 1)
     const reader = new SessionLoc()
     const packaging = described([video], 'loc')
     pump(reader, t, packaging)
@@ -273,8 +276,21 @@ describe('the profile of a track', () => {
     expect(state?.types).toEqual([
       { type: 0x09n, immutable: false },
       { type: 0x10n, immutable: false },
+      { type: 0x11n, immutable: false },
     ])
-    expect(state?.resolution).toEqual({ profile: 'ietf-04' })
+    expect(state?.resolution).toEqual({ profile: 'ietf-05' })
+  })
+
+  it('reads ietf-04 properties as ietf-04 or ietf-05 until a Codec String', () => {
+    const video = track('1', 'video', 1)
+    const t = session([video])
+    t.put(10, subgroup(1, 0, [{ props: [KEY, TS(1000n)] }]), 1)
+    const reader = new SessionLoc()
+    const packaging = described([video], 'loc')
+    pump(reader, t, packaging)
+    expect(reader.trackState(video, packaging, '22')?.resolution).toEqual({
+      candidates: ['ietf-04', 'ietf-05'],
+    })
   })
 
   it('lists the candidates when several profiles define the IDs', () => {
@@ -285,7 +301,7 @@ describe('the profile of a track', () => {
     const packaging = described([video], 'loc')
     pump(reader, t, packaging)
     expect(reader.trackState(video, packaging, '22')?.resolution).toEqual({
-      candidates: ['ietf-03', 'ietf-04'],
+      candidates: ['ietf-03', 'ietf-04', 'ietf-05'],
     })
   })
 
@@ -296,10 +312,10 @@ describe('the profile of a track', () => {
     const packaging = described([video], 'loc')
     t.put(10, subgroup(1, 0, [{ props: [KEY] }]), 1)
     pump(reader, t, packaging)
-    t.put(11, subgroup(1, 1, [{ props: [KEY, TS(5n)] }]), 1)
+    t.put(11, subgroup(1, 1, [{ props: [KEY, TS(5n), CODEC] }]), 1)
     pump(reader, t, packaging)
     expect(reader.trackState(video, packaging, '22')?.resolution).toEqual({
-      profile: 'ietf-04',
+      profile: 'ietf-05',
     })
   })
 
@@ -698,7 +714,7 @@ describe('problems', () => {
 
   it('says nothing about a track with one profile whose groups start independent', () => {
     const { problems } = problemsFor([
-      [{ props: [KEY, TS(1n)] }, { props: [DELTA, TS(2n)] }],
+      [{ props: [KEY, TS(1n), CODEC] }, { props: [DELTA, TS(2n)] }],
       [{ props: [KEY, TS(3n)] }],
     ])
     expect(problems).toEqual([])
@@ -706,14 +722,14 @@ describe('problems', () => {
 
   it('notes object 0 of a group marked not independent', () => {
     const { problems } = problemsFor([
-      [{ props: [KEY, TS(1n)] }],
+      [{ props: [KEY, TS(1n), CODEC] }],
       [{ props: [DELTA, TS(2n)] }, { props: [KEY, TS(3n)] }],
     ])
     expect(problems).toHaveLength(1)
     expect(problems[0]).toMatchObject({
       title: 'Groups start with an object marked not independent',
       severity: 'info',
-      spec: { label: 'LOC-04 4.2' },
+      spec: { label: 'LOC-05 4.2' },
       places: [{ label: 'group 1, object 0', target: { kind: 'object', source: 's:11' } }],
       atMs: 1011,
     })
@@ -746,8 +762,8 @@ describe('problems', () => {
   it('notes a group start a subscription and a fetch both carry once', () => {
     const video = track('1', 'video', 1)
     const t = session([video])
-    t.put(10, subgroup(1, 0, [{ props: [DELTA, TS(1n)] }]), 1)
-    t.put(14, subgroup(1, 0, [{ props: [DELTA, TS(1n)] }]), 1)
+    t.put(10, subgroup(1, 0, [{ props: [DELTA, TS(1n), CODEC] }]), 1)
+    t.put(14, subgroup(1, 0, [{ props: [DELTA, TS(1n), CODEC] }]), 1)
     const reader = new SessionLoc()
     const packaging = described([video], 'loc')
     pump(reader, t, packaging)
@@ -759,5 +775,18 @@ describe('problems', () => {
   it('reports nothing for a track that is not LOC', () => {
     const { problems } = problemsFor([[{ props: [DELTA] }]], 'cmaf')
     expect(problems).toEqual([])
+  })
+})
+
+describe('a Codec String', () => {
+  it('reads as the quoted codec string, and bytes that are not UTF-8 as an error', () => {
+    const [ok, bad] = decodeLocProperties(
+      [CODEC, { type: 0x11n, bytes: new Uint8Array([0x61, 0xff]) }],
+      { profile: 'ietf-05' },
+      { transportDraft: '22' },
+    )
+    expect(decodedLines(ok!)).toEqual(['"avc1.64001f"'])
+    expect(bad).toMatchObject({ name: 'Codec String', error: 'invalid_encoding' })
+    expect(decodedLines(bad!)).toEqual([])
   })
 })

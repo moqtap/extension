@@ -533,6 +533,7 @@ const EXAMPLE_SECTIONS: Record<LocProfile, string> = {
   'ietf-02': 'LOC-02 4.2',
   'ietf-03': 'LOC-03 4.2',
   'ietf-04': 'LOC-04 4.2',
+  'ietf-05': 'LOC-05 4.2',
   'mzanaty-05': 'mzanaty LOC-05 5.2',
 }
 
@@ -548,6 +549,7 @@ const START_CODE_SECTIONS: Record<LocProfile, string> = {
   'ietf-02': 'LOC-02 2.1.4',
   'ietf-03': 'LOC-03 2.1.4',
   'ietf-04': 'LOC-04 2.1.4',
+  'ietf-05': 'LOC-05 2.1.4',
   'mzanaty-05': 'mzanaty LOC-05 2.1.4',
 }
 
@@ -1135,6 +1137,8 @@ export function decodedLines(result: LocPropertyResult, timescaleFromTrack = fal
       return [`${d.dBov} dBov · voice ${d.voiceActivity ? 'active' : 'inactive'}`]
     case 'video-config':
       return [videoConfigText(d.config)]
+    case 'codec-string':
+      return [JSON.stringify(d.codec)]
   }
 }
 

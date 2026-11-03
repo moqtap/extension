@@ -105,7 +105,7 @@ function ambiguousText(view: LocObjectView['properties'][number]): string | null
   return a
     .map((m) => {
       const meaning = m.meanings.length ? m.meanings.join(' / ') : 'undefined'
-      return `${m.profile}: ${meaning}${m.error ? ` (${m.error.replace('_', ' ')})` : ''}`
+      return `${m.profile}: ${meaning}${m.error ? ` (${m.error.replaceAll('_', ' ')})` : ''}`
     })
     .join(' · ')
 }
@@ -115,6 +115,7 @@ function statusNote(view: LocObjectView['properties'][number]): string | null {
   if (r.transport) return 'transport property'
   if (r.error === 'invalid_length') return 'length outside what the draft states'
   if (r.error === 'out_of_range') return 'value outside what the draft states'
+  if (r.error === 'invalid_encoding') return 'not UTF-8, as the draft requires'
   return null
 }
 </script>
