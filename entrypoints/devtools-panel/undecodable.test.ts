@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { decodeControlMessage } from '@/src/codec/control-message'
+import type { SupportedDraft } from '@/src/types/common'
 import { hexLines, undefinedParameter } from './undecodable'
 import type { MessageEntry } from './use-inspector'
 
@@ -53,6 +55,32 @@ describe('a message with a parameter its draft does not define', () => {
     const ctx = { draft: '22', streams: new Map(), messages: [] }
     expect(undefinedParameter(other, ctx)).toBeNull()
     expect(undefinedParameter(undecodable, { ...ctx, draft: '14' })).toBeNull()
+  })
+
+  /** A decode-error entry for `hex`, as the background records one. */
+  function refused(draft: SupportedDraft, hex: string): MessageEntry {
+    const raw = Uint8Array.from(hex.match(/../g)!.map((h) => parseInt(h, 16)))
+    const result = decodeControlMessage(raw, draft)
+    if (result.ok) throw new Error('expected the codec to refuse these bytes')
+    return entry({
+      messageType: 'decode_error',
+      direction: 'tx',
+      decoded: { code: result.error.code, reason: result.error.message },
+      raw,
+    })
+  }
+
+  it('names SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS on draft-22, with its 16-bit Length', () => {
+    for (const [hex, name] of [
+      ['50000a0201046c697665012400', 'SUBSCRIBE_NAMESPACE'],
+      ['51000a0201046c697665012400', 'SUBSCRIBE_TRACKS'],
+    ]) {
+      const msg = refused('22', hex)
+      expect(undefinedParameter(msg, { draft: '22', streams: new Map(), messages: [msg] })).toMatchObject({
+        title: `${name} carries parameter 0x24, which draft-22 doesn't define`,
+        spec: { label: 'MoQT-22 9.20' },
+      })
+    }
   })
 
   it('writes bytes as hex, 16 to a line', () => {

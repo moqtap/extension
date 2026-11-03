@@ -5,8 +5,10 @@
  * failure keeps `@moqtap/inspect`'s wording.
  */
 
+import { decodeVarintForDraft } from '@/src/codec/varint'
 import { decodeErrorReason } from '@/src/trace/decode-error'
 import { controlMessageName } from '@/src/trace/message-name'
+import { isSupportedDraft, type SupportedDraft } from '@/src/types/common'
 import { messageTypeName } from './format'
 import { moqtSpec, type PanelProblem } from './problems'
 import type { MessageEntry, StreamEntry } from './use-inspector'
@@ -25,14 +27,13 @@ const PARAMETER_RULE: Record<string, { section: string; quote: string }> = {
   '22': { section: '9.20', quote: RULE_17 },
 }
 
-/** The value of the QUIC varint `bytes` opens with, or null when it is cut short. */
-function leadingVarint(bytes: Uint8Array): number | null {
-  if (bytes.length === 0) return null
-  const len = 1 << (bytes[0]! >> 6)
-  if (bytes.length < len) return null
-  let v = bytes[0]! & 0x3f
-  for (let i = 1; i < len; i++) v = v * 256 + bytes[i]!
-  return v
+/** The message type `bytes` open with, in the draft's varint, or null when it is cut short. */
+function leadingVarint(bytes: Uint8Array, draft: SupportedDraft): number | null {
+  try {
+    return decodeVarintForDraft(draft, bytes, 0)[0]
+  } catch {
+    return null
+  }
 }
 
 /** Bytes as hex, 16 to a line. */
@@ -74,8 +75,9 @@ export function undefinedParameter(
   const draft = ctx.draft
   const rule = draft ? PARAMETER_RULE[draft] : undefined
   const param = /Unknown Message Parameter type (0x[0-9a-f]+)/i.exec(decodeErrorReason(message.decoded))?.[1]
-  const type = leadingVarint(message.raw)
-  if (!rule || !param || type === null) return null
+  if (!draft || !isSupportedDraft(draft) || !rule || !param) return null
+  const type = leadingVarint(message.raw, draft)
+  if (type === null) return null
   const name = controlMessageName(type, draft)
   if (name.startsWith('0x')) return null
   const shown = messageTypeName(name)
@@ -87,7 +89,7 @@ export function undefinedParameter(
     found: `Parameter type ${param} in ${shown}`,
     expected: `Parameters draft-${draft} defines, or ones negotiated with ${negotiated}`,
     remedy: `Remove parameter ${param} from ${shown}, or negotiate it with ${negotiated}`,
-    spec: moqtSpec({ revision: draft!, ...rule }),
+    spec: moqtSpec({ revision: draft, ...rule }),
     sender: senderOf(message, ctx),
     evidence: message.raw.length > 0 ? hexLines(message.raw) : null,
   }
