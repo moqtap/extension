@@ -23,16 +23,17 @@
     "@moqtap/media": "^0.5.0",
     "@moqtap/trace": "^0.6.0",
     "lucide-static": "1.50.0",
-    "vue": "^3.5.42"
+    "vue": "^3.5.44"
   },
   "devDependencies": {
     "@moqtap/test-vectors": "0.24.0",
     "@types/chrome": "^0.0.280",
     "@wxt-dev/module-vue": "^1.0.3",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7",
-    "vue-tsc": "^3.3.11",
-    "wxt": "^0.20.27"
+    "vite": "^7.3.7",
+    "vitest": "^5.1.0",
+    "vue-tsc": "^3.3.14",
+    "wxt": "^0.21.5"
   },
   "license": "MIT",
   "repository": {

@@ -9,6 +9,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": false,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
