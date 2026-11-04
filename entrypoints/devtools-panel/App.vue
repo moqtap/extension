@@ -16,6 +16,7 @@ import TabStrip from './components/TabStrip.vue'
 import { DIRECT_NOTICE, impairmentProblem, pickProblem, refusalAction, refusalUpgrade } from './cli-copy'
 import { shownTracks } from './alias-tracks'
 import { connectionName } from './connection-name'
+import { EXPORT_CHOICES } from './export-trace'
 import { formatCount } from './format'
 import { impairmentButtonLabel, shortFingerprint } from './impair-choices'
 import { logoPlace, panelLayout, SIDEBAR_COLLAPSED_WIDTH, tabMenuHasConnection } from './layout'
@@ -213,8 +214,10 @@ const sharingSession = computed(() =>
 function share() {
   if (selectedSession.value) sharingSessionId.value = selectedSession.value.sessionId
 }
-function exportSelected() {
-  if (selectedSession.value) exportTrace(selectedSession.value.sessionId)
+const exportBtn = ref<HTMLButtonElement | null>(null)
+const exportOpen = ref(false)
+function exportSelected(payloads: boolean) {
+  if (selectedSession.value) exportTrace(selectedSession.value.sessionId, payloads)
 }
 // ── Connection context menu ───────────────────────────────────────
 const rowMenu = ref<{ id: string; anchor: HTMLElement; at: { x: number; y: number } | null } | null>(null)
@@ -388,10 +391,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onSettingsKey))
       <span class="toolbar-spacer" />
       <button
         v-if="exportable"
+        ref="exportBtn"
         class="mq-btn mq-btn--quiet mq-btn--icon io-btn"
         aria-label="Export .moqtrace"
         title="Export .moqtrace"
-        @click="exportSelected"
+        aria-haspopup="menu"
+        :aria-expanded="exportOpen"
+        @click="exportOpen = !exportOpen"
       >
         <Icon name="export" />
       </button>
@@ -531,6 +537,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onSettingsKey))
         @click="clearRowStreams"
       >
         Clear stream data
+      </button>
+    </PopupMenu>
+    <PopupMenu v-if="exportOpen && exportable" :anchor="exportBtn" label="Export .moqtrace" @close="exportOpen = false">
+      <button
+        v-for="choice in EXPORT_CHOICES"
+        :key="choice.label"
+        class="mq-menu__item"
+        role="menuitem"
+        @click="exportSelected(choice.payloads)"
+      >
+        {{ choice.label }}
       </button>
     </PopupMenu>
     <PopupMenu v-if="moreOpen" :anchor="moreBtn" label="More options" @close="moreOpen = false">

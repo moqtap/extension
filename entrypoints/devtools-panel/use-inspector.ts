@@ -28,6 +28,7 @@ import type { PayloadMediaInfo } from '@moqtap/media/bmff'
 import type { StreamContentType } from '@/src/detect/content-detect'
 import { writeMoqtrace } from '@moqtap/trace'
 import { buildTrace } from './build-trace'
+import { exportedTrace } from './export-trace'
 import { reviveTagged, untagDecoded } from './decoded'
 import { type ImportResult, startImport } from './import-job'
 import { applySetupImplementation } from './import-trace'
@@ -974,15 +975,27 @@ export function useInspector() {
     return buildTrace(session, getStreamData, getDatagramGroupData)
   }
 
-  async function exportTrace(sessionId: string) {
+  /** Download the session as a .moqtrace, with its object payloads or without. */
+  async function exportTrace(sessionId: string, payloads: boolean) {
     const session = sessions.value.get(sessionId)
     if (!session || session.protocol !== 'moqt') return
 
     try {
-      const trace = await buildTrace(
+      const built = await buildTrace(
         session,
         getStreamData,
         getDatagramGroupData,
+      )
+      const controlStreams = new Set(
+        [...session.streams.values()]
+          .filter((s) => s.isControl)
+          .map((s) => BigInt(s.streamId)),
+      )
+      const trace = await exportedTrace(
+        built,
+        payloads,
+        session.draft ?? null,
+        controlStreams,
       )
       const binary = writeMoqtrace(trace)
       const draft = session.draft ?? 'unknown'
