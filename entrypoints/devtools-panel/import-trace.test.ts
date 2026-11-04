@@ -37,6 +37,7 @@ import {
   parseStreamPrefix,
 } from './stream-framing'
 import type { SessionEntry } from './use-inspector'
+import { DATAGRAM_SID_BASE } from '@/src/trace/index'
 
 // The codec's per-draft stream types are nominal and this file builds fixtures
 // for them rather than consuming them; SessionEntry carries far more than
@@ -269,6 +270,17 @@ function expectSameStream(f: Fixture, imported: ImportedSession, id: number) {
 // A property block: Prior Group ID Gap (0x3c) = 2.
 const GAP = new Uint8Array([0x3c, 0x02])
 
+/** The trace with every datagram event moved to `sid`, as writers did before 2^62 ids. */
+function datagramsOn(trace: Trace, sid: bigint): Trace {
+  return {
+    ...trace,
+    events: trace.events.map((e) => {
+      const id = (e as { streamId?: bigint }).streamId
+      return id !== undefined && id >= DATAGRAM_SID_BASE ? { ...e, streamId: sid } : e
+    }),
+  } as Trace
+}
+
 describe('a draft-22 subgroup stream comes back framed', () => {
   it('without properties', async () => {
     const f = fixture([
@@ -389,6 +401,66 @@ describe('datagram groups come back framed, on their own aliases', () => {
     expect(imported.session.datagramGroups.get('9:3')?.datagramCount).toBe(2)
   })
 
+  // SPEC.md "`"sid"` — the stream ID": each datagram's sid is its own, at
+  // least 2^62, on its stream-opened and its object's events alike.
+  it('exports each datagram on a sid of its own from 2^62', async () => {
+    const f = fixture(
+      [],
+      [
+        [9, 3, datagramGroup(9, 3, [{ id: 0, body: 'nine-0' }, { id: 1, body: 'nine-1' }])],
+        [11, 3, datagramGroup(11, 3, [{ id: 0, body: 'eleven-0' }])],
+      ],
+    )
+    const trace = await buildTrace(
+      f.session,
+      async () => null,
+      async (_s, gk) => f.groups.get(gk) ?? null,
+    )
+    const opened = trace.events.flatMap((e) =>
+      e.type === 'stream-opened' && e.streamType === 1 ? [e.streamId] : [],
+    )
+    expect(opened.sort()).toEqual([0n, 1n, 2n].map((n) => DATAGRAM_SID_BASE + n))
+    for (const type of ['object-header', 'object-payload'] as const) {
+      const ids = trace.events.flatMap((e) => (e.type === type ? [e.streamId] : []))
+      expect(ids.sort()).toEqual(opened)
+    }
+  })
+
+  // SPEC.md Event 1 "st": "1 = datagram". The type, not the id, makes an
+  // object a datagram, so a trace with every datagram on stream 0, or any
+  // other one id, reads the same.
+  for (const sid of [0n, 7n]) {
+    it(`reads datagrams that all share stream id ${sid}`, async () => {
+      const f = fixture(
+        [],
+        [[9, 3, datagramGroup(9, 3, [{ id: 0, body: 'nine-0' }, { id: 1, body: 'nine-1' }])]],
+      )
+      const trace = await buildTrace(
+        f.session,
+        async () => null,
+        async (_s, gk) => f.groups.get(gk) ?? null,
+      )
+      const moved = datagramsOn(trace, sid)
+      const { session, datagramData } = importTrace(readMoqtrace(writeMoqtrace(moved)))
+      expect(session.streams.size).toBe(0)
+      expect(session.datagramGroups.get('9:3')?.importedFraming).toBe('recorded')
+      const after = datagramData.get('9:3')!
+      expect(objectsOf(after, parseDatagramGroupFraming(after, '22'))).toEqual(
+        objectsOf(f.groups.get('9:3')!, parseDatagramGroupFraming(f.groups.get('9:3')!, '22')),
+      )
+    })
+  }
+
+  it('reads the objects of a subgroup stream 0 as that stream', async () => {
+    const bytes = subgroup(0x14, 7, 0, [{ id: 0, body: 'x' }])
+    const imported = await roundTrip(fixture([[0, bytes]]))
+    expect(imported.session.datagramGroups.size).toBe(0)
+    const after = imported.streamData.get(0)!
+    expect(objectsOf(after, parseStreamFraming(after, '22'))).toEqual(
+      objectsOf(bytes, parseStreamFraming(bytes, '22')),
+    )
+  })
+
   /** Two tracks' datagrams of group 3, arriving in turn: 9, 11, 9, 11 */
   function interleaved(): Fixture {
     return fixture(
@@ -452,11 +524,13 @@ describe('datagram groups come back framed, on their own aliases', () => {
       async () => null,
       async (_s, gk) => f.groups.get(gk) ?? null,
     )
-    // As a writer that opens a group once and sends all its datagrams after.
+    // As a writer that put every datagram on stream 0, opened each group
+    // once and sent all its datagrams after.
     const seen = new Set<bigint>()
+    const shared = datagramsOn(trace, 0n)
     const once = {
-      ...trace,
-      events: trace.events.filter((e) => {
+      ...shared,
+      events: shared.events.filter((e) => {
         if (e.type !== 'stream-opened' || e.streamType !== 1) return true
         if (seen.has(e.trackAlias!)) return false
         seen.add(e.trackAlias!)
@@ -803,6 +877,14 @@ describe('a trace that does not say enough keeps its payloads', () => {
         },
         payload(1, 2n, 'ab'),
         payload(2, 2n, 'cd'),
+        {
+          type: 'stream-opened',
+          seq: 3,
+          timestamp: 3,
+          streamId: 0n,
+          direction: 1,
+          streamType: 1,
+        },
         payload(3, 0n, 'dg'),
         {
           type: 'stream-closed',
@@ -1071,12 +1153,27 @@ describe('a decode error in a trace', () => {
     expect(row.messageType).toBe('decode_error')
     expect(row.streamId).toBe(21)
     expect(row.direction).toBeUndefined()
+    // SPEC.md Event 6 "reason" is human-readable text: read whole, not parsed.
     expect(row.decoded).toEqual({
-      code: 'INVALID_PARAMETER',
-      reason: 'Unknown Message Parameter type 0x24',
+      reason: 'INVALID_PARAMETER: Unknown Message Parameter type 0x24',
       length: 5,
     })
     expect(Array.from(row.raw)).toEqual(Array.from(raw))
+  })
+
+  it('exports its reason again as the trace wrote it', async () => {
+    for (const reason of ['plain words', 'A: b: c', 'CODE:no space']) {
+      const { session } = importTrace(
+        trace({ errorCode: 0, errorKind: 'decode', reason, rawLength: 5, raw }),
+      )
+      expect(session.messages[0]?.decoded).toEqual({ reason, length: 5 })
+      const again = await buildTrace(session, async () => null)
+      expect(again.events.find((e) => e.type === 'error')).toMatchObject({
+        errorCode: 0,
+        errorKind: 'decode',
+        reason,
+      })
+    }
   })
 
   it('reads one written before errors had a kind', () => {
@@ -1515,7 +1612,7 @@ describe('errors that name no stream', () => {
     const imported = importTrace(readMoqtrace(writeMoqtrace(trace)))
     const message = imported.session.messages.find((m) => m.messageType === 'decode_error')!
     expect(message.streamId).toBeUndefined()
-    expect(message.decoded).toEqual({ code: 'CONSTRAINT_VIOLATION', reason: 'bad type', length: 2 })
+    expect(message.decoded).toEqual({ reason: 'CONSTRAINT_VIOLATION: bad type', length: 2 })
     expect(messageEvents(imported.session.messages)[0]).toMatchObject({
       kind: 'undecodable',
       reason: 'CONSTRAINT_VIOLATION: bad type',
@@ -1569,5 +1666,34 @@ describe('how a stream closed', () => {
     const imported = await roundTrip(fixture([[2, bytes, { finished: false }]]))
     expect(imported.session.streams.get(2)).toMatchObject({ closed: false })
     expect(imported.session.streams.get(2)).not.toHaveProperty('finished')
+  })
+})
+
+// SPEC.md Event 1 "st": "1 = datagram". A datagram's object is on no control
+// stream, whatever stream id it shares with one.
+describe('a shared trace without auth keeps its datagrams', () => {
+  it('when a control message names the stream id they are on', async () => {
+    const msg = {
+      timestamp: 1010,
+      direction: 'tx',
+      messageType: 'subscribe',
+      streamId: 0,
+      decoded: {},
+      raw: new Uint8Array([3, 0]),
+    }
+    const f = fixture([], [[9, 3, datagramGroup(9, 3, [{ id: 0, body: 'nine-0' }])]], [msg])
+    const trace = await buildTrace(
+      f.session,
+      async () => null,
+      async (_s, gk) => f.groups.get(gk) ?? null,
+    )
+    const out = await redactTrace(trace, { payloads: true, auth: false }, '22')
+    expect(out.header.detail).toBe('headers+data')
+    expect(out.events.map((e) => e.type)).toEqual([
+      'control',
+      'stream-opened',
+      'object-header',
+      'object-payload',
+    ])
   })
 })

@@ -2,6 +2,7 @@
 
 import { decodeMessage, encodeMessage } from '@moqtap/codec/draft20'
 import type { LibraryClient } from '@/src/account/library'
+import { DATAGRAM_SID_BASE } from '@/src/trace/index'
 import { readMoqtrace, type Trace, type TraceEvent } from '@moqtap/trace'
 import { redactCatalogText } from '@moqtap/media/catalog'
 import { describe, expect, it } from 'vitest'
@@ -525,6 +526,28 @@ describe('redaction for sharing', () => {
       2,
     )
   })
+
+  // SPEC.md Event 1 "st": "1 = datagram". Old traces put datagrams on
+  // stream 0; new ones from 2^62. Either way they are no control stream.
+  for (const sid of [0n, DATAGRAM_SID_BASE]) {
+    it(`auth off keeps a datagram on stream id ${sid}`, async () => {
+      const t = trace(false)
+      const live: Trace = {
+        ...t,
+        events: [
+          ...t.events,
+          { type: 'stream-opened', seq: 5, timestamp: 4, streamId: sid, direction: 1, streamType: 1 },
+          { type: 'object-header', seq: 6, timestamp: 4, streamId: sid, groupId: 3n, objectId: 0n, publisherPriority: 0, objectStatus: 0 },
+          { type: 'object-payload', seq: 7, timestamp: 4, streamId: sid, groupId: 3n, objectId: 0n, size: 1, payload: new Uint8Array([1]) },
+        ] as TraceEvent[],
+      }
+      const out = await redactTrace(live, { payloads: true, auth: false }, '20', new Set([0n]))
+      const kept = out.events.filter(
+        (e) => (e.type === 'object-header' || e.type === 'object-payload') && e.streamId === sid,
+      )
+      expect(kept.map((e) => e.type)).toEqual(['object-header', 'object-payload'])
+    })
+  }
 })
 
 /** An MSF-01 / CMSF catalog holding every kind of secret a catalog can carry, and what a reader needs. */

@@ -12,6 +12,7 @@
  */
 
 import { getMessageIdMap } from '@/src/codec/message-ids'
+import { DATAGRAM_SID_BASE } from '@/src/trace/index'
 import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
 import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
@@ -460,6 +461,7 @@ export async function buildTrace(
 
   // Datagram groups — export as object-header + object-payload events
   if (getDatagramGroupData) {
+    let datagramSid = DATAGRAM_SID_BASE
     for (const dg of session.datagramGroups.values()) {
       const groupAt = dg.firstDataAt ?? startTime
 
@@ -483,18 +485,15 @@ export async function buildTrace(
               // Each datagram was timestamped as it arrived, so unlike a
               // stream this needs no offset arithmetic.
               const objectAt = dg.arrivals?.get(obj.objectId) ?? groupAt
+              const streamId = datagramSid++
 
-              // Datagrams have no stream id: 0 by convention, typed as a
-              // datagram stream.
               push(objectAt, {
                 type: 'stream-opened',
                 seq: 0,
                 timestamp: 0,
-                streamId: 0n,
+                streamId,
                 direction: dg.direction === 'tx' ? 0 : 1,
                 streamType: STREAM_TYPE_DATAGRAM,
-                // Every datagram shares stream id 0, so each is opened with
-                // its alias right before it; interleaved tracks stay apart.
                 ...optionalId('trackAlias', framing.headerFields.trackAlias),
                 groupId: BigInt(dg.groupId),
                 ...(headerRaw ? { headerRaw } : {}),
@@ -504,7 +503,7 @@ export async function buildTrace(
                 type: 'object-header',
                 seq: 0,
                 timestamp: 0,
-                streamId: 0n, // datagrams use streamId=0 by convention
+                streamId,
                 groupId: BigInt(obj.groupId ?? dg.groupId),
                 objectId: BigInt(obj.objectId),
                 publisherPriority:
@@ -519,7 +518,7 @@ export async function buildTrace(
                 type: 'object-payload',
                 seq: 0,
                 timestamp: 0,
-                streamId: 0n,
+                streamId,
                 // The same group as the header above: a reader pairs a payload
                 // with its header by stream, group and object.
                 groupId: BigInt(obj.groupId ?? dg.groupId),

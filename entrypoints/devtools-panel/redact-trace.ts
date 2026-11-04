@@ -423,11 +423,19 @@ export async function redactTrace(
       .map((e) => (e.type === 'control' || e.type === 'error' ? withoutRaw(e) : e))
   }
   if (!content.auth) {
-    events = events.filter(
-      (e) =>
-        (e.type !== 'object-payload' && e.type !== 'object-header') ||
-        !control.has(BigInt((e as { streamId: bigint }).streamId)),
-    )
+    // SPEC.md Event 1 "st": "1 = datagram". A datagram's object is on no
+    // control stream, whatever stream id the last stream-opened gave it.
+    const datagram = new Set<bigint>()
+    events = events.filter((e) => {
+      if (e.type === 'stream-opened') {
+        const id = BigInt(e.streamId)
+        if (e.streamType === 1) datagram.add(id)
+        else datagram.delete(id)
+      }
+      if (e.type !== 'object-payload' && e.type !== 'object-header') return true
+      const id = BigInt(e.streamId)
+      return datagram.has(id) || !control.has(id)
+    })
     events = events.map((e) => {
       if (e.type === 'error' && !dataError(e)) {
         // A message that did not decode may still hold a token.

@@ -11,6 +11,13 @@ import type { SupportedDraft } from '../types/common'
 import { traceSource } from './source'
 
 /**
+ * The first datagram's `"sid"`; each later one takes the next. SPEC.md
+ * "`"sid"` — the stream ID": at least 2^62, which no QUIC stream ID reaches
+ * (RFC 9000 Section 2.1).
+ */
+export const DATAGRAM_SID_BASE = 1n << 62n
+
+/**
  * Create a trace recorder configured for the extension's observer role.
  *
  * @param draft - The detected MoQT draft version

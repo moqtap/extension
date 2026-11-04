@@ -89,7 +89,7 @@ import {
 } from '@/src/storage/worker-exclusions'
 import { type DatagramCodec, readDatagram } from '@/src/codec/datagram'
 import { NONZERO_PADDING, readPadding } from '@/src/codec/padding'
-import { createExtensionRecorder } from '@/src/trace/index'
+import { createExtensionRecorder, DATAGRAM_SID_BASE } from '@/src/trace/index'
 import type { SupportedDraft } from '@/src/types/common'
 import type { CollectorStatus } from '@/src/intercept/collector-presence'
 import type { TraceRecorder } from '@moqtap/trace'
@@ -150,6 +150,8 @@ interface SessionRecord {
   maxControlMessageSize: { tx?: bigint; rx?: bigint }
   /** Trace recorder for this session (only if MoQT detected) */
   recorder: TraceRecorder | null
+  /** Datagrams written to `recorder`; the next takes `DATAGRAM_SID_BASE` plus this */
+  recordedDatagrams: bigint
   /** History of decoded control messages for replay */
   controlMessages: ControlMessageRecord[]
   /** Track registry: subscribeId -> track info */
@@ -1008,6 +1010,7 @@ function handleContentMessage(
         controlStreams: new Map(),
         maxControlMessageSize: {},
         recorder: null,
+        recordedDatagrams: 0n,
         controlMessages: [],
         tracks,
         trackRegistry: new TrackRegistry(tracks, (fields) => ({ ...fields })),
@@ -1530,8 +1533,13 @@ function handleContentMessage(
 
       // Record in trace
       if (session.recorder) {
+        const sid = DATAGRAM_SID_BASE + session.recordedDatagrams++
+        session.recorder.recordStreamOpened(sid, message.direction === 'tx' ? 0 : 1, 1, {
+          trackAlias: BigInt(decoded.trackAlias),
+          groupId: BigInt(decoded.groupId),
+        })
         session.recorder.recordObjectHeader(
-          0n, // no streamId for datagrams — use 0
+          sid,
           BigInt(decoded.groupId),
           BigInt(decoded.objectId),
           decoded.publisherPriority,

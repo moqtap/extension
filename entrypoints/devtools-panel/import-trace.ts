@@ -204,8 +204,13 @@ export function sessionFromTrace(
 
   const recorded = new Map<number, RecordedDataStream>()
   const datagramGroups = new Map<string, RecordedDatagramGroup>()
-  // Every datagram stream shares stream id 0, and an object event names only
-  // its group: the alias comes from the datagram stream-opened before it.
+  // SPEC.md Event 1 `"st"`: "Stream type: `0` = subgroup, `1` = datagram,
+  // `2` = fetch". An object is a datagram when the last stream-opened for its
+  // `"sid"` says so; the stream id alone says nothing about its type. Keyed
+  // by bigint: a datagram's sid is 2^62 or more, past exact `number`s.
+  const streamTypes = new Map<bigint, number>()
+  // An object event names its stream and group, not its alias: a datagram's
+  // alias comes from the datagram stream-opened before it.
   const datagramAlias = new Map<bigint, bigint>()
   // Every alias a group id has been opened on, and the group ids opened again
   // since their last datagram.
@@ -348,6 +353,7 @@ export function sessionFromTrace(
 
       case 'stream-opened': {
         const se = event as StreamOpenedEvent
+        streamTypes.set(se.streamId, se.streamType)
         // A datagram "stream" is no stream: it says which alias the group's
         // datagrams that follow it are on.
         if (se.streamType === 1) {
@@ -412,10 +418,11 @@ export function sessionFromTrace(
       case 'object-header': {
         const oh = event as ObjectHeaderEvent
         const streamId = Number(oh.streamId)
-        if (streamId === 0) datagramHeader(oh.groupId)
+        const datagram = streamTypes.get(oh.streamId) === 1
+        if (datagram) datagramHeader(oh.groupId)
         const time = at(oh.timestamp)
         let rec: RecordedStream
-        if (streamId === 0) {
+        if (datagram) {
           const group = datagramGroup(oh.groupId)
           dataAt(group, time)
           group.arrivals.set(Number(oh.objectId), time)
@@ -425,7 +432,7 @@ export function sessionFromTrace(
           dataAt(ensureStream(streamId), time)
         }
         let headerRaw: Uint8Array | undefined
-        if (streamId === 0 && datagramHdr.has(oh.groupId)) {
+        if (datagram && datagramHdr.has(oh.groupId)) {
           const hdr = datagramHdr.get(oh.groupId)
           datagramHdr.delete(oh.groupId)
           if (hdr) headerRaw = hdr
@@ -451,11 +458,9 @@ export function sessionFromTrace(
       case 'object-payload': {
         const op = event as ObjectPayloadEvent
         const streamId = Number(op.streamId)
-
-        // Datagrams use stream id 0 by convention
         const time = at(op.timestamp)
         let rec: RecordedStream
-        if (streamId === 0) {
+        if (streamTypes.get(op.streamId) === 1) {
           const group = datagramGroup(op.groupId)
           dataAt(group, time)
           rec = group
@@ -1088,11 +1093,14 @@ function isDecodeErrorEvent(e: TraceErrorEvent): boolean {
   )
 }
 
-/** The `{ code, reason, length }` a live decode error carries. */
+/**
+ * The decode-error marker's fields, from Event 6's: SPEC.md gives `"reason"`
+ * as "Human-readable reason", so it is kept whole and never parsed, and
+ * `"rawlen"` is the length.
+ */
 function decodeErrorFields(e: TraceErrorEvent): Record<string, unknown> {
-  const m = /^([A-Z][A-Z0-9_]*): (.*)$/s.exec(e.reason)
   return {
-    ...(m ? { code: m[1], reason: m[2] } : { reason: e.reason }),
+    reason: e.reason,
     ...(e.rawLength !== undefined ? { length: e.rawLength } : {}),
   }
 }
