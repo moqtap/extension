@@ -58,9 +58,31 @@ export function decodeErrorReason(decoded: unknown): string {
 }
 
 /**
- * Most bytes of an undecodable message a capture keeps. The trace format
- * gates an error's `raw` at `full`; these are control bytes, carried at the
- * level control messages carry theirs, and capped as the format caps it.
+ * The reason as the panel shows it. A datagram the background read live is
+ * named one; a trace has no field that says so.
+ */
+export function decodeErrorLabel(decoded: unknown): string {
+  const reason = decodeErrorReason(decoded)
+  const datagram =
+    decoded != null && typeof decoded === 'object' && (decoded as { datagram?: unknown }).datagram === true
+  return datagram ? `Datagram: ${reason}` : reason
+}
+
+/**
+ * SPEC.md Event 6 `"ek"`: `"protocol"` when the marker says the bytes parse
+ * and break a rule, `"decode"` otherwise.
+ */
+export function decodeErrorKind(decoded: unknown): 'decode' | 'protocol' {
+  return decoded != null &&
+    typeof decoded === 'object' &&
+    (decoded as { kind?: unknown }).kind === 'protocol'
+    ? 'protocol'
+    : 'decode'
+}
+
+/**
+ * Most bytes of an undecodable message a capture keeps. SPEC.md Event 6: "A
+ * recorder MUST NOT write more than 4096 bytes in "raw"."
  */
 export const MAX_DECODE_ERROR_RAW = 4096
 

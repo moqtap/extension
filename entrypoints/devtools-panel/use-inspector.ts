@@ -159,6 +159,14 @@ export interface StreamEntry {
   streamId: number
   direction: 'tx' | 'rx'
   closed: boolean
+  /**
+   * The stream ended with a FIN (in an imported trace, an Event 2 whose
+   * `"ec"` is 0), so its bytes are all it carried. A reset stream, or one
+   * the page dropped, may stop anywhere.
+   */
+  finished?: boolean
+  /** The nonzero Event 2 `"ec"` an imported trace closed the stream with */
+  closeCode?: number
   byteCount: number
   /** Payload bytes an imported trace records sizes for, when it holds none of them */
   recordedBytes?: number
@@ -217,10 +225,23 @@ export interface StreamEntry {
    * the bytes are the payloads alone. Absent for live streams.
    */
   importedFraming?: ImportedFraming
+  /** What an imported trace records of this stream's bytes that did not decode */
+  undecodable?: RecordedUndecodable
 }
 
 /** See {@link StreamEntry.importedFraming}. */
 export type ImportedFraming = 'recorded' | 'reconstructed' | 'unavailable'
+
+/** A trace's error event for bytes of a data stream that did not decode. */
+export interface RecordedUndecodable {
+  reason: string
+  /** Their length, when the trace records it */
+  length: number | null
+  /** Where the bytes the trace kept start in the stream's data; null when they are not in it */
+  offset: number | null
+  /** The bytes the trace kept, when they can't be placed in the stream's data */
+  raw?: Uint8Array
+}
 
 export interface DatagramGroupEntry {
   /** Unique key: "trackAlias:groupId" */
@@ -484,6 +505,7 @@ export function useInspector() {
             streamId: msg.streamId,
             direction: msg.direction,
             closed: msg.closed,
+            ...(msg.finished ? { finished: true } : {}),
             byteCount: msg.byteCount,
             chunkCount: 0, // not tracked during replay
             contentType: msg.contentType,
@@ -508,6 +530,7 @@ export function useInspector() {
           const stream = session.streams.get(msg.streamId)
           if (stream) {
             stream.closed = true
+            if (msg.finished) stream.finished = true
             return true
           }
         }

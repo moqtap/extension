@@ -194,22 +194,151 @@ export function parseDatagramGroupFraming(
 
 // ─── Register all draft parsers ────────────────────────────────────
 
+import { NONZERO_PADDING, readPadding } from '@/src/codec/padding'
+import { decodeVarintForDraft } from '@/src/codec/varint'
 import type { SupportedDraft } from '@/src/types/common'
 import type { DecodeResult, ObjectProperty } from '@moqtap/codec'
 import {
   createCodecDatagramParser,
   createCodecDraftParser,
   createCodecPrefixParser,
+  createCodecStreamError,
   createPropertiesDecoder,
   type ParsedPrefix,
 } from './codec-adapter'
 
 export type { ParsedPrefix } from './codec-adapter'
 
+/** Bytes of a stream that do not decode, from `offset` to the stream's end. */
+export interface UndecodableRun {
+  offset: number
+  length: number
+  /** What is wrong with them */
+  reason: string
+}
+
+/** A stream read under the session's draft. */
+export interface StreamReading {
+  /** The header and the objects that decode; null when the header does not */
+  framing: ParsedStreamFraming | null
+  /** The bytes past `framing` that do not decode; null when there are none */
+  undecodable: UndecodableRun | null
+  /** A padding stream, which carries no objects */
+  padding?: true
+}
+
+export const CUT_OBJECT = 'the stream ended inside an object'
+export const CUT_HEADER = 'the stream ended inside its header'
+
+/**
+ * draft-07 Section 7.3.2 to draft-23 Section 11.4.1: FETCH_HEADER, whose
+ * stream type every draft's table gives as 0x5 (0x05 from draft-11).
+ */
+const FETCH_HEADER_TYPE = 0x05
+
+const streamErrors = new Map<string, ReturnType<typeof createCodecStreamError>>()
+
+/**
+ * Read a subgroup or fetch stream under `draft`: the objects that decode,
+ * and the bytes past them that do not. `complete` says the stream ended with
+ * a FIN and the bytes are all of it, so an object or header they end inside
+ * was cut short. A stream that is still arriving, or was reset, may stop
+ * anywhere: draft-23 Section 11.3.2 has a sender reset a stream "before
+ * delivering all such objects". `kinds` limits the stream types tried.
+ */
+export function readStream(
+  data: Uint8Array,
+  draft: string | undefined,
+  options: {
+    complete: boolean
+    kinds?: readonly ('subgroup' | 'fetch')[]
+  },
+): StreamReading {
+  const none: StreamReading = { framing: null, undecodable: null }
+  if (!draft || !draftParsers.has(draft) || data.length === 0) return none
+  const padding = readPadding(data, draft, 'stream')
+  if (padding) {
+    const at = padding.nonzeroAt
+    return {
+      framing: null,
+      undecodable:
+        at === null ? null : { offset: at, length: data.length - at, reason: NONZERO_PADDING },
+      padding: true,
+    }
+  }
+  const kinds = options.kinds ?? (['subgroup', 'fetch'] as const)
+  const whole = parseStreamFraming(data, draft)
+  if (whole?.streamType && (kinds as readonly string[]).includes(whole.streamType))
+    return { framing: whole, undecodable: null }
+
+  // The kinds under which no prefix holds a header that decodes.
+  const headerless = new Set<string>()
+  for (const kind of kinds) {
+    const prefix = prefixOf(data, draft, kind)
+    if (prefix === 'header') headerless.add(kind)
+    if (prefix === null || prefix === 'header') continue
+    const run = (reason: string): UndecodableRun => ({
+      offset: prefix.end,
+      length: data.length - prefix.end,
+      reason,
+    })
+    if (prefix.refused !== undefined)
+      return { framing: prefix.framing, undecodable: run(prefix.refused) }
+    return {
+      framing: prefix.framing,
+      undecodable:
+        options.complete && prefix.end < data.length ? run(CUT_OBJECT) : null,
+    }
+  }
+
+  // The header does not decode as the type it names: the reason is that
+  // type's. A walk that gave up names no bytes.
+  let kind = kinds[0]
+  if (kinds.length > 1) {
+    try {
+      const [type] = decodeVarintForDraft(draft as SupportedDraft, data, 0)
+      kind = type === FETCH_HEADER_TYPE ? 'fetch' : 'subgroup'
+    } catch {
+      kind = 'subgroup'
+    }
+  }
+  if (!headerless.has(kind)) return none
+  let streamError = streamErrors.get(draft)
+  if (!streamError) {
+    streamError = createCodecStreamError(draft as SupportedDraft)
+    streamErrors.set(draft, streamError)
+  }
+  const error = streamError(data, kind)
+  if (!error || (error.incomplete && !options.complete)) return none
+  return {
+    framing: null,
+    undecodable: {
+      offset: 0,
+      length: data.length,
+      reason: error.incomplete ? CUT_HEADER : error.reason,
+    },
+  }
+}
+
 const prefixParsers = new Map<
   string,
-  (data: Uint8Array, kind: 'subgroup' | 'fetch') => ParsedPrefix | null
+  (data: Uint8Array, kind: 'subgroup' | 'fetch') => ParsedPrefix | 'header' | null
 >()
+
+/** {@link parseStreamPrefix}, or `'header'` when no prefix holds a header that decodes. */
+function prefixOf(
+  data: Uint8Array,
+  draft: string,
+  kind: 'subgroup' | 'fetch',
+): ParsedPrefix | 'header' | null {
+  let parse = prefixParsers.get(draft)
+  if (!parse) {
+    if (!draftParsers.has(draft)) return null
+    parse = createCodecPrefixParser(draft as SupportedDraft)
+    prefixParsers.set(draft, parse)
+  }
+  return parse(data, kind)
+}
 
 /**
  * The longest prefix of `data` that frames whole as a `kind` stream of
@@ -221,13 +350,8 @@ export function parseStreamPrefix(
   draft: string,
   kind: 'subgroup' | 'fetch',
 ): ParsedPrefix | null {
-  let parse = prefixParsers.get(draft)
-  if (!parse) {
-    if (!draftParsers.has(draft)) return null
-    parse = createCodecPrefixParser(draft as SupportedDraft)
-    prefixParsers.set(draft, parse)
-  }
-  return parse(data, kind)
+  const prefix = prefixOf(data, draft, kind)
+  return prefix === 'header' ? null : prefix
 }
 
 const propertyDecoders = new Map<

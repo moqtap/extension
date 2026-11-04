@@ -30,6 +30,7 @@ import { trackColourClass } from '../track-colour'
 import type { SessionEntry, TrackEntry } from '../use-inspector'
 import type { GridColumn } from '../grid'
 import { trackNameParts, trackViewLabel } from '../track-view'
+import { sourcesText } from '../undecodable-stream'
 import DataGrid from './DataGrid.vue'
 import DirMark from './DirMark.vue'
 import Icon from './Icon.vue'
@@ -293,7 +294,14 @@ function formatCell(track: TrackEntry, media: MediaCell | null): FormatCell {
       ...base,
       reader: 'CMAF',
       badgeClass: cmaf.init.status === 'known' ? 'mq-badge--ok' : 'mq-badge--check',
-      title: titled(`${initText(cmaf.init)}. ${plural(cmaf.objectCount, 'object')} read.`),
+      title: titled(
+        [
+          `${initText(cmaf.init)}. ${plural(cmaf.objectCount, 'object')} read.`,
+          sourcesText(cmaf.undecodable),
+        ]
+          .filter((x) => x)
+          .join(' '),
+      ),
     }
   }
   const timeline = props.cmaf?.timelineState(track) ?? null
@@ -304,7 +312,14 @@ function formatCell(track: TrackEntry, media: MediaCell | null): FormatCell {
       ...base,
       reader: TIMELINE_LABELS[timeline.kind],
       badgeClass: 'mq-badge--ok',
-      title: titled(`${plural(timeline.objectCount, 'object')} read.${describes}`),
+      title: titled(
+        [
+          `${plural(timeline.objectCount, 'object')} read.${describes}`,
+          sourcesText(timeline.undecodable),
+        ]
+          .filter((x) => x)
+          .join(' '),
+      ),
     }
   }
   const loc = locReading(track)
@@ -340,6 +355,7 @@ function locReading(
     state.malformedCount > 0
       ? `${plural(state.malformedCount, 'property block')} did not decode.`
       : '',
+    sourcesText(state.undecodable),
     state.conflicts?.some((c) => c.field === 'codec')
       ? 'The catalogs disagree on the codec.'
       : '',

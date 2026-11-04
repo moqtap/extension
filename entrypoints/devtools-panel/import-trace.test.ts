@@ -15,6 +15,8 @@ import { encodeFetchStream as encodeFetchStream23 } from '@moqtap/codec/draft23'
 import { readMoqtrace, type Trace, writeMoqtrace } from '@moqtap/trace'
 import { describe, expect, it } from 'vitest'
 import { buildTrace } from './build-trace'
+import { redactTrace } from './redact-trace'
+import { messageEvents } from './requests'
 import { locateCatalogStreams, SessionCatalogs } from './catalogs'
 import {
   holdsHeaderBytes,
@@ -32,6 +34,7 @@ import {
   type ParsedStreamFraming,
   parseDatagramGroupFraming,
   parseStreamFraming,
+  parseStreamPrefix,
 } from './stream-framing'
 import type { SessionEntry } from './use-inspector'
 
@@ -142,6 +145,8 @@ function stream(streamId: number, bytes: Uint8Array, extra: object = {}) {
     streamId,
     direction: 'rx',
     closed: true,
+    // Closed with a FIN, unless the test says otherwise.
+    finished: (extra as { closed?: boolean }).closed !== false,
     byteCount: bytes.length,
     chunkCount: 1,
     contentType: 'binary',
@@ -1278,5 +1283,291 @@ describe('header bytes in a trace', () => {
       expect(row?.header).toBeDefined()
       expect(row?.header?.bytes).toBeNull()
     })
+  })
+})
+
+// draft-22 Section 11.1.2: "If an endpoint receives properties on an Object
+// with status that is not Normal, it MUST close the session with a
+// PROTOCOL_VIOLATION."
+describe('bytes of a data stream that do not decode', () => {
+  const REFUSAL = 'only a Normal (0x0) Object may carry Properties, got status 0x3'
+  /** Type Flags 0x11: the objects carry a properties field. Object 1 is refused. */
+  const refused = () =>
+    subgroup(0x11, 5, 0, [
+      { id: 0, body: 'first' },
+      { id: 1, status: 3n, properties: new Uint8Array([0x02, 0x05]) },
+      { id: 2, body: 'third' },
+    ])
+  const errorsOf = (trace: Trace) => trace.events.filter((e) => e.type === 'error')
+
+  it('are exported as an error event on the stream, after the objects before them', async () => {
+    const bytes = refused()
+    const end = parseStreamPrefix(bytes, '22', 'subgroup')!.end
+    const f = fixture([[3, bytes, { trackAlias: 5 }]])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    // SPEC.md gates Event 6 "raw" at full; no control message lacks its bytes.
+    expect(trace.header.detail).toBe('full')
+    expect(
+      trace.events.filter((e) => e.type === 'object-header').map((e) => (e as Any).objectId),
+    ).toEqual([0n])
+    const [error] = errorsOf(trace)
+    expect(error).toMatchObject({
+      errorCode: 0,
+      errorKind: 'decode',
+      reason: REFUSAL,
+      streamId: 3n,
+      rawLength: bytes.length - end,
+    })
+    expect(hex((error as Any).raw)).toBe(hex(bytes.subarray(end)))
+  })
+
+  it('keep at most 4 KB, with the full length', async () => {
+    const bytes = new Uint8Array([...refused(), ...new Uint8Array(10000).fill(7)])
+    const end = parseStreamPrefix(bytes, '22', 'subgroup')!.end
+    const f = fixture([[3, bytes, { trackAlias: 5 }]])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    const [error] = errorsOf(trace) as Any[]
+    expect(error.raw).toHaveLength(4096)
+    expect(error.rawLength).toBe(bytes.length - end)
+  })
+
+  it("read back as the stream's own bytes, not as a control message", async () => {
+    const bytes = refused()
+    const end = parseStreamPrefix(bytes, '22', 'subgroup')!.end
+    const f = fixture([[3, bytes, { trackAlias: 5 }]])
+    const imported = await roundTrip(f)
+    expect(hex(imported.streamData.get(3)!)).toBe(hex(bytes))
+    expect(imported.session.streams.get(3)?.undecodable).toEqual({
+      reason: REFUSAL,
+      length: bytes.length - end,
+      offset: end,
+    })
+    expect(imported.session.messages).toEqual([])
+
+    // Exported again, the same event.
+    const again = await buildTrace(
+      imported.session,
+      async (_s, id) => imported.streamData.get(id) ?? null,
+    )
+    expect(errorsOf(again)).toHaveLength(1)
+    expect(errorsOf(again)[0]).toMatchObject({ streamId: 3n, reason: REFUSAL, rawLength: bytes.length - end })
+    expect(hex((errorsOf(again)[0] as Any).raw)).toBe(hex(bytes.subarray(end)))
+  })
+
+  // draft-22 Section 11.3.1: "The following Type Flags values are invalid. If
+  // an endpoint receives a stream header with any of these values, it MUST
+  // close the session with a PROTOCOL_VIOLATION: Values with SUBGROUP_ID_MODE
+  // set to 0b11." Type Flags 0x16 has that mode.
+  it('keep a stream whose header does not decode, from its first byte', async () => {
+    const bytes = new Uint8Array([0x16, 0x05, 0x00, 0x00, 0x80, 0x00, 0x01, 0xaa])
+    const f = fixture([[3, bytes]])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    expect(trace.header.detail).toBe('full')
+    expect(trace.events.some((e) => e.type === 'object-payload')).toBe(false)
+    expect(errorsOf(trace)[0]).toMatchObject({ streamId: 3n, rawLength: bytes.length })
+    expect(hex((errorsOf(trace)[0] as Any).raw)).toBe(hex(bytes))
+    const imported = importTrace(readMoqtrace(writeMoqtrace(trace)))
+    expect(hex(imported.streamData.get(3)!)).toBe(hex(bytes))
+    expect(imported.session.streams.get(3)?.undecodable?.offset).toBe(0)
+
+    // Shared with payloads, the bytes stay, and so do the stream's events.
+    const shared = await redactTrace(trace, { payloads: true, auth: true }, '22')
+    expect(shared.header.detail).toBe('full')
+    expect(shared.events.map((e) => e.type)).toEqual(['stream-opened', 'error', 'stream-closed'])
+    expect(hex((errorsOf(shared)[0] as Any).raw)).toBe(hex(bytes))
+  })
+
+  it('stay on their stream when a share kept no bytes, and export again', async () => {
+    const f = fixture([[3, refused(), { trackAlias: 5 }]])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    const shared = await redactTrace(trace, { payloads: false, auth: true }, '22')
+    const imported = importTrace(readMoqtrace(writeMoqtrace(shared)))
+    expect(imported.streamData.has(3)).toBe(false)
+    expect(imported.session.streams.get(3)?.undecodable).toEqual({
+      reason: REFUSAL,
+      length: null,
+      offset: null,
+    })
+    expect(imported.session.messages).toEqual([])
+
+    const again = await buildTrace(imported.session, async () => null)
+    expect(errorsOf(again)).toEqual([
+      expect.objectContaining({ streamId: 3n, reason: REFUSAL, errorKind: 'decode' }),
+    ])
+  })
+
+  it('keep their bytes when the import cannot frame the stream', async () => {
+    const bytes = refused()
+    const end = parseStreamPrefix(bytes, '22', 'subgroup')!.end
+    const f = fixture([[3, bytes, { trackAlias: 5 }]])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    // A draft this build has no codec for: the objects are payloads alone.
+    const unknown = { ...trace, header: { ...trace.header, protocol: 'moq-transport-99' } }
+    const imported = importTrace(readMoqtrace(writeMoqtrace(unknown)))
+    const recorded = imported.session.streams.get(3)?.undecodable
+    expect(recorded).toMatchObject({ reason: REFUSAL, length: bytes.length - end, offset: null })
+    expect(hex(recorded!.raw!)).toBe(hex(bytes.subarray(end)))
+    expect(imported.session.messages).toEqual([])
+
+    const again = await buildTrace(
+      imported.session,
+      async (_s, id) => imported.streamData.get(id) ?? null,
+    )
+    expect(errorsOf(again)).toHaveLength(1)
+    expect(errorsOf(again)[0]).toMatchObject({ streamId: 3n, rawLength: bytes.length - end })
+    expect(hex((errorsOf(again)[0] as Any).raw)).toBe(hex(bytes.subarray(end)))
+    // The object payloads the trace held are still there.
+    expect(again.events.some((e) => e.type === 'object-payload')).toBe(true)
+  })
+
+  it('name no bytes on a stream still open inside an object', async () => {
+    const whole = refused()
+    const open = whole.subarray(0, parseStreamPrefix(whole, '22', 'subgroup')!.end + 1)
+    const f = fixture([[3, open, { closed: false, trackAlias: 5 }]])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    expect(errorsOf(trace)).toEqual([])
+  })
+
+  it('go as a payload does when a trace is shared', async () => {
+    const f = fixture([[3, refused(), { trackAlias: 5 }]])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    const without = await redactTrace(trace, { payloads: false, auth: true }, '22')
+    expect(without.header.detail).toBe('headers')
+    expect(errorsOf(without)[0]).toMatchObject({ streamId: 3n, reason: REFUSAL })
+    expect(errorsOf(without)[0]).not.toHaveProperty('raw')
+    expect(errorsOf(without)[0]).not.toHaveProperty('rawLength')
+    const kept = await redactTrace(trace, { payloads: true, auth: false }, '22')
+    expect(kept.header.detail).toBe('full')
+    expect(errorsOf(kept)[0]).toHaveProperty('raw')
+  })
+
+  it('lose their bytes, and keep their length, when a control message has none', async () => {
+    const setup = {
+      messageType: 'client_setup',
+      direction: 'tx',
+      timestamp: 1001,
+      streamId: 0,
+      decoded: {},
+      raw: new Uint8Array(0),
+    }
+    const bytes = refused()
+    const end = parseStreamPrefix(bytes, '22', 'subgroup')!.end
+    const f = fixture([[3, bytes, { trackAlias: 5 }]], [], [setup])
+    const trace = await buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+    expect(trace.header.detail).toBe('headers+data')
+    expect(errorsOf(trace)[0]).not.toHaveProperty('raw')
+    expect(errorsOf(trace)[0]).toMatchObject({ rawLength: bytes.length - end })
+  })
+})
+
+describe('errors that name no stream', () => {
+  const entry = (at: number, raw: number[]) => ({
+    timestamp: at,
+    direction: 'rx',
+    messageType: 'decode_error',
+    decoded: { code: 'CONSTRAINT_VIOLATION', reason: 'bad type', length: raw.length, datagram: true },
+    raw: new Uint8Array(raw),
+  })
+  const errorsOf = (trace: Trace) => trace.events.filter((e) => e.type === 'error') as Any[]
+  // One object on a data stream, so the trace holds payloads and can be full.
+  const media = (): [number, Uint8Array, object?][] => [
+    [2, subgroup(0x14, 7, 0, [{ id: 0, body: 'x' }])],
+  ]
+  const build = (f: Fixture) =>
+    buildTrace(f.session, async (_s, id) => f.streams.get(id) ?? null)
+
+  // SPEC.md Event 6 has no field that marks a datagram; the panel's own
+  // marker stays out of the reason.
+  it('carry their bytes once, and the codec reason alone', async () => {
+    const f = fixture(media(), [], [entry(1010, [0x3f, 0x01]), entry(1020, [0x3f, 0x02, 0x03])])
+    const trace = await build(f)
+    expect(trace.header.detail).toBe('full')
+    const errors = errorsOf(trace)
+    expect(errors.map((e) => e.reason)).toEqual([
+      'CONSTRAINT_VIOLATION: bad type',
+      'CONSTRAINT_VIOLATION: bad type',
+    ])
+    expect(errors.map((e) => e.streamId)).toEqual([undefined, undefined])
+    expect(hex(errors[0].raw)).toBe('3f01')
+    expect(errors[1]).not.toHaveProperty('raw')
+    expect(errors.map((e) => e.rawLength)).toEqual([2, 3])
+    // The panel names the datagrams it read live.
+    expect(messageEvents(f.session.messages).map((e) => (e as Any).reason)).toEqual([
+      'Datagram: CONSTRAINT_VIOLATION: bad type',
+      'Datagram: CONSTRAINT_VIOLATION: bad type',
+    ])
+  })
+
+  it('carry one raw per control stream too', async () => {
+    const control = (at: number, raw: number[]) => ({
+      ...entry(at, raw),
+      streamId: 0,
+      decoded: { code: 'X', reason: 'y', length: raw.length },
+    })
+    const f = fixture(media(), [], [control(1010, [1]), control(1020, [2]), entry(1030, [3])])
+    const errors = errorsOf(await build(f))
+    expect(errors.map((e) => (e.raw ? hex(e.raw) : null))).toEqual(['01', null, '03'])
+  })
+
+  it('read back as naming no stream, not as datagrams, and export again the same', async () => {
+    const f = fixture(media(), [], [entry(1010, [0x3f, 0x01])])
+    const trace = await build(f)
+    const imported = importTrace(readMoqtrace(writeMoqtrace(trace)))
+    const message = imported.session.messages.find((m) => m.messageType === 'decode_error')!
+    expect(message.streamId).toBeUndefined()
+    expect(message.decoded).toEqual({ code: 'CONSTRAINT_VIOLATION', reason: 'bad type', length: 2 })
+    expect(messageEvents(imported.session.messages)[0]).toMatchObject({
+      kind: 'undecodable',
+      reason: 'CONSTRAINT_VIOLATION: bad type',
+    })
+    const fields = (e: Any) => ({ reason: e.reason, rawLength: e.rawLength, raw: hex(e.raw) })
+    const again = errorsOf(
+      await buildTrace(imported.session, async (_s, id) => imported.streamData.get(id) ?? null),
+    )
+    expect(again.map(fields)).toEqual(errorsOf(trace).map(fields))
+    expect(again[0]).not.toHaveProperty('streamId')
+  })
+
+  it('go alike when a trace is shared, whatever their reason says', async () => {
+    const other = { ...entry(1020, [0x09]), decoded: { code: 'X', reason: 'y', length: 1 } }
+    const trace = await build(fixture(media(), [], [entry(1010, [0x3f, 0x01]), other]))
+    const without = await redactTrace(trace, { payloads: false, auth: true }, '22')
+    expect(without.header.detail).toBe('headers')
+    for (const e of errorsOf(without)) {
+      expect(e).not.toHaveProperty('raw')
+      expect(e).not.toHaveProperty('rawLength')
+    }
+    // Each is one flow, the recording's, so only the first carries bytes.
+    const kept = errorsOf(await redactTrace(trace, { payloads: true, auth: true }, '22'))
+    expect(kept.map((e) => (e.raw ? hex(e.raw) : null))).toEqual(['3f01', null])
+    expect(kept.map((e) => e.rawLength)).toEqual([2, 1])
+  })
+})
+
+describe('how a stream closed', () => {
+  // SPEC.md Event 2: "Error code (0 = clean close)".
+  it('reads a clean close as a FIN, and any other code as one it keeps', async () => {
+    const bytes = subgroup(0x14, 7, 0, [{ id: 0, body: 'x' }])
+    const trace = await buildTrace(
+      fixture([[2, bytes]]).session,
+      async () => bytes,
+    )
+    const clean = importTrace(readMoqtrace(writeMoqtrace(trace)))
+    expect(clean.session.streams.get(2)).toMatchObject({ closed: true, finished: true })
+
+    const reset = {
+      ...trace,
+      events: trace.events.map((e) => (e.type === 'stream-closed' ? { ...e, errorCode: 3 } : e)),
+    } as Trace
+    const stream = importTrace(readMoqtrace(writeMoqtrace(reset))).session.streams.get(2)
+    expect(stream).toMatchObject({ closed: true, closeCode: 3 })
+    expect(stream).not.toHaveProperty('finished')
+  })
+
+  it('leaves a stream with no Event 2 open', async () => {
+    const bytes = subgroup(0x14, 7, 0, [{ id: 0, body: 'x' }])
+    const imported = await roundTrip(fixture([[2, bytes, { finished: false }]]))
+    expect(imported.session.streams.get(2)).toMatchObject({ closed: false })
+    expect(imported.session.streams.get(2)).not.toHaveProperty('finished')
   })
 })

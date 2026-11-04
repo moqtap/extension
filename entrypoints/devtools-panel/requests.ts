@@ -17,7 +17,7 @@ import {
   requestIdOf,
   type SpecRef as InspectSpecRef,
 } from '@moqtap/inspect'
-import { decodeErrorReason, isDecodeError } from '@/src/trace/decode-error'
+import { decodeErrorLabel, isDecodeError } from '@/src/trace/decode-error'
 import type { MessageEntry, SessionEntry, TrackEntry } from './use-inspector'
 
 /** A request with no response this long after it was sent is a problem. */
@@ -58,7 +58,7 @@ export function messageEvents(messages: readonly MessageEntry[]): MessageEvent[]
     isDecodeError(entry.messageType)
       ? {
           kind: 'undecodable',
-          reason: decodeErrorReason(entry.decoded),
+          reason: decodeErrorLabel(entry.decoded),
           direction: entry.direction,
           streamId: entry.streamId,
           atMs: entry.timestamp,

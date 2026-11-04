@@ -13,6 +13,7 @@ function mediaState(timelineDraft: TimelineState['timelineDraft']): TimelineStat
     depends: [],
     eventType: null,
     objectCount: 0,
+    undecodable: [],
   }
 }
 

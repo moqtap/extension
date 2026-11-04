@@ -44,11 +44,14 @@ import {
   trackKey,
 } from './catalogs'
 import {
-  frameSource,
   type LocSource,
   type LocSourceRef,
   listSources,
+  readSource,
+  type SourceUndecodable,
+  setUndecodable,
   trackForSource,
+  undecodableOf,
 } from './loc'
 import { type ObjectFrames, objectFrames } from './frames'
 import { mediaPackaging } from './packaging'
@@ -65,7 +68,7 @@ import {
   specsFromSection,
   trackSubject,
 } from './problems'
-import type { StreamObject } from './stream-framing'
+import type { StreamObject, UndecodableRun } from './stream-framing'
 import {
   cmsfDraftOf,
   readTimelineObject,
@@ -160,6 +163,8 @@ export interface CmafTrackState {
   maxObjSapStartingType: number | null
   /** Objects read so far */
   objectCount: number
+  /** Bytes of its streams that do not decode */
+  undecodable: SourceUndecodable[]
 }
 
 /** One object of a CMAF track, as far as the track's problems need it. */
@@ -220,6 +225,8 @@ interface SourceProgress {
   closed: boolean
   done: boolean
   firstDataAt?: number
+  /** Its bytes that do not decode, as of the last read */
+  undecodable?: UndecodableRun | null
 }
 
 interface CmafLog {
@@ -443,6 +450,7 @@ export class SessionCmaf {
       maxGrpSapStartingType: maxGrp ?? null,
       maxObjSapStartingType: maxObj ?? null,
       objectCount: this.cmafLogs.get(key)?.objectCount ?? 0,
+      undecodable: undecodableOf(this.progress, key),
     }
   }
 
@@ -454,7 +462,11 @@ export class SessionCmaf {
     const key = registryTrackKey(track)
     const state = timelineStateOf(track, key, packaging.get(key))
     if (!state) return null
-    return { ...state, objectCount: this.timelineLogs.get(key)?.objectCount ?? 0 }
+    return {
+      ...state,
+      objectCount: this.timelineLogs.get(key)?.objectCount ?? 0,
+      undecodable: undecodableOf(this.progress, key),
+    }
   }
 
   /**
@@ -539,9 +551,12 @@ export class SessionCmaf {
     p.closed = ref.closed
     p.done = ref.closed
 
-    const framing = frameSource(ref, data, draft)
-    if (!framing) return
-    let added = false
+    const { framing, undecodable } = readSource(ref, data, draft)
+    let added = setUndecodable(p, undecodable)
+    if (!framing) {
+      if (added) this.revision++
+      return
+    }
     for (const obj of framing.objects) {
       if (obj.payloadOffset + obj.payloadLength > data.length) break
       if (obj.indicator !== undefined || obj.payloadLength === 0) continue

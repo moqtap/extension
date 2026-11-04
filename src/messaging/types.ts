@@ -348,12 +348,16 @@ export interface PanelStreamInfoMsg {
   controlRole?: 'control' | 'request'
   firstDataAt?: number
   closed: boolean
+  /** The stream ended with a FIN, not a reset or the page going away */
+  finished?: boolean
 }
 
 export interface PanelStreamClosedMsg {
   type: 'panel:stream:closed'
   sessionId: string
   streamId: number
+  /** The stream ended with a FIN, not a reset or the page going away */
+  finished?: boolean
 }
 
 export interface PanelSessionClosedMsg {

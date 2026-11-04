@@ -27,11 +27,8 @@ import {
   toRaw,
   watch,
 } from 'vue'
-import {
-  type ParsedStreamFraming,
-  parseStreamFraming,
-  parseStreamPrefix,
-} from './stream-framing'
+import { readStream, type UndecodableRun } from './stream-framing'
+import { heldTitle, sentence } from './undecodable-stream'
 import { trackDirection } from './alias-tracks'
 import type { SessionEntry, StreamEntry, TrackEntry } from './use-inspector'
 
@@ -76,6 +73,8 @@ export interface CatalogStreamRef {
   id: number
   direction: 'tx' | 'rx'
   closed: boolean
+  /** The stream ended with a FIN, so its bytes are all it carried */
+  finished?: boolean
   byteCount: number
 }
 
@@ -173,6 +172,7 @@ export function locateCatalogStreams(
       id,
       direction: stream.direction,
       closed: stream.closed,
+      ...(stream.finished ? { finished: true } : {}),
       byteCount: stream.byteCount,
     })
   }
@@ -232,9 +232,20 @@ export interface CatalogView {
   /** The data streams it was read from */
   streamIds: number[]
   /** Why objects the track sent may be missing; empty when none are known */
+  missing: string[]
+  /** Why objects recorded on its streams could not be read */
+  unreadable: string[]
+  /** `missing` and `unreadable` together */
   incomplete: string[]
   /** Each stream's header as the session draft's framing read it, by stream id */
   headers: ReadonlyMap<number, StreamHeader>
+}
+
+/** What {@link CatalogView.incomplete} is about, in a few words. */
+export function incompleteTitle(view: Pick<CatalogView, 'missing' | 'unreadable'>): string {
+  if (view.unreadable.length === 0) return 'Some catalog objects are missing'
+  if (view.missing.length === 0) return "Some catalog objects can't be read"
+  return "Some catalog objects are missing or can't be read"
 }
 
 /** A data stream's header: its fields as the framing names them, and its bytes. */
@@ -420,12 +431,12 @@ interface StreamProgress {
   closed: boolean
   /** The stream was closed and its bytes have all been read */
   done: boolean
-  /** Its bytes did not frame as the stream its header names */
-  unframed: boolean
-  /** Closed with an object cut short */
-  truncated: boolean
-  /** The codec's reason for refusing an object of the stream */
-  refused?: string
+  /** The alias or request id its header names when that is another track's */
+  otherId: number | null
+  /** Its bytes past the objects read that do not decode */
+  undecodable: UndecodableRun | null
+  /** Closed with bytes and neither framed nor named as undecodable: the draft read under, if any */
+  unread: { draft: string | undefined } | null
   /** Gone from the session before it was read in full */
   vanished: boolean
 }
@@ -481,8 +492,9 @@ export class SessionCatalogs {
           consumed: 0,
           closed: false,
           done: false,
-          unframed: false,
-          truncated: false,
+          otherId: null,
+          undecodable: null,
+          unread: null,
           vanished: false,
         }
         this.progress.set(ref.streamId, p)
@@ -521,31 +533,22 @@ export class SessionCatalogs {
     p.readBytes = data.length
     p.closed = ref.closed
 
-    // Rejects a framing of another kind or track.
-    const matches = (f: ParsedStreamFraming | null): f is ParsedStreamFraming =>
-      f != null &&
-      f.streamType === ref.kind &&
-      (ref.kind === 'subgroup'
-        ? f.headerFields.trackAlias === ref.id
-        : f.headerFields.requestId === ref.id)
-    let framing = parseStreamFraming(data, draft)
-    // A stream that ends inside an object, or carries one the draft refuses:
-    // read the objects before it.
-    let cut = false
-    let refused: string | undefined
-    if (!matches(framing) && draft !== undefined) {
-      const prefix = parseStreamPrefix(data, draft, ref.kind)
-      framing = prefix?.framing ?? null
-      refused = prefix?.refused
-      cut = prefix != null && refused === undefined
-    }
-    if (!matches(framing)) {
-      p.unframed = ref.closed
+    // The objects that decode, and the bytes past them that do not.
+    const complete = ref.finished === true && data.length >= ref.byteCount
+    const read = readStream(data, draft, { complete, kinds: [ref.kind] })
+    const framing = read.framing
+    p.undecodable = read.undecodable
+    p.unread = complete && framing == null && !read.undecodable && data.length > 0 ? { draft } : null
+    // Rejects a framing of another track.
+    const id = framing?.headerFields[ref.kind === 'subgroup' ? 'trackAlias' : 'requestId']
+    if (framing == null || id !== ref.id) {
+      p.otherId = framing && ref.closed ? (id ?? null) : null
+      if (framing) p.undecodable = null
       p.done = ref.closed
-      if (ref.closed) this.touch()
+      if (ref.closed || p.undecodable) this.touch()
       return
     }
-    p.unframed = false
+    p.otherId = null
     if (!log.headers.has(ref.streamId)) {
       log.headers.set(ref.streamId, {
         fields: { ...framing.headerFields },
@@ -571,8 +574,6 @@ export class SessionCatalogs {
       )
     }
     p.consumed = i
-    p.truncated = ref.closed && (cut || i < objects.length)
-    p.refused = refused
     p.done = ref.closed
     log.streamIds.add(ref.streamId)
     log.settle()
@@ -608,32 +609,37 @@ export class SessionCatalogs {
   }
 
   private viewOf(log: CatalogLog): CatalogView {
-    const incomplete: string[] = []
+    const missing: string[] = []
+    const unreadable: string[] = []
     if (this.pausedSeen) {
-      incomplete.push(
+      missing.push(
         'Stream recording was paused; catalog objects sent meanwhile were not recorded.',
       )
     }
     for (const [streamId, p] of this.progress) {
       if (p.key !== log.key) continue
       if (p.vanished) {
-        incomplete.push(
+        missing.push(
           `Stream ${streamId} was cleared before it was read in full.`,
         )
-      } else if (p.unframed) {
-        incomplete.push(
-          `Stream ${streamId} closed but its bytes do not frame as a ${p.kind} stream.`,
+      } else if (p.otherId !== null) {
+        const field = p.kind === 'subgroup' ? 'track alias' : 'request'
+        unreadable.push(`Stream ${streamId}'s header names ${field} ${p.otherId}, not ${p.id}.`)
+      } else if (p.undecodable) {
+        const u = p.undecodable
+        unreadable.push(
+          `Stream ${streamId}: ${heldTitle(u.length, u.offset)}. ${sentence(u.reason)}`,
         )
-      } else if (p.refused !== undefined) {
-        incomplete.push(
-          `Stream ${streamId} has an object the draft forbids: ${p.refused}.`,
+      } else if (p.unread) {
+        unreadable.push(
+          p.unread.draft === undefined
+            ? `Stream ${streamId}: no draft to read it under.`
+            : `Stream ${streamId}: its bytes don't frame under draft-${p.unread.draft}.`,
         )
-      } else if (p.truncated) {
-        incomplete.push(`Stream ${streamId} closed inside an object.`)
       }
     }
     for (const group of log.missingBase) {
-      incomplete.push(
+      missing.push(
         `The independent catalog that starts group ${group} was not recorded.`,
       )
     }
@@ -654,7 +660,9 @@ export class SessionCatalogs {
       publishTracks: catalogTracks(document, { ...options, publish: true }),
       objects: records,
       streamIds: Array.from(log.streamIds),
-      incomplete,
+      missing,
+      unreadable,
+      incomplete: [...missing, ...unreadable],
       headers: log.headers,
     }
   }

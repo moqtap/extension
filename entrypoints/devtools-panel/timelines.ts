@@ -36,6 +36,7 @@ import {
   type TrackKey,
   type TrackPackaging,
 } from './catalogs'
+import type { SourceUndecodable } from './loc'
 import { timelinePackaging } from './packaging'
 import { makeProblem, mediaSpec, type PanelProblem, trackSubject } from './problems'
 import type { TrackEntry } from './use-inspector'
@@ -119,14 +120,19 @@ export interface TimelineState {
   eventType: string | null
   /** Objects read so far */
   objectCount: number
+  /** Bytes of its streams that do not decode */
+  undecodable: SourceUndecodable[]
 }
 
-/** A track's timeline state, without its object count; null for a track that is not a timeline. */
+/**
+ * A track's timeline state, without what its objects say; null for a track
+ * that is not a timeline.
+ */
 export function timelineStateOf(
   track: TrackEntry,
   key: TrackKey,
   described: TrackPackaging | undefined,
-): Omit<TimelineState, 'objectCount'> | null {
+): Omit<TimelineState, 'objectCount' | 'undecodable'> | null {
   const packaging = timelinePackaging(described)
   if (!packaging) return null
   const eventType = agreedValue(described, (t) => t.eventType) ?? null

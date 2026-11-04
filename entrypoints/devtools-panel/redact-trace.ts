@@ -4,7 +4,9 @@
  * - **Payloads off:** every object-payload event is dropped, and `detail`
  *   falls to `headers` (or `control`, which carries no stream events either;
  *   see src/trace/detail.ts). The server refuses a trace that carries an
- *   event its level excludes, so this is all or nothing.
+ *   event its level excludes, so this is all or nothing. Every control
+ *   message and error event loses its wire bytes, which SPEC.md gates at
+ *   `full`, above the payloads.
  * - **Auth off:**
  *   - each control message's wire bytes go through the draft's own
  *     `redactAuthTokens`, which zero-fills every Authorization Token value in
@@ -28,7 +30,11 @@
  *   recompressed. A payload that may hold such a field but cannot be
  *   redacted (gzip that does not decompress or exceeds 16 MiB decompressed,
  *   JSON that does not parse, text that is not UTF-8) loses its payload event
- *   and keeps its header, as does an unframed stream that holds gzip.
+ *   and keeps its header, as does an unframed stream that holds gzip. The
+ *   bytes of an error event on a data stream, or on no stream it names, are
+ *   treated as such a stream's.
+ * - A trace keeps the wire bytes of its control messages and error events
+ *   only while it holds every byte `full` requires (src/trace/detail.ts).
  *
  * The result is a new trace; the panel's own session is untouched.
  */
@@ -344,6 +350,31 @@ export async function redactCatalogPayload(
 }
 
 /**
+ * An error event with its bytes treated as a payload with no object header:
+ * kept, redacted, or dropped from the event.
+ */
+async function redactErrorBytes(
+  e: TraceEvent,
+  credentials: boolean,
+): Promise<TraceEvent> {
+  const { raw, ...rest } = e as TraceEvent & { raw?: Uint8Array }
+  if (raw === undefined) return e
+  const out = await redactCatalogPayload(
+    { type: 'object-payload', seq: 0, timestamp: 0, streamId: 0n, groupId: 0n, objectId: 0n, size: raw.length, payload: raw },
+    credentials,
+    false,
+  )
+  return (out?.payload ? { ...rest, raw: out.payload } : rest) as TraceEvent
+}
+
+/** The event without its wire bytes. */
+function withoutRaw(e: TraceEvent): TraceEvent {
+  if ((e as { raw?: unknown }).raw === undefined) return e
+  const { raw: _raw, ...rest } = e as TraceEvent & { raw?: Uint8Array }
+  return rest as TraceEvent
+}
+
+/**
  * `controlStreams` are the ids of the session's control and request streams
  * as the panel knows them. The trace adds the ones it names itself: every
  * stream a control message carries a `streamId` for, which is each draft-17+
@@ -361,26 +392,48 @@ export async function redactTrace(
       ? (draft as SupportedDraft)
       : null
   let events = trace.events
-  if (!content.payloads)
-    events = events.filter((e) => e.type !== 'object-payload')
+  const control = new Set(controlStreams)
+  for (const e of events) {
+    const id =
+      e.type === 'control' ? (e as { streamId?: bigint }).streamId : undefined
+    if (id !== undefined) control.add(BigInt(id))
+  }
+  const streamOf = (e: TraceEvent) => (e as { streamId?: bigint }).streamId
+  // An error on a data stream holds object bytes. One on no stream it names
+  // may hold either kind (SPEC.md Event 6: an absent "sid" "means there was
+  // no stream or none is known"), so both redactions apply to it.
+  const dataError = (e: TraceEvent) => {
+    const id = streamOf(e)
+    return e.type === 'error' && id !== undefined && !control.has(BigInt(id))
+  }
+  const unplaced = (e: TraceEvent) => e.type === 'error' && streamOf(e) === undefined
+  // An error's bytes dropped here leave nothing that says `full` lacks them.
+  let errorBytesDropped = false
+  const dropped = (before: TraceEvent, after: TraceEvent) => {
+    if (
+      (before as { raw?: unknown }).raw !== undefined &&
+      (after as { raw?: unknown }).raw === undefined
+    )
+      errorBytesDropped = true
+    return after
+  }
+  if (!content.payloads) {
+    events = events
+      .filter((e) => e.type !== 'object-payload')
+      .map((e) => (e.type === 'control' || e.type === 'error' ? withoutRaw(e) : e))
+  }
   if (!content.auth) {
-    const control = new Set(controlStreams)
-    for (const e of events) {
-      const id =
-        e.type === 'control' ? (e as { streamId?: bigint }).streamId : undefined
-      if (id !== undefined) control.add(BigInt(id))
-    }
     events = events.filter(
       (e) =>
         (e.type !== 'object-payload' && e.type !== 'object-header') ||
         !control.has(BigInt((e as { streamId: bigint }).streamId)),
     )
     events = events.map((e) => {
-      if (e.type === 'error') {
+      if (e.type === 'error' && !dataError(e)) {
         // A message that did not decode may still hold a token.
         const { raw, ...rest } = e as TraceEvent & { raw?: Uint8Array }
         const kept = redactRaw(raw, known)
-        return (kept ? { ...rest, raw: kept } : rest) as TraceEvent
+        return dropped(e, (kept ? { ...rest, raw: kept } : rest) as TraceEvent)
       }
       if (e.type !== 'control') return e
       const c = e as TraceEvent & { message: unknown; raw?: Uint8Array }
@@ -405,6 +458,8 @@ export async function redactTrace(
     }
     const redacted = await Promise.all(
       events.map(async (e) => {
+        if (dataError(e) || unplaced(e))
+          return dropped(e, await redactErrorBytes(e, credentials))
         if (e.type !== 'object-payload') return e
         const p = e as ObjectPayloadEvent
         const out = await redactCatalogPayload(
@@ -418,7 +473,7 @@ export async function redactTrace(
     events = redacted.filter((e): e is TraceEvent => e !== undefined)
   }
   // With no object left, `control` sheds the stream events too.
-  const fitted = fitDetail(events)
+  const fitted = fitDetail(events, dataError, { full: !errorBytesDropped })
   // `seq` stays dense after events are dropped.
   events = fitted.events.map((e, seq) => ({ ...e, seq }) as TraceEvent)
 

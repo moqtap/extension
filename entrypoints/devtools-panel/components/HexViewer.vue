@@ -21,6 +21,8 @@ const props = withDefaults(
     mediaBoxes?: boolean
     /** The session's draft, which names an object's status */
     draft?: string
+    /** Where the bytes that do not decode start; they run to the end */
+    undecodableFrom?: number
   }>(),
   {
     headerSize: 0,
@@ -41,9 +43,10 @@ const OVERSCAN = 10
  *   'header'  — the stream header
  *   'framing' — an object's header (Object ID, lengths, status)
  *   'props'   — an object's property block, when `markProperties` is set
+ *   'bad'     — bytes that do not decode
  *   'none'    — payload, or bytes outside any object
  */
-type ByteKind = 'header' | 'framing' | 'props' | 'none'
+type ByteKind = 'header' | 'framing' | 'props' | 'bad' | 'none'
 
 // ── Per-object media annotation ──────────────────────────────────
 interface ObjectAnnotation {
@@ -258,6 +261,12 @@ function computeByteKinds(from: number, to: number): ByteKind[] {
     }
   }
 
+  if (props.undecodableFrom !== undefined) {
+    for (let i = Math.max(props.undecodableFrom, from); i < Math.min(len, to); i++) {
+      kinds[i - from] = 'bad'
+    }
+  }
+
   return kinds
 }
 
@@ -456,6 +465,7 @@ function byteClass(kind: ByteKind, colIdx: number): Record<string, boolean> {
     'hex-gap': colIdx === 7,
     'hex-proto': kind === 'header' || kind === 'framing' || kind === 'props',
     'hex-props': kind === 'props',
+    'hex-bad': kind === 'bad',
   }
 }
 
@@ -561,6 +571,10 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
         >)</template
       ><template v-if="hasPropertyBlocks">
         · <span class="hex-props">property blocks</span></template
+      ><template v-if="undecodableFrom !== undefined && undecodableFrom < data.length">
+        · <span class="hex-bad">{{ plural(data.length - undecodableFrom, 'byte') }} {{
+          data.length - undecodableFrom === 1 ? "doesn't" : "don't"
+        }} decode</span></template
       ><template v-if="note">
         · <span class="hex-note">{{ note }}</span></template
       >
@@ -764,5 +778,10 @@ function entryKey(entry: VisibleEntry, _idx: number): string {
 
 .hex-note {
   font-style: italic;
+}
+
+/* Bytes that do not decode */
+.hex-bad {
+  color: var(--warning);
 }
 </style>

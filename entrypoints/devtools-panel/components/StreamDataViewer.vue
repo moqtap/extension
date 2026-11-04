@@ -11,11 +11,8 @@ import { plural } from '../format'
 import { getCachedPref, savePref } from '../prefs'
 import type { HeaderTag, StreamObject } from '../stream-framing'
 import type { StreamFormat } from '../stream-format'
-import {
-  extractAllPayloads,
-  parseDatagramGroupFraming,
-  parseStreamFraming,
-} from '../stream-framing'
+import { extractAllPayloads, parseDatagramGroupFraming } from '../stream-framing'
+import { undecodableNotice } from '../undecodable-stream'
 import {
   type MediaTimelineTemplate,
   TIMELINE_LABELS,
@@ -23,7 +20,7 @@ import {
   type TimelineState,
   templateText,
 } from '../timelines'
-import type { ImportedFraming, TrackEntry } from '../use-inspector'
+import type { ImportedFraming, RecordedUndecodable, TrackEntry } from '../use-inspector'
 import BmffObjectsPanel from './BmffObjectsPanel.vue'
 import CatalogPanel from './CatalogPanel.vue'
 import CmafObjectsPanel from './CmafObjectsPanel.vue'
@@ -32,6 +29,7 @@ import JsonTree from './JsonTree.vue'
 import LocObjectsPanel from './LocObjectsPanel.vue'
 import NalUnitsPanel from './NalUnitsPanel.vue'
 import TimelinePanel from './TimelinePanel.vue'
+import UndecodableNotice from './UndecodableNotice.vue'
 
 const props = defineProps<{
   data: Uint8Array
@@ -49,6 +47,10 @@ const props = defineProps<{
   catalog?: CatalogView | null
   /** How an imported stream's framing came about; absent for a live stream */
   importedFraming?: ImportedFraming
+  /** The bytes are the whole stream: it closed and all of it was loaded */
+  complete?: boolean
+  /** What an imported trace records of the stream's bytes that did not decode */
+  recordedUndecodable?: RecordedUndecodable
   /** The LOC track this stream carries, and how to decode one of its objects */
   loc?: {
     state: LocTrackState
@@ -149,14 +151,22 @@ for (const [mode, key] of [
 const jsonData = ref<unknown | null>(null)
 const jsonParsed = ref(false)
 
-/** MoQT framing info */
-const framing = computed(() => {
-  if (!props.isMoqt) return null
+/** The stream's objects, and its bytes that do not decode */
+const reading = computed(() => {
+  if (!props.isMoqt) return { framing: null, undecodable: null }
   if (props.isDatagramGroup) {
-    return parseDatagramGroupFraming(props.data, props.draft)
+    return { framing: parseDatagramGroupFraming(props.data, props.draft), undecodable: null }
   }
-  return parseStreamFraming(props.data, props.draft)
+  return undecodableNotice(props.data, props.draft, {
+    complete: props.complete ?? false,
+    importedFraming: props.importedFraming,
+    recorded: props.recordedUndecodable,
+  })
 })
+
+/** MoQT framing info */
+const framing = computed(() => reading.value.framing)
+const undecodable = computed(() => reading.value.undecodable)
 
 /** The hex view's note on an imported stream's framing bytes. */
 const framingNote = computed((): string | undefined => {
@@ -569,6 +579,7 @@ if (!trackMode() && props.trackView !== 'hex' && (props.trackView === 'reader' |
       </div>
       <span v-if="metaText" class="viewer-meta" :title="metaTitle">{{ metaText }}</span>
     </div>
+    <UndecodableNotice v-if="undecodable" :notice="undecodable" class="viewer-notice" />
     <p v-if="template" class="viewer-template" title="The catalog's media timeline template">
       template · {{ templateText(template) }}
     </p>
@@ -586,6 +597,7 @@ if (!trackMode() && props.trackView !== 'hex' && (props.trackView === 'reader' |
         :mark-properties="!!loc"
         :media-boxes="!!bytes"
         :draft="draft"
+        :undecodable-from="undecodable?.offset ?? undefined"
       />
       <div v-else-if="viewMode === 'json' && jsonData" class="json-container">
         <JsonTree :data="jsonData" :initial-expanded="true" />
@@ -670,6 +682,10 @@ if (!trackMode() && props.trackView !== 'hex' && (props.trackView === 'reader' |
   white-space: nowrap;
   color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.viewer-notice {
+  margin: var(--space-1) var(--space-2);
 }
 
 .viewer-template {

@@ -128,11 +128,13 @@ export function createCodecDatagramParser(draft: SupportedDraft): DraftParser {
  * A parser for the longest prefix of a stream that frames whole as `kind`
  * under this draft alone, for a stream that ends inside an object or carries
  * one the draft refuses. Each try cuts the bytes back to the codec's error
- * offset, or by one byte.
+ * offset, or by one byte. `'header'` when the cuts reach the first byte, so
+ * no prefix holds a header that decodes; null when the codec throws or the
+ * tries run out.
  */
 export function createCodecPrefixParser(
   draft: SupportedDraft,
-): (data: Uint8Array, kind: 'subgroup' | 'fetch') => ParsedPrefix | null {
+): (data: Uint8Array, kind: 'subgroup' | 'fetch') => ParsedPrefix | 'header' | null {
   const codec = createCodec({ draft }) as unknown as DataStreamCodec
 
   return (data, kind) => {
@@ -160,7 +162,7 @@ export function createCodecPrefixParser(
       if (end === data.length && !isIncomplete(error)) refused = error.message
       end = Math.min(end - 1, error.offset)
     }
-    return null
+    return end <= 0 ? 'header' : null
   }
 }
 
@@ -182,6 +184,31 @@ function prefixOf(
   refused: string | undefined,
 ): ParsedPrefix {
   return refused === undefined ? { framing, end } : { framing, end, refused }
+}
+
+/**
+ * Why a stream does not decode whole as `kind` under this draft: the codec's
+ * reason, and whether more bytes could resolve it. Null when it decodes.
+ */
+export function createCodecStreamError(
+  draft: SupportedDraft,
+): (
+  data: Uint8Array,
+  kind: 'subgroup' | 'fetch',
+) => { reason: string; incomplete: boolean } | null {
+  const codec = createCodec({ draft }) as unknown as DataStreamCodec
+  return (data, kind) => {
+    try {
+      const result =
+        kind === 'subgroup'
+          ? codec.decodeSubgroupStream(data)
+          : codec.decodeFetchStream(data)
+      if (result.ok) return null
+      return { reason: result.error.message, incomplete: isIncomplete(result.error) }
+    } catch (e) {
+      return { reason: e instanceof Error ? e.message : String(e), incomplete: false }
+    }
+  }
 }
 
 /** Decode attempts {@link createCodecPrefixParser} makes before giving up. */

@@ -16,23 +16,25 @@ import { traceSource } from '@/src/trace/source'
 import type { SupportedDraft } from '@/src/types/common'
 import type { Trace, TraceEvent, TraceHeader } from '@moqtap/trace'
 import {
+  type ParsedStreamFraming,
   parseDatagramFraming,
   parseDatagramGroupFraming,
   parseStreamFraming,
-  parseStreamPrefix,
+  readStream,
   type StreamObject,
 } from './stream-framing'
 import { arrivalAt } from '@/src/trace/arrivals'
-import { fitDetail } from '@/src/trace/detail'
+import { fitDetail, rawFlow } from '@/src/trace/detail'
 import {
   DECODE_ERROR_CODE,
+  decodeErrorKind,
   decodeErrorLength,
   decodeErrorReason,
   MAX_DECODE_ERROR_RAW,
   isDecodeError,
 } from '@/src/trace/decode-error'
 import { holdsHeaderBytes } from './import-trace'
-import type { SessionEntry } from './use-inspector'
+import type { SessionEntry, StreamEntry } from './use-inspector'
 
 /** Resolve a message type name (e.g. "subscribe") to its wire ID number. */
 function resolveMessageTypeId(name: string, draft: SupportedDraft): number {
@@ -113,6 +115,118 @@ function datagramHeaders(
   return out
 }
 
+/** A data stream's bytes that do not decode, as an error event records them. */
+interface StreamError {
+  /** Where they start in the stream's data */
+  offset: number
+  reason: string
+  rawLength: number | null
+  raw: Uint8Array | null
+  /** `raw` is the stream's data from `offset`, not bytes held beside it */
+  placed: boolean
+  /** SPEC.md Event 6 `"ek"` */
+  kind: 'decode' | 'protocol'
+}
+
+/** An imported stream's error as its trace recorded it, with no data to read. */
+function recordedError(stream: StreamEntry): StreamError | null {
+  const recorded = stream.undecodable
+  if (!recorded) return null
+  return {
+    offset: 0,
+    reason: recorded.reason,
+    rawLength: recorded.length,
+    raw: recorded.raw ?? null,
+    placed: false,
+    kind: 'decode',
+  }
+}
+
+/**
+ * A data stream's objects, and its bytes that do not decode: read now for a
+ * live stream, as its trace recorded them for an imported one. Payloads
+ * alone, from an import that could not frame them, are neither.
+ */
+function readDataStream(
+  stream: StreamEntry,
+  data: Uint8Array,
+  draft: string | undefined,
+): { framing: ParsedStreamFraming | null; error: StreamError | null; padding?: true } {
+  // A stream the background saw a fetch header on is a fetch stream;
+  // otherwise either kind may be.
+  const kinds =
+    stream.fetchRequestId != null
+      ? (['fetch'] as const)
+      : (['subgroup', 'fetch'] as const)
+  const recorded = stream.undecodable
+  if (recorded) {
+    const end = recorded.offset ?? data.length
+    return {
+      framing:
+        stream.importedFraming === 'unavailable'
+          ? null
+          : readStream(data.subarray(0, end), draft, { complete: true, kinds })
+              .framing,
+      // A rewrite keeps the bytes it read, whatever their length.
+      error: {
+        offset: end,
+        reason: recorded.reason,
+        rawLength: recorded.length,
+        raw: recorded.offset !== null ? data.subarray(end) : (recorded.raw ?? null),
+        placed: recorded.offset !== null,
+        kind: 'decode',
+      },
+    }
+  }
+  if (stream.importedFraming === 'unavailable')
+    return { framing: parseStreamFraming(data, draft), error: null }
+  const read = readStream(data, draft, {
+    complete: stream.finished === true && data.length >= stream.byteCount,
+    kinds,
+  })
+  const run = read.undecodable
+  return {
+    framing: read.framing,
+    error: run && {
+      offset: run.offset,
+      reason: run.reason,
+      rawLength: run.length,
+      raw: data.subarray(run.offset, run.offset + MAX_DECODE_ERROR_RAW),
+      placed: true,
+      // Padding that is not all zero parses, and breaks a MUST.
+      kind: read.padding ? 'protocol' : 'decode',
+    },
+    ...(read.padding ? { padding: true as const } : {}),
+  }
+}
+
+/**
+ * SPEC.md Event 6, "One raw per flow": "A recorder MUST NOT emit "raw" more
+ * than once per flow — per stream where the error names one, per peer where
+ * it does not, and once for the whole recording where it writes no peer
+ * identifier either." Later errors on a flow keep their reason and length.
+ * A data stream's own error, which holds the stream's bytes, comes first on
+ * its stream whatever its time.
+ */
+function latchRaw(
+  events: readonly TraceEvent[],
+  ownErrors: ReadonlySet<TraceEvent>,
+): TraceEvent[] {
+  const hasRaw = (e: TraceEvent) => (e as { raw?: unknown }).raw !== undefined
+  const carried = new Set<string>()
+  for (const e of ownErrors) if (hasRaw(e)) carried.add(rawFlow(e))
+  return events.map((e) => {
+    if (e.type !== 'error' || !hasRaw(e) || ownErrors.has(e)) return e
+    const flow = rawFlow(e)
+    if (!carried.has(flow)) {
+      carried.add(flow)
+      return e
+    }
+    const { raw: _raw, ...rest } = e as TraceEvent & { raw?: Uint8Array }
+    return rest as TraceEvent
+  })
+}
+
 /**
  * Build a complete Trace from a session, including stream payload data.
  */
@@ -144,12 +258,10 @@ export async function buildTrace(
         timestamp: 0,
         errorCode: DECODE_ERROR_CODE,
         reason: decodeErrorReason(msg.decoded),
-        errorKind: 'decode',
+        errorKind: decodeErrorKind(msg.decoded),
         ...(msg.streamId != null ? { streamId: BigInt(msg.streamId) } : {}),
         ...(length !== null ? { rawLength: length } : {}),
-        ...(msg.raw.length > 0
-          ? { raw: toBytes(msg.raw).slice(0, MAX_DECODE_ERROR_RAW) }
-          : {}),
+        ...(msg.raw.length > 0 ? { raw: toBytes(msg.raw) } : {}),
       })
       continue
     }
@@ -184,10 +296,16 @@ export async function buildTrace(
     if (stream.isControl) controlStreams.add(stream.streamId)
   }
   for (const msg of session.messages) {
-    if (msg.streamId != null) controlStreams.add(Number(msg.streamId))
+    if (msg.streamId == null) continue
+    const id = Number(msg.streamId)
+    // A further decode error an imported data stream carries names no request.
+    if (isDecodeError(msg.messageType) && session.streams.get(id)?.undecodable)
+      continue
+    controlStreams.add(id)
   }
 
   // Streams — open events, payload data, close events
+  const ownErrors = new Set<TraceEvent>()
   for (const stream of session.streams.values()) {
     // Nothing records when a stream opened, so the first chunk's arrival is
     // the earliest moment it is known to have existed. A stream that carried
@@ -202,23 +320,33 @@ export async function buildTrace(
         // Stream data load failed — the stream is still exported, without objects
       }
     }
-    let framing = data ? parseStreamFraming(data, session.draft) : null
-    // A stream that ends inside an object, or carries one the draft refuses,
-    // keeps the objects before it.
-    if (data && framing == null) {
-      const draft = session.draft
-      // A stream the background saw a fetch header on is a fetch stream;
-      // otherwise either kind may be.
-      const kinds =
-        stream.fetchRequestId != null
-          ? (['fetch'] as const)
-          : (['subgroup', 'fetch'] as const)
-      framing = null
-      for (const kind of kinds) {
-        if (!draft) break
-        framing = parseStreamPrefix(data, draft, kind)?.framing ?? null
-        if (framing) break
+    // The objects before bytes that do not decode are kept; those bytes go
+    // in an error event, as SPEC.md's Event 6 records them.
+    const { framing, error, padding } = data
+      ? readDataStream(stream, data, session.draft)
+      : { framing: null, error: recordedError(stream), padding: undefined }
+    // draft-23 Section 11.5: "Padding does not carry Objects or any other
+    // application data", and Event 1's "st" has no padding type: the stream is
+    // left out, but for padding data that is not zero.
+    const pushError = () => {
+      if (!error) return
+      const event: TraceEvent = {
+        type: 'error',
+        seq: 0,
+        timestamp: 0,
+        errorCode: DECODE_ERROR_CODE,
+        reason: error.reason,
+        errorKind: error.kind,
+        streamId: BigInt(stream.streamId),
+        ...(error.rawLength !== null ? { rawLength: error.rawLength } : {}),
+        ...(error.raw && error.raw.length > 0 ? { raw: toBytes(error.raw) } : {}),
       }
+      ownErrors.add(event)
+      push(arrivalAt(stream.arrivals, error.offset) ?? openedAt, event)
+    }
+    if (padding) {
+      pushError()
+      continue
     }
     const hf = framing?.headerFields ?? {}
     const isFetch =
@@ -295,8 +423,9 @@ export async function buildTrace(
               payload: toBytes(payload),
             })
           }
-        } else {
+        } else if (!framing && !(error?.placed && error.raw)) {
           // No MoQT framing — store raw as a single object-payload
+          const bytes = data.subarray(0, error?.placed ? error.offset : data.length)
           push(openedAt, {
             type: 'object-payload',
             seq: 0,
@@ -304,8 +433,8 @@ export async function buildTrace(
             streamId: BigInt(stream.streamId),
             groupId: 0n,
             objectId: 0n,
-            size: data.length,
-            payload: toBytes(data),
+            size: bytes.length,
+            payload: toBytes(bytes),
           })
         }
       } catch {
@@ -313,13 +442,18 @@ export async function buildTrace(
       }
     }
 
-    if (stream.closed) {
+    pushError()
+
+    // SPEC.md Event 2's "ec" is "Error code (0 = clean close)". A stream reset
+    // or dropped with no code known has none to write, so no Event 2.
+    const closeCode = stream.finished ? 0 : stream.closeCode
+    if (stream.closed && closeCode !== undefined) {
       push(stream.lastDataAt ?? openedAt, {
         type: 'stream-closed',
         seq: 0,
         timestamp: 0,
         streamId: BigInt(stream.streamId),
-        errorCode: 0,
+        errorCode: closeCode,
       })
     }
   }
@@ -406,10 +540,17 @@ export async function buildTrace(
   // precedes the payload it shares a timestamp with, as the format requires.
   pending.sort((a, b) => a.at - b.at)
 
+  // The latch binds a recorder; a rewrite keeps what it read.
+  const latched = session.imported
+    ? pending.map((p) => p.event)
+    : latchRaw(
+        pending.map((p) => p.event),
+        ownErrors,
+      )
   const numbered: TraceEvent[] = pending.map(
-    ({ at, event }, seq) =>
+    ({ at }, seq) =>
       ({
-        ...event,
+        ...latched[seq],
         seq,
         timestamp: toRelativeUs(at, startTime),
       }) as TraceEvent,
@@ -419,7 +560,10 @@ export async function buildTrace(
   // Payload capture can be off -- `streamRecording === false` makes
   // `getStreamData` return null -- and then no object-header and no
   // object-payload event is built at all, and the trace is `control`.
-  const { detail, events: kept } = fitDetail(numbered)
+  const { detail, events: kept } = fitDetail(numbered, (e) => {
+    const id = (e as { streamId?: bigint }).streamId
+    return id !== undefined && !controlStreams.has(Number(id))
+  })
   const events = kept.map((e, seq) => ({ ...e, seq }) as TraceEvent)
 
   const header: TraceHeader = {

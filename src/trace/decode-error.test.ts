@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   DECODE_ERROR_CODE,
   DECODE_ERROR_MESSAGE_TYPE,
+  decodeErrorKind,
+  decodeErrorLabel,
   decodeErrorReason,
   isDecodeError,
 } from './decode-error'
@@ -52,6 +54,23 @@ describe('decodeErrorReason', () => {
     ]) {
       expect(decodeErrorReason(input)).toBe('undecodable control bytes')
     }
+  })
+})
+
+describe('decodeErrorLabel', () => {
+  it('names a datagram the background read, and nothing else', () => {
+    const fields = { code: 'X', reason: 'y' }
+    expect(decodeErrorLabel({ ...fields, datagram: true })).toBe('Datagram: X: y')
+    expect(decodeErrorLabel(fields)).toBe('X: y')
+    expect(decodeErrorReason({ ...fields, datagram: true })).toBe('X: y')
+  })
+})
+
+describe('decodeErrorKind', () => {
+  it('is protocol only where the marker says so', () => {
+    expect(decodeErrorKind({ reason: 'y', kind: 'protocol' })).toBe('protocol')
+    expect(decodeErrorKind({ reason: 'y' })).toBe('decode')
+    expect(decodeErrorKind(null)).toBe('decode')
   })
 })
 

@@ -180,6 +180,8 @@ describe('redaction for sharing', () => {
     ])
     expect(out.events.map((e) => e.seq)).toEqual([0, 1, 2, 3])
     expect(out.header.detail).toBe('headers')
+    // SPEC.md gates Event 0 "raw" at full, above the payloads.
+    expect(control(out).raw).toBeUndefined()
   })
 
   it('a session with no data stream, shared with the defaults, is control and carries no stream event', async () => {
@@ -222,10 +224,11 @@ describe('redaction for sharing', () => {
     }
   })
 
-  it('payloads on keeps them at headers+data', async () => {
+  it("payloads on keeps them, and with every control message's bytes the trace is full", async () => {
     const out = await redactTrace(trace(), { payloads: true, auth: true }, '20')
     expect(out.events.some((e) => e.type === 'object-payload')).toBe(true)
-    expect(out.header.detail).toBe('headers+data')
+    expect(control(out).raw).toBeDefined()
+    expect(out.header.detail).toBe('full')
   })
 
   it('auth off zero-fills the token in the wire bytes, length preserved, and in the decoded map', async () => {
@@ -638,7 +641,7 @@ describe('catalog redaction for sharing', () => {
       initData: 'AAAAINITKEEP',
     })
     expect(p.size).toBe(p.payload.length)
-    expect(out.header.detail).toBe('headers+data')
+    expect(out.header.detail).toBe('full')
   })
 
   it('auth on keeps the credentials but still replaces trackBaseKey, a content key', async () => {

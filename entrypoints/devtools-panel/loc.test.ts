@@ -149,12 +149,14 @@ function session(tracks: TrackEntry[]) {
   return {
     s,
     bytes,
-    put(streamId: number, data: Uint8Array, alias: number, closed = true) {
+    /** `closed` is a close with a FIN; `'reset'` one without */
+    put(streamId: number, data: Uint8Array, alias: number, closed: boolean | 'reset' = true) {
       bytes.set(streamId, data)
       s.streams.set(streamId, {
         streamId,
         direction: 'rx',
-        closed,
+        closed: closed !== false,
+        ...(closed === true ? { finished: true } : {}),
         byteCount: data.length,
         chunkCount: 1,
         contentType: 'binary',
@@ -205,6 +207,39 @@ describe('which tracks are LOC', () => {
     t.put(10, subgroup(1, 0, [{ props: [KEY] }]), 1)
     const reader = new SessionLoc()
     expect(reader.sync(t.s, described([video], 'cmaf'))).toEqual([])
+  })
+
+  it("names a closed stream's bytes past its last whole object", () => {
+    const video = track('1', 'video', 1)
+    const t = session([video])
+    const whole = subgroup(1, 0, [{ props: [KEY] }, { props: [KEY] }])
+    const cut = whole.subarray(0, whole.length - 1)
+    const end = framing.parseStreamPrefix(cut, '22', 'subgroup')!.end
+    t.put(10, cut, 1, false)
+    const reader = new SessionLoc()
+    const packaging = described([video], 'loc')
+    pump(reader, t, packaging)
+    expect(reader.trackState(video, packaging, '22')!.undecodable).toEqual([])
+    t.put(10, cut, 1, true)
+    pump(reader, t, packaging)
+    const state = reader.trackState(video, packaging, '22')!
+    expect(state.objectCount).toBe(1)
+    expect(state.undecodable).toEqual([
+      { source: 's:10', offset: end, length: cut.length - end, reason: framing.CUT_OBJECT },
+    ])
+  })
+
+  it('names no bytes when a stream is reset inside an object', () => {
+    const video = track('1', 'video', 1)
+    const t = session([video])
+    const whole = subgroup(1, 0, [{ props: [KEY] }, { props: [KEY] }])
+    t.put(10, whole.subarray(0, whole.length - 1), 1, 'reset')
+    const reader = new SessionLoc()
+    const packaging = described([video], 'loc')
+    pump(reader, t, packaging)
+    const state = reader.trackState(video, packaging, '22')!
+    expect(state.objectCount).toBe(1)
+    expect(state.undecodable).toEqual([])
   })
 
   it('reads a track the catalog gives packaging loc', () => {

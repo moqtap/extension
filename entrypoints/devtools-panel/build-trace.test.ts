@@ -14,6 +14,8 @@
 import { encodeSubgroupStream } from '@moqtap/codec/draft22'
 import { writeMoqtrace } from '@moqtap/trace'
 import { describe, expect, it } from 'vitest'
+import { PADDING_STREAM_TYPE } from '@/src/codec/padding'
+import { encodeVarintForDraft } from '@/src/codec/varint'
 import { buildTrace } from './build-trace'
 import { redactTrace } from './redact-trace'
 import type { SessionEntry } from './use-inspector'
@@ -24,6 +26,7 @@ import type { SessionEntry } from './use-inspector'
 type AnySession = any
 
 function session(overrides: Record<string, unknown> = {}): SessionEntry {
+  const streams = (overrides.streams ?? []) as { streamId: number }[]
   return {
     sessionId: 's1',
     url: 'https://relay.example/moq',
@@ -32,9 +35,9 @@ function session(overrides: Record<string, unknown> = {}): SessionEntry {
     protocol: 'moqt',
     draft: '14',
     messages: [],
-    streams: [],
     datagramGroups: [],
     ...overrides,
+    streams: new Map(streams.map((s) => [s.streamId, s])),
   } as AnySession
 }
 
@@ -68,10 +71,10 @@ describe('the exported trace declares the capture level it actually has', () => 
   })
 
   it('says "headers+data" when payloads are present', async () => {
-    // A draft-14 subgroup stream: type 0x10, track alias 1, group 0,
-    // subgroup 0, priority 128, then one object (id 0, length 2).
+    // A draft-14 subgroup stream: type 0x10 (no Subgroup ID field), track
+    // alias 1, group 0, priority 128, then one object (id 0, length 2).
     const bytes = new Uint8Array([
-      0x10, 0x01, 0x00, 0x00, 0x80, 0x00, 0x02, 0xde, 0xad,
+      0x10, 0x01, 0x00, 0x80, 0x00, 0x02, 0xde, 0xad,
     ])
     const trace = await buildTrace(
       session({
@@ -117,7 +120,7 @@ describe('the exported trace never carries control-plane bytes as objects', () =
   /** A draft-14 subgroup stream with one object holding `payload`. */
   const subgroup = (payload: string) => {
     const p = enc.encode(payload)
-    return new Uint8Array([0x10, 0x01, 0x00, 0x00, 0x80, 0x00, p.length, ...p])
+    return new Uint8Array([0x10, 0x01, 0x00, 0x80, 0x00, p.length, ...p])
   }
   const stream = (
     streamId: number,
@@ -414,8 +417,28 @@ describe('a control message that did not decode', () => {
     raw: bytes,
   }
 
-  it('is an error event with its stream and bytes', async () => {
-    const trace = await buildTrace(session({ messages: [marker] }), noData)
+  // A draft-14 subgroup stream with one object, so the trace holds payloads.
+  const media = new Uint8Array([0x10, 0x01, 0x00, 0x80, 0x00, 0x02, 0xde, 0xad])
+  const withMedia = (messages: unknown[]) =>
+    session({
+      messages,
+      streams: [
+        {
+          streamId: 3,
+          byteCount: media.length,
+          closed: true,
+          direction: 'rx',
+          firstDataAt: 1010,
+          lastDataAt: 1020,
+          arrivals: [],
+        },
+      ],
+    })
+  const mediaData = async () => media
+
+  it('is an error event with its stream and bytes, in a full trace', async () => {
+    const trace = await buildTrace(withMedia([marker]), mediaData)
+    expect(trace.header.detail).toBe('full')
     const error = trace.events.find((e) => e.type === 'error')
     expect(error).toMatchObject({
       errorCode: 0,
@@ -429,11 +452,11 @@ describe('a control message that did not decode', () => {
     )
   })
 
-  it('keeps at most 4 KB of the bytes', async () => {
-    const big = new Uint8Array(10000).fill(7)
+  it('keeps the bytes the capture held and the length it saw', async () => {
+    const held = new Uint8Array(4096).fill(7)
     const trace = await buildTrace(
-      session({ messages: [{ ...marker, raw: big, decoded: { length: 10000 } }] }),
-      noData,
+      withMedia([{ ...marker, raw: held, decoded: { length: 10000 } }]),
+      mediaData,
     )
     const error = trace.events.find((e) => e.type === 'error') as {
       raw: Uint8Array
@@ -441,6 +464,31 @@ describe('a control message that did not decode', () => {
     }
     expect(error.raw.length).toBe(4096)
     expect(error.rawLength).toBe(10000)
+  })
+
+  it('loses its bytes and their length in a trace with no payloads', async () => {
+    const trace = await buildTrace(session({ messages: [marker] }), noData)
+    expect(trace.header.detail).toBe('control')
+    const error = trace.events.find((e) => e.type === 'error')
+    expect(error).toMatchObject({ streamId: 21n, errorKind: 'decode' })
+    expect(error).not.toHaveProperty('raw')
+    expect(error).not.toHaveProperty('rawLength')
+  })
+
+  it('makes a trace headers+data, without any raw, when a control message has no bytes', async () => {
+    const setup = {
+      messageType: 'client_setup',
+      direction: 'tx',
+      timestamp: 1001,
+      streamId: 0,
+      decoded: {},
+      raw: new Uint8Array(0),
+    }
+    const trace = await buildTrace(withMedia([setup, marker]), mediaData)
+    expect(trace.header.detail).toBe('headers+data')
+    const error = trace.events.find((e) => e.type === 'error')
+    expect(error).toMatchObject({ rawLength: 5 })
+    expect(error).not.toHaveProperty('raw')
   })
 
   it('drops its bytes from a share without credentials', async () => {
@@ -453,5 +501,93 @@ describe('a control message that did not decode', () => {
     const error = shared.events.find((e) => e.type === 'error')
     expect(error).toMatchObject({ streamId: 21n })
     expect(error).not.toHaveProperty('raw')
+  })
+})
+
+describe('how a data stream ended', () => {
+  // draft-22 SUBGROUP_HEADER type 0x14: alias 7, group 3, subgroup 2,
+  // priority 0x80; object 0 with 2 payload bytes, then object 1 cut short.
+  const cut = new Uint8Array([
+    0x14, 0x07, 0x03, 0x02, 0x80, 0x00, 0x02, 0xde, 0xad, 0x01, 0x05, 0xbe,
+  ])
+  const stream = (extra: Record<string, unknown>) => ({
+    streamId: 2,
+    byteCount: cut.length,
+    closed: true,
+    direction: 'rx',
+    firstDataAt: 1010,
+    lastDataAt: 1020,
+    arrivals: [],
+    ...extra,
+  })
+  const build = (extra: Record<string, unknown>) =>
+    buildTrace(session({ draft: '22', streams: [stream(extra)] }), async () => cut)
+  const types = (trace: Awaited<ReturnType<typeof build>>) => trace.events.map((e) => e.type)
+
+  it('names the bytes of an object a FIN cut short, and closes cleanly', async () => {
+    const trace = await build({ finished: true })
+    expect(types(trace)).toEqual([
+      'stream-opened',
+      'object-header',
+      'object-payload',
+      'error',
+      'stream-closed',
+    ])
+    expect(trace.events.find((e) => e.type === 'error')).toMatchObject({
+      streamId: 2n,
+      errorKind: 'decode',
+      rawLength: 3,
+    })
+    expect(trace.events.find((e) => e.type === 'stream-closed')).toMatchObject({ errorCode: 0 })
+  })
+
+  // draft-23 Section 11.3.2: "If a sender closes the stream before delivering
+  // all such objects to the QUIC stream, it MUST reset the stream."
+  it('keeps the objects of a stream reset inside an object, and names no bytes', async () => {
+    const trace = await build({})
+    // SPEC.md Event 2's "ec" has no value for a reset whose code is unknown.
+    expect(types(trace)).toEqual(['stream-opened', 'object-header', 'object-payload'])
+    expect(trace.header.detail).toBe('headers+data')
+  })
+
+  it('keeps the code an imported trace closed the stream with', async () => {
+    const trace = await build({ closeCode: 3 })
+    expect(trace.events.find((e) => e.type === 'stream-closed')).toMatchObject({ errorCode: 3 })
+    expect(trace.events.some((e) => e.type === 'error')).toBe(false)
+  })
+})
+
+// draft-23 Section 11.5: "Padding does not carry Objects or any other
+// application data."
+describe('a padding stream', () => {
+  const type = Array.from(encodeVarintForDraft('23', PADDING_STREAM_TYPE))
+  const build = (bytes: Uint8Array) =>
+    buildTrace(
+      session({
+        draft: '23',
+        streams: [
+          {
+            streamId: 2,
+            byteCount: bytes.length,
+            closed: true,
+            finished: true,
+            direction: 'rx',
+            firstDataAt: 1010,
+            arrivals: [],
+          },
+        ],
+      }),
+      async () => bytes,
+    )
+
+  it('is left out of the trace', async () => {
+    const trace = await build(new Uint8Array([...type, 0, 0, 0]))
+    expect(trace.events).toEqual([])
+  })
+
+  it('leaves only an error when its data is not zero', async () => {
+    const trace = await build(new Uint8Array([...type, 0, 9]))
+    expect(trace.events.map((e) => e.type)).toEqual(['error'])
+    expect(trace.events[0]).toMatchObject({ streamId: 2n, errorKind: 'protocol', rawLength: 1 })
   })
 })

@@ -29,6 +29,7 @@ import {
 import { SUPPORTED_DRAFTS } from '@/src/types/common'
 import { SessionLoc } from './loc'
 import type { PanelProblem } from './problems'
+import { CUT_OBJECT, parseStreamPrefix } from './stream-framing'
 import { templateOf, templateProblems } from './timelines'
 import type { SessionEntry, StreamEntry, TrackEntry } from './use-inspector'
 
@@ -196,12 +197,14 @@ function session(tracks: TrackEntry[]) {
   return {
     s,
     bytes,
-    put(streamId: number, data: Uint8Array, alias: number, closed = true) {
+    /** `closed` is a close with a FIN; `'reset'` one without */
+    put(streamId: number, data: Uint8Array, alias: number, closed: boolean | 'reset' = true) {
       bytes.set(streamId, data)
       s.streams.set(streamId, {
         streamId,
         direction: 'rx',
-        closed,
+        closed: closed !== false,
+        ...(closed === true ? { finished: true } : {}),
         byteCount: data.length,
         chunkCount: 1,
         contentType: 'binary',
@@ -541,6 +544,22 @@ describe('reading sources', () => {
     expect(pump(reader, t, changed)).toBe(1)
     expect(parseSpy).toHaveBeenCalledTimes(8)
     expect(reader.trackState(video, changed)?.objectCount).toBe(4)
+  })
+
+  it("names a closed stream's bytes past its last whole object", () => {
+    const t = session([video])
+    const full = subgroup(1, 0, [SYNC, AT_10S])
+    const cut = full.subarray(0, full.length - 3)
+    const end = parseStreamPrefix(cut, '22', 'subgroup')!.end
+    t.put(10, cut, 1, true)
+    const packaging = described([[video, CMAF]])
+    const reader = new SessionCmaf()
+    pump(reader, t, packaging)
+    const state = reader.trackState(video, packaging)!
+    expect(state.objectCount).toBe(1)
+    expect(state.undecodable).toEqual([
+      { source: 's:10', offset: end, length: cut.length - end, reason: CUT_OBJECT },
+    ])
   })
 })
 

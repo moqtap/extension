@@ -4,6 +4,7 @@ import {
   type CatalogObjectRecord,
   type CatalogTrack,
   type CatalogView,
+  incompleteTitle,
   packagingLabel,
   trackSummary,
 } from '../catalogs'
@@ -190,7 +191,7 @@ function trackTitle(track: CatalogTrack): string {
     >
       <Icon name="warning" class="mq-notice__icon" />
       <div>
-        <p class="mq-notice__title">Not every catalog object was recorded</p>
+        <p class="mq-notice__title">{{ incompleteTitle(catalog) }}</p>
         <p v-for="(reason, i) in catalog.incomplete" :key="i">{{ reason }}</p>
       </div>
     </div>

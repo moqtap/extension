@@ -50,9 +50,9 @@ import {
   decodeObjectProperties,
   type ParsedStreamFraming,
   parseDatagramGroupFraming,
-  parseStreamFraming,
-  parseStreamPrefix,
+  readStream,
   type StreamObject,
+  type UndecodableRun,
 } from './stream-framing'
 import { messageTypeName } from './format'
 import { mediaPackaging } from './packaging'
@@ -132,6 +132,8 @@ export interface LocSourceRef {
   /** The alias (subgroup, datagram) or request id (fetch) its framing carries */
   id: number
   closed: boolean
+  /** The stream ended with a FIN, so its bytes are all it carried */
+  finished?: boolean
   byteCount: number
   firstDataAt?: number
 }
@@ -153,6 +155,7 @@ export function listSources(
       streamId: stream.streamId,
       id,
       closed: stream.closed,
+      ...(stream.finished ? { finished: true } : {}),
       byteCount: stream.byteCount,
       ...(stream.firstDataAt !== undefined ? { firstDataAt: stream.firstDataAt } : {}),
     })
@@ -177,29 +180,39 @@ export function listSources(
   return refs
 }
 
-/** Frame a source's bytes as the stream or datagram group it is, or null. */
-export function frameSource(
-  ref: Pick<LocSourceRef, 'kind' | 'id'>,
+/** A source's bytes that do not decode, from `offset` to its end. */
+export interface SourceUndecodable extends UndecodableRun {
+  source: LocSource
+}
+
+/**
+ * Frame a source's bytes as the stream or datagram group it is: the objects
+ * that decode, and a stream's bytes past them that do not.
+ */
+export function readSource(
+  ref: Pick<LocSourceRef, 'kind' | 'id' | 'finished' | 'byteCount'>,
   data: Uint8Array,
   draft: string | undefined,
-): ParsedStreamFraming | null {
+): { framing: ParsedStreamFraming | null; undecodable: UndecodableRun | null } {
   if (ref.kind === 'datagram') {
     const framing = parseDatagramGroupFraming(data, draft)
-    return framing?.headerFields.trackAlias === ref.id ? framing : null
+    return {
+      framing: framing?.headerFields.trackAlias === ref.id ? framing : null,
+      undecodable: null,
+    }
   }
-  const matches = (f: ParsedStreamFraming | null): f is ParsedStreamFraming =>
-    f != null &&
+  const read = readStream(data, draft, {
+    complete: ref.finished === true && data.length >= ref.byteCount,
+    kinds: [ref.kind],
+  })
+  const f = read.framing
+  if (!f) return read
+  const matches =
     f.streamType === ref.kind &&
     (ref.kind === 'subgroup'
       ? f.headerFields.trackAlias === ref.id
       : f.headerFields.requestId === ref.id)
-  const framing = parseStreamFraming(data, draft)
-  if (matches(framing)) return framing
-  if (draft === undefined) return null
-  // A stream that ends inside an object, or carries one the draft refuses:
-  // the objects before it.
-  const prefix = parseStreamPrefix(data, draft, ref.kind)
-  return matches(prefix?.framing ?? null) ? prefix!.framing : null
+  return matches ? read : { framing: null, undecodable: null }
 }
 
 /** How far one source has been read. */
@@ -209,6 +222,34 @@ interface SourceProgress {
   closed: boolean
   done: boolean
   firstDataAt?: number
+  /** Its bytes that do not decode, as of the last read */
+  undecodable?: UndecodableRun | null
+}
+
+/** The bytes that do not decode on each source of `key`, in source order. */
+export function undecodableOf(
+  progress: ReadonlyMap<LocSource, { key: TrackKey; undecodable?: UndecodableRun | null }>,
+  key: TrackKey,
+): SourceUndecodable[] {
+  const out: SourceUndecodable[] = []
+  for (const [source, p] of progress) {
+    if (p.key === key && p.undecodable) out.push({ source, ...p.undecodable })
+  }
+  return out
+}
+
+/** Store a source's bytes that do not decode; true when that changed. */
+export function setUndecodable(
+  p: { undecodable?: UndecodableRun | null },
+  run: UndecodableRun | null,
+): boolean {
+  const before = p.undecodable ?? null
+  p.undecodable = run
+  return (
+    before?.offset !== run?.offset ||
+    before?.length !== run?.length ||
+    before?.reason !== run?.reason
+  )
 }
 
 // ─── Objects ──────────────────────────────────────────────────────
@@ -278,6 +319,8 @@ export interface LocTrackState {
   objectCount: number
   /** Objects whose property block did not decode; they count toward nothing */
   malformedCount: number
+  /** Bytes of its streams that do not decode */
+  undecodable: SourceUndecodable[]
   /** Property types that count toward the profile, ascending */
   types: LocPropertyType[]
   possible: LocProfile[]
@@ -645,12 +688,15 @@ export class SessionLoc {
     p.closed = ref.closed
     p.done = ref.closed
 
-    const framing = frameSource(ref, data, draft)
-    if (!framing) return
+    const { framing, undecodable } = readSource(ref, data, draft)
+    let changed = setUndecodable(p, undecodable)
+    if (!framing) {
+      if (changed) this.revision++
+      return
+    }
     const log = this.logFor(ref.key)
     const transport = transportDraftOf(draft)
     const family = this.families.get(ref.key) ?? null
-    let added = false
     for (const obj of framing.objects) {
       if (obj.payloadOffset + obj.payloadLength > data.length) break
       if (obj.indicator !== undefined) continue
@@ -659,7 +705,7 @@ export class SessionLoc {
       const groupId = obj.groupId ?? framing.headerFields.groupId ?? 0
       const record = readObjectRecord(ref.source, obj, groupId, data, draft)
       this.records.set(key, record)
-      added = true
+      changed = true
       log.objectCount++
       if (record.propertiesError !== undefined) {
         log.malformedCount++
@@ -678,7 +724,7 @@ export class SessionLoc {
         if (facts) log.payloads.push(facts)
       }
     }
-    if (added) this.revision++
+    if (changed) this.revision++
   }
 
   private logFor(key: TrackKey): TrackLog {
@@ -741,6 +787,7 @@ export class SessionLoc {
       via,
       objectCount: log?.objectCount ?? 0,
       malformedCount: log?.malformedCount ?? 0,
+      undecodable: undecodableOf(this.progress, key),
       types,
       possible,
       resolution,

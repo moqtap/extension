@@ -87,6 +87,8 @@ import {
   withExclusion,
   withoutExclusion,
 } from '@/src/storage/worker-exclusions'
+import { type DatagramCodec, readDatagram } from '@/src/codec/datagram'
+import { NONZERO_PADDING, readPadding } from '@/src/codec/padding'
 import { createExtensionRecorder } from '@/src/trace/index'
 import type { SupportedDraft } from '@/src/types/common'
 import type { CollectorStatus } from '@/src/intercept/collector-presence'
@@ -212,6 +214,8 @@ interface StreamRecord {
   streamId: number
   direction: 'tx' | 'rx'
   closed: boolean
+  /** The stream ended with a FIN, not a reset or the page going away */
+  finished?: boolean
   byteCount: number
   /** Bidirectional stream, as reported by the page-side hook */
   bidi?: boolean
@@ -239,8 +243,11 @@ interface StreamRecord {
 }
 
 interface ControlMessageRecord {
-  /** Stream the message arrived on — names the request it belongs to in draft-17+ */
-  streamId: number
+  /**
+   * Stream the message arrived on — names the request it belongs to in
+   * draft-17+. Absent for a datagram.
+   */
+  streamId?: number
   direction: 'tx' | 'rx'
   timestamp: number
   decoded: string | null
@@ -564,17 +571,26 @@ function attemptDetection(
  */
 function reportUndecodable(
   session: SessionRecord,
-  streamId: number,
+  streamId: number | undefined,
   bytes: Uint8Array,
   direction: 'tx' | 'rx',
-  code: string,
+  code: string | null,
   reason: string,
+  datagram = false,
+  /** The bytes parse and break a rule (SPEC.md Event 6 `"ek"` `"protocol"`) */
+  protocol = false,
 ): ControlMessageRecord {
   const record: ControlMessageRecord = {
-    streamId,
+    ...(streamId !== undefined ? { streamId } : {}),
     direction,
     timestamp: Date.now(),
-    decoded: JSON.stringify({ code, reason, length: bytes.length }),
+    decoded: JSON.stringify({
+      ...(code !== null ? { code } : {}),
+      reason,
+      length: bytes.length,
+      ...(datagram ? { datagram: true } : {}),
+      ...(protocol ? { kind: 'protocol' } : {}),
+    }),
     messageType: DECODE_ERROR_MESSAGE_TYPE,
     raw: bytesToBase64(bytes.subarray(0, MAX_DECODE_ERROR_RAW)),
   }
@@ -844,6 +860,7 @@ function replayState(tabId: number) {
             : {}),
           firstDataAt: stream.firstDataAt,
           closed: stream.closed,
+          ...(stream.finished ? { finished: true } : {}),
         })
       }
     }
@@ -1326,7 +1343,11 @@ function handleContentMessage(
       const session = state.sessions.get(message.sessionId)
       if (session) {
         const stream = session.streams.get(message.streamId)
-        if (stream) stream.closed = true
+        if (stream) {
+          // A FIN after a reset or a teardown does not make the stream whole.
+          if (!stream.closed) stream.finished = true
+          stream.closed = true
+        }
         session.discardedStreamIds.delete(message.streamId)
         // Flush remaining buffered data to IDB (data stays accessible for traces)
         flushStream(message.sessionId, message.streamId)
@@ -1339,10 +1360,13 @@ function handleContentMessage(
       // Batch alongside stream:data so the panel sees the matching data
       // event first (data is queued, closed must follow the same path or
       // it can outrun a not-yet-flushed batch).
+      const finished =
+        session?.streams.get(message.streamId)?.finished === true
       queueForPanel(tabId, {
         type: 'panel:stream:closed',
         sessionId: message.sessionId,
         streamId: message.streamId,
+        ...(finished ? { finished: true } : {}),
       })
       break
     }
@@ -1407,27 +1431,46 @@ function handleContentMessage(
       // Skip when recording is paused
       if (!session.streamRecording) break
 
-      // Datagrams require a detected draft to decode the MoQT header
-      if (!session.detectedDraft) break
-
-      // Decode the MoQT datagram header
-      // All draft codecs have decodeDatagram at runtime; the base Codec type
-      // doesn't declare it, so we use a type assertion with a minimal interface.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const codec = getCodec(session.detectedDraft) as any
-      if (typeof codec.decodeDatagram !== 'function') break
-      const result = codec.decodeDatagram(bytes)
-      if (!result.ok) break // Not a valid MoQT datagram — drop silently
-
-      const dg = result.value as {
-        trackAlias: bigint
-        groupId: bigint
-        objectId: bigint
-        publisherPriority: number
-        endOfGroup?: boolean
-        payload: Uint8Array
-        payloadLength: number
+      // Every draft's codec decodes datagrams; the base Codec type doesn't
+      // declare it.
+      const draft = session.detectedDraft
+      // draft-23 Section 11.5.2: "The receiver MUST discard all data received
+      // in a padding datagram."
+      const padding = readPadding(bytes, draft ?? undefined, 'datagram')
+      if (padding?.nonzeroAt === null) break
+      const read:
+        | ReturnType<typeof readDatagram>
+        | { ok: false; code: null; reason: string; protocol?: true } = padding
+        ? { ok: false, code: null, reason: NONZERO_PADDING, protocol: true }
+        : draft
+          ? readDatagram(getCodec(draft) as unknown as DatagramCodec, bytes)
+          : { ok: false, code: null, reason: "arrived before the session's draft was known" }
+      if (!read.ok) {
+        // Kept with its bytes and the reason, in the message list beside the
+        // control bytes that do not decode, marked as a datagram.
+        const record = reportUndecodable(
+          session,
+          undefined,
+          bytes,
+          message.direction,
+          read.code,
+          read.reason,
+          true,
+          'protocol' in read && read.protocol === true,
+        )
+        sendToPanel(tabId, {
+          type: 'panel:control-message',
+          sessionId: message.sessionId,
+          direction: record.direction,
+          timestamp: record.timestamp,
+          decoded: record.decoded,
+          messageType: record.messageType,
+          raw: record.raw,
+        })
+        break
       }
+
+      const dg = read.value
       const decoded = {
         trackAlias: Number(dg.trackAlias),
         groupId: Number(dg.groupId),
@@ -1456,7 +1499,7 @@ function handleContentMessage(
         }
       }
       if (appendResult.isNewGroup) {
-        const framing = parseDatagramFraming(bytes, session.detectedDraft)
+        const framing = parseDatagramFraming(bytes, draft ?? undefined)
         if (framing && carriesObjectProperties(framing)) {
           appendResult.group.objectProperties = true
         }

@@ -9,6 +9,7 @@ import { encodeFetchStream, encodeSubgroupStream } from '@moqtap/codec/draft22'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   type CatalogView,
+  incompleteTitle,
   locateCatalogStreams,
   packagingConflicts,
   packagingIndex,
@@ -326,14 +327,17 @@ describe('following a catalog track', () => {
     const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
     const reader = new SessionCatalogs()
     const whole = subgroup(5, 0, [CATALOG, ADD_AUDIO])
-    t.put(3, whole.subarray(0, whole.length - 4), { closed: true })
+    t.put(3, whole.subarray(0, whole.length - 4), { closed: true, finished: true })
     pump(reader, t)
     // Read for the first time after it closed, the stream does not frame
     // whole; its first object is complete, and applies.
     const view = reader.views()[0]
     expect(view.objects.map((o) => o.outcome)).toEqual(['applied'])
     expect(view.tracks.map((tr) => tr.name)).toEqual([VIDEO.name])
-    expect(view.incomplete).toEqual(['Stream 3 closed inside an object.'])
+    expect(view.incomplete).toEqual([
+      "Stream 3: 138 bytes at offset 0x92 don't decode. The stream ended inside an object.",
+    ])
+    expect(incompleteTitle(view)).toBe("Some catalog objects can't be read")
   })
 
   // draft-22 Section 11.1.2: "If an endpoint receives properties on an Object
@@ -376,11 +380,13 @@ describe('following a catalog track', () => {
     expect(view.objects.map((o) => o.outcome)).toEqual(['applied'])
     expect(view.tracks.map((tr) => tr.name)).toEqual([VIDEO.name])
     expect(view.incomplete).toEqual([
-      'Stream 3 has an object the draft forbids: only a Normal (0x0) Object may carry Properties, got status 0x3.',
+      "Stream 3: 149 bytes at offset 0x93 don't decode. Only a Normal (0x0) Object may carry Properties, got status 0x3.",
     ])
   })
 
-  it('says so when a closed stream frames as nothing at all', () => {
+  // A JSON document's first bytes are a draft-22 SUBGROUP_HEADER: Type Flags
+  // 0x7b (`{`), Track Alias 0x22 (`"`), Group ID 0x76 (`v`).
+  it("says so when a closed stream's header names another track", () => {
     const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
     const reader = new SessionCatalogs()
     t.put(3, text.encode(JSON.stringify(CATALOG)), {
@@ -391,8 +397,19 @@ describe('following a catalog track', () => {
     const view = reader.views()[0]
     expect(view.objects).toEqual([])
     expect(view.incomplete).toEqual([
-      'Stream 3 closed but its bytes do not frame as a subgroup stream.',
+      "Stream 3's header names track alias 34, not 5.",
     ])
+  })
+
+  it('names a closed stream it had no draft to read under', () => {
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    const reader = new SessionCatalogs()
+    t.put(3, subgroup(5, 0, [CATALOG]), { closed: true, finished: true })
+    for (const ref of reader.sync(t.s)) reader.ingest(ref, t.bytes.get(ref.streamId) ?? null)
+    const view = reader.views()[0]
+    expect(view.objects).toEqual([])
+    expect(view.unreadable).toEqual(['Stream 3: no draft to read it under.'])
+    expect(incompleteTitle(view)).toBe("Some catalog objects can't be read")
   })
 
   it('merges a joining FETCH with the subscription, by group and object', () => {
@@ -531,6 +548,42 @@ describe('what a catalog cannot say', () => {
     expect(reader.views()[0].incomplete).toEqual([
       expect.stringContaining('paused'),
     ])
+    expect(incompleteTitle(reader.views()[0])).toBe('Some catalog objects are missing')
+  })
+
+  it('names both when objects are missing and others do not decode', () => {
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    const whole = subgroup(5, 0, [CATALOG, ADD_AUDIO])
+    t.put(3, whole.subarray(0, whole.length - 4), { closed: true, finished: true })
+    t.s.streamRecording = false
+    const reader = new SessionCatalogs()
+    pump(reader, t)
+    const view = reader.views()[0]
+    expect(view.missing).toEqual([expect.stringContaining('paused')])
+    expect(view.unreadable).toEqual([expect.stringContaining("don't decode")])
+    expect(incompleteTitle(view)).toBe("Some catalog objects are missing or can't be read")
+  })
+
+  it('names no bytes while an open stream ends inside an object', () => {
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    const whole = subgroup(5, 0, [CATALOG, ADD_AUDIO])
+    t.put(3, whole.subarray(0, whole.length - 4))
+    const reader = new SessionCatalogs()
+    pump(reader, t)
+    expect(reader.views()[0].incomplete).toEqual([])
+    expect(reader.views()[0].objects).toHaveLength(1)
+  })
+
+  // draft-23 Section 11.3.2: "If a sender closes the stream before delivering
+  // all such objects to the QUIC stream, it MUST reset the stream."
+  it('names no bytes when a reset stream ends inside an object', () => {
+    const t = session([track('1', ['live'], 'catalog', { trackAlias: '5' })])
+    const whole = subgroup(5, 0, [CATALOG, ADD_AUDIO])
+    t.put(3, whole.subarray(0, whole.length - 4), { closed: true })
+    const reader = new SessionCatalogs()
+    pump(reader, t)
+    expect(reader.views()[0].incomplete).toEqual([])
+    expect(reader.views()[0].objects).toHaveLength(1)
   })
 
   it('is incomplete when an open stream is cleared', () => {

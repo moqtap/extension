@@ -46,6 +46,7 @@ import {
 } from './stream-framing'
 import type {
   DatagramGroupEntry,
+  MessageEntry,
   SessionEntry,
   StreamEntry,
   TrackEntry,
@@ -286,6 +287,11 @@ export function sessionFromTrace(
     }),
   )
 
+  // Decode errors that name a stream, and the streams control messages name:
+  // an error on any other stream is about that data stream's bytes.
+  const streamErrors: { event: TraceErrorEvent; entry: MessageEntry }[] = []
+  const controlSids = new Set<number>()
+
   // Reconstruct state from trace events
   for (const event of trace.events) {
     switch (event.type) {
@@ -295,6 +301,7 @@ export function sessionFromTrace(
         // are read only from a field map.
         const fields = controlMessageFields(ce.message)
         const msgType = controlMessageName(ce.messageType, draft, fields)
+        if (ce.streamId != null) controlSids.add(Number(ce.streamId))
         session.messages.push({
           timestamp: at(ce.timestamp),
           direction: ce.direction === 0 ? 'tx' : 'rx',
@@ -326,14 +333,16 @@ export function sessionFromTrace(
       case 'error': {
         const ee = event as TraceErrorEvent
         if (!isDecodeErrorEvent(ee)) break
-        session.messages.push({
+        const entry: MessageEntry = {
           timestamp: at(ee.timestamp),
           messageType: DECODE_ERROR_MESSAGE_TYPE,
           ...(ee.streamId != null ? { streamId: Number(ee.streamId) } : {}),
           decoded: decodeErrorFields(ee),
           decodedPretty: decodeErrorFields(ee),
           raw: ee.raw ?? new Uint8Array(0),
-        })
+        }
+        session.messages.push(entry)
+        if (ee.streamId != null) streamErrors.push({ event: ee, entry })
         break
       }
 
@@ -479,7 +488,12 @@ export function sessionFromTrace(
         const sc = event as StreamClosedEvent
         const streamId = Number(sc.streamId)
         const stream = session.streams.get(streamId)
-        if (stream) stream.closed = true
+        if (stream) {
+          stream.closed = true
+          // SPEC.md Event 2: "Error code (0 = clean close)".
+          if (sc.errorCode === 0) stream.finished = true
+          else stream.closeCode = sc.errorCode
+        }
         break
       }
     }
@@ -496,27 +510,73 @@ export function sessionFromTrace(
     }
   }
 
+  // The first decode error on each data stream is the stream's own record,
+  // with its bytes, whether or not the stream holds any data; it leaves the
+  // control message list.
+  const dataStreamErrors = new Map<number, TraceErrorEvent>()
+  const moved = new Set<MessageEntry>()
+  for (const { event, entry } of streamErrors) {
+    const sid = Number(event.streamId)
+    if (controlSids.has(sid) || !recorded.has(sid) || dataStreamErrors.has(sid))
+      continue
+    dataStreamErrors.set(sid, event)
+    moved.add(entry)
+  }
+  if (moved.size > 0)
+    session.messages = session.messages.filter((m) => !moved.has(m))
+
   const streamData = new Map<number, Uint8Array>()
   for (const [streamId, rec] of recorded) {
     const stream = session.streams.get(streamId)
     if (!stream) continue
-    if (rec.objects.length === 0 && rec.payloads.length === 0) {
+    const error = dataStreamErrors.get(streamId)
+    if (rec.objects.length === 0 && rec.payloads.length === 0 && !error) {
       unheld(rec, stream)
       continue
     }
 
-    const framed = codecDraft ? frameStream(rec, codecDraft) : null
-    const data = framed ?? concat(rec.payloads)
+    const framed =
+      codecDraft && rec.objects.length > 0 ? frameStream(rec, codecDraft) : null
+    let data = framed ?? concat(rec.payloads)
+    // The bytes an error kept follow what frames before them: the objects,
+    // or with none, the header the trace recorded. With no objects, every
+    // byte is one the trace recorded.
+    let headerOnly = false
+    if (error) {
+      const before =
+        framed ??
+        (rec.objects.length > 0 || rec.payloads.length > 0
+          ? null
+          : rec.header
+            ? rec.header.framing
+              ? rec.header.bytes
+              : null
+            : EMPTY)
+      const raw = error.raw ? toBytes(error.raw) : undefined
+      const kept = raw !== undefined && raw.length > 0 && before !== null
+      stream.undecodable = {
+        reason: error.reason,
+        length: error.rawLength ?? null,
+        offset: kept ? before.length : null,
+        ...(raw !== undefined && raw.length > 0 && !kept ? { raw } : {}),
+      }
+      if (kept) {
+        data = concat([before, raw])
+        headerOnly = framed === null
+      }
+    }
     if (data.length === 0) {
       unheld(rec, stream)
       continue
     }
 
-    stream.importedFraming = framed
-      ? rec.header
-        ? 'recorded'
-        : 'reconstructed'
-      : 'unavailable'
+    stream.importedFraming = headerOnly
+      ? 'recorded'
+      : framed
+        ? rec.header
+          ? 'recorded'
+          : 'reconstructed'
+        : 'unavailable'
     stream.byteCount = data.length
     Object.assign(stream, detectPayload(rec.payloads[0]))
     if (carriesProperties(rec)) stream.objectProperties = true

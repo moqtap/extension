@@ -38,6 +38,7 @@ import type { StreamObject } from '../stream-framing'
 import { holdsHeaderBytes } from '../import-trace'
 import { sessionBytes } from '../sizes'
 import { undefinedParameter } from '../undecodable'
+import { undecodableNotice } from '../undecodable-stream'
 import { shownTracks } from '../alias-tracks'
 import { formatOfStream, type StreamFormat, trackByteLabels } from '../stream-format'
 import type { MessageEntry, SessionEntry, StreamEntry } from '../use-inspector'
@@ -48,6 +49,7 @@ import StreamDataViewer from './StreamDataViewer.vue'
 import SplitView from './SplitView.vue'
 import StreamList from './StreamList.vue'
 import TracksTab from './TracksTab.vue'
+import UndecodableNotice from './UndecodableNotice.vue'
 import DirMark from './DirMark.vue'
 import Icon from './Icon.vue'
 
@@ -127,6 +129,16 @@ const selectedStream = computed(() => {
   return (
     streamList.value.find((s) => s.streamId === selectedStreamId.value) ?? null
   )
+})
+
+/** What the trace records of a stream it kept no data for, when its bytes didn't decode */
+const recordedNotice = computed(() => {
+  const recorded = selectedStream.value?.undecodable
+  if (!recorded) return null
+  return undecodableNotice(new Uint8Array(0), props.session.draft, {
+    complete: true,
+    recorded,
+  }).undecodable
 })
 
 /** True when the currently-viewed stream has received more data since we loaded it */
@@ -559,6 +571,11 @@ const collectorDetail = computed((): string | null => {
               :tracks="session.tracks"
               :is-datagram-group="!!selectedStream?.datagramGroupKey"
               :imported-framing="selectedStream?.importedFraming"
+              :complete="
+                !!selectedStream?.finished &&
+                selectedStreamData.length >= selectedStream.byteCount
+              "
+              :recorded-undecodable="selectedStream?.undecodable"
               :catalog="selectedCatalog"
               :loc="selectedLoc"
               :cmaf="selectedCmaf"
@@ -567,6 +584,11 @@ const collectorDetail = computed((): string | null => {
               :focus="streamFocus"
               :track-view="selectedTrackView"
               class="detail-viewer"
+            />
+            <UndecodableNotice
+              v-else-if="recordedNotice"
+              :notice="recordedNotice"
+              class="pane-notice"
             />
             <p v-else class="pane-message">No data recorded for this stream.</p>
           </section>
@@ -680,6 +702,10 @@ const collectorDetail = computed((): string | null => {
 </template>
 
 <style scoped>
+.pane-notice {
+  margin: var(--space-2);
+}
+
 .session-view {
   display: flex;
   flex-direction: column;
